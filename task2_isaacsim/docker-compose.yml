@@ -148,6 +148,8 @@ services:
       # The host uid has no passwd entry in the container; give HF/rerun
       # caches a writable HOME.
       - HOME=/tmp
+      - USER=${RECORDER_USER:-ebim}
+      - LOGNAME=${RECORDER_USER:-ebim}
     volumes:
       - ..:/repo
     stdin_open: true

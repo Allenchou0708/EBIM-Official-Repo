@@ -1013,6 +1013,10 @@ def setup_deformable_camera(
                 ("SemanticPublish.inputs:frameId", ROS_TOPIC_FRAMEID),
                 ("SemanticPublish.inputs:nodeNamespace", ROS_TOPIC_NAMESPACE),
                 ("SemanticPublish.inputs:enableSemanticLabels", True),
+                (
+                    "SemanticPublish.inputs:semanticLabelsTopicName",
+                    "semantic_segmentation_labels",
+                ),
                 ("SemanticPublish.inputs:resetSimulationTimeOnStop", True),
                 # Publisher: 2D Bounding Box Tight
                 ("Bbox2dTightPublish.inputs:topicName", "bbox_2d_tight"),
@@ -1024,6 +1028,10 @@ def setup_deformable_camera(
                     ROS_TOPIC_NAMESPACE,
                 ),
                 ("Bbox2dTightPublish.inputs:enableSemanticLabels", True),
+                (
+                    "Bbox2dTightPublish.inputs:semanticLabelsTopicName",
+                    "semantic_labels",
+                ),
             ],
         },
     )
