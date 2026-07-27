@@ -15,12 +15,15 @@ agree. That is correct and deliberate. Do not "fix" it.
 Upstream is internally inconsistent at a single commit. At `isaac-sim/IsaacLab`
 `0916ea3c0f126821ef1783c7119d248834fc8d0b` — the commit Task 1 pins — its `LICENSE` reads
 `2022-2025` while its own `pyproject.toml` and `.vscode/tools/setup_vscode.py` headers read
-`2022-2026`. We inherit that inconsistency because we copied both sides exactly:
+`2022-2026`. That gap is upstream's own: its tree-wide 2026 copyright bump (`54cf64be`,
+2026-01-02 UTC) rewrote file headers but did not touch `LICENSE`. We inherit the
+inconsistency because we copied both sides exactly:
 
-- `LICENSES/BSD-3-Clause.txt` is git blob `dee9ba551f428dd44471e7ee461528374233ad3c` —
-  byte-identical to `isaac-sim/IsaacLab` `LICENSE` at that pinned commit, at tag `v2.3.2`,
-  and at `main`. Reproducing a third party's license text unaltered is exactly what the
-  BSD-3-Clause redistribution condition requires.
+- `LICENSES/BSD-3-Clause.txt` is git blob `dee9ba551f428dd44471e7ee461528374233ad3c`
+  (`git rev-parse HEAD:LICENSES/BSD-3-Clause.txt`) — byte-identical to
+  `isaac-sim/IsaacLab` `LICENSE` at that pinned commit, at tag `v2.3.2`, and, as verified
+  on 2026-07-26 (UTC), at `main`. Reproducing a third party's license text unaltered is
+  exactly what the BSD-3-Clause redistribution condition requires.
 - The two headers are character-identical to upstream's and were inherited rather than
   written here. `git log -L 1,1:pyproject.toml` and
   `git log -L 1,1:.vscode/tools/setup_vscode.py` show the last change to each line
@@ -36,11 +39,13 @@ Editing the headers would make them diverge from upstream.
 
 ## When this stops holding
 
-This holds while Task 1 pins `0916ea3c`. Upstream last modified its `LICENSE` on
-2025-06-05 (UTC) and has not touched it since, so the pin can move without the text
-changing — but it may not. **On any change to the source pin, re-derive the blob against
-the new ref before applying anything.** If upstream's `LICENSE` has changed, copying the
-new text verbatim and re-syncing `NOTICE` becomes required, not forbidden.
+This holds while Task 1 pins `0916ea3c` — the authoritative pin is `PINNED_COMMIT` in
+`task1_isaacsim/isaaclab_overlay/apply_overlay.sh`. As verified on 2026-07-26 (UTC),
+upstream had not modified its `LICENSE` since 2025-06-05 (UTC), so the pin can move
+without the text changing — but it may not. **On any change to the source pin, re-derive
+the blob against the new ref before applying anything.** If upstream's `LICENSE` has
+changed, copying the new text verbatim and re-syncing `NOTICE` becomes required, not
+forbidden.
 
 ---
 
