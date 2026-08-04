@@ -52,10 +52,18 @@ The lab environment should use Python 3.12, LeRobot source `v0.6.0`, PyTorch
 that environment separate from Isaac Sim and the recorder container, and save
 its `pip freeze` with the experiment evidence.
 
+PI05 also loads the tokenizer from the gated
+`google/paligemma-3b-pt-224` repository. Before `--execute`, sign in to Hugging
+Face, review and accept Google's PaliGemma usage license, and run
+`hf auth login` with the same `HF_HOME` used for training. Never put a Hub token
+in Git, logs, shell history, or chat. The wrapper downloads only the pinned PI05
+and PaliGemma `config.json` files during runtime preflight, so missing access
+fails before a large model load.
+
 ```bash
 python3 task2_isaacsim/baselines/pi05/train_smoke.py \
   --dataset-root task2_isaacsim/dataset/task2_regression_591def2_v1 \
-  --output-dir /home/robot/2026_ebim_ssd/ebim_outputs/pi05_code_smoke \
+  --output-dir /scratch1/2026_ebim/allen_task2_pi05/outputs/pi05_code_smoke \
   --lerobot-source-root /home/robot/2026_ebim_ssd/LeRobot_v0.6.0
 ```
 
@@ -67,8 +75,8 @@ then be deleted and must never be called a baseline. Use `--save-checkpoint`
 only for the separate checkpoint round-trip gate because a PI05 checkpoint is
 large.
 
-The generated preflight JSON and full training log belong under
-`/home/robot/2026_ebim_ssd/ebim_evidence` or `ebim_outputs`, never in Git.
+The generated preflight JSON and full training log belong under the dedicated
+HDD workspace `/scratch1/2026_ebim/allen_task2_pi05`, never in Git.
 
 ## Safety boundary for the future policy runner
 
