@@ -23,12 +23,15 @@ from task2_isaacsim.baselines.pi05.contract import (
     validate_info,
 )
 from task2_isaacsim.baselines.pi05.train_smoke import (
+    HUB_PREFLIGHT_FILES,
     LEROBOT_SOURCE_COMMIT,
+    PALIGEMMA_TOKENIZER_REPO,
     build_train_command,
     load_episode_labels,
     main as train_smoke_main,
     select_smoke_episodes,
     verify_checkpoint,
+    verify_required_hub_access,
 )
 
 
@@ -211,6 +214,39 @@ class Pi05ContractTest(unittest.TestCase):
             output = Path(directory)
             missing = verify_checkpoint(output, 1)
         self.assertEqual(len(missing), 4)
+
+    def test_hub_preflight_fetches_only_small_config_files(self) -> None:
+        calls = []
+
+        def fake_download(**kwargs):
+            calls.append(kwargs)
+            return f"/cache/{kwargs['repo_id']}/{kwargs['filename']}"
+
+        dependencies = verify_required_hub_access(fake_download)
+
+        self.assertEqual(len(dependencies), len(HUB_PREFLIGHT_FILES))
+        self.assertEqual(len(calls), len(HUB_PREFLIGHT_FILES))
+        self.assertTrue(all(call["filename"] == "config.json" for call in calls))
+        self.assertIn(
+            {
+                "repo_id": PALIGEMMA_TOKENIZER_REPO,
+                "revision": "main",
+                "filename": "config.json",
+            },
+            calls,
+        )
+
+    def test_hub_preflight_explains_paligemma_access_gate(self) -> None:
+        def deny_paligemma(**kwargs):
+            if kwargs["repo_id"] == PALIGEMMA_TOKENIZER_REPO:
+                raise RuntimeError("401 Unauthorized")
+            return "/cache/config.json"
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "accept the Google PaliGemma usage license.*hf auth login",
+        ):
+            verify_required_hub_access(deny_paligemma)
 
     def test_failed_episode_cli_dry_run_is_explicit_and_local_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

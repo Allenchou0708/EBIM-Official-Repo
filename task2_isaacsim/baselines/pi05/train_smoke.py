@@ -16,6 +16,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,11 @@ LEROBOT_SOURCE_COMMIT = "30da8e687a6dfc617fcd94afc367ac7071c376ce"
 DEFAULT_DATASET_REPO_ID = "local/task2_pi05_smoke"
 DEFAULT_MIN_FREE_GIB = 40.0
 MAX_SMOKE_STEPS = 20
+PALIGEMMA_TOKENIZER_REPO = "google/paligemma-3b-pt-224"
+HUB_PREFLIGHT_FILES = (
+    (PI05_CONTRACT.policy_path, PI05_CONTRACT.policy_revision, "config.json"),
+    (PALIGEMMA_TOKENIZER_REPO, "main", "config.json"),
+)
 
 
 def load_episode_labels(dataset_root: Path) -> list[dict[str, Any]]:
@@ -178,6 +184,52 @@ def _package_versions() -> dict[str, str | None]:
     return versions
 
 
+def verify_required_hub_access(
+    download_file: Callable[..., str] | None = None,
+) -> list[dict[str, str]]:
+    """Fetch only small config files to fail fast on Hub access requirements."""
+
+    if download_file is None:
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError as error:
+            raise RuntimeError(
+                "huggingface_hub is not installed in the active environment"
+            ) from error
+        download_file = hf_hub_download
+
+    dependencies: list[dict[str, str]] = []
+    for repo_id, revision, filename in HUB_PREFLIGHT_FILES:
+        try:
+            cached_path = download_file(
+                repo_id=repo_id,
+                revision=revision,
+                filename=filename,
+            )
+        except Exception as error:
+            action = "verify the pinned model repository is accessible"
+            if repo_id == PALIGEMMA_TOKENIZER_REPO:
+                action = (
+                    "accept the Google PaliGemma usage license at "
+                    "https://huggingface.co/google/paligemma-3b-pt-224 and run "
+                    "`hf auth login` with the same HF_HOME; never paste the token "
+                    "into logs or chat"
+                )
+            raise RuntimeError(
+                f"cannot access required Hub file {repo_id}@{revision}/{filename}; "
+                f"{action}. Original error: {error}"
+            ) from error
+        dependencies.append(
+            {
+                "repo_id": repo_id,
+                "revision": revision,
+                "filename": filename,
+                "cached_path": str(cached_path),
+            }
+        )
+    return dependencies
+
+
 def inspect_runtime(lerobot_source_root: Path) -> dict[str, Any]:
     """Fail fast on the pinned source, LeRobot version, and CUDA/bfloat16."""
 
@@ -223,6 +275,7 @@ def inspect_runtime(lerobot_source_root: Path) -> dict[str, Any]:
     if not torch.cuda.is_bf16_supported():
         raise RuntimeError("the selected CUDA GPU does not support bfloat16")
 
+    hub_dependencies = verify_required_hub_access()
     properties = torch.cuda.get_device_properties(0)
     return {
         "python": sys.version,
@@ -233,6 +286,7 @@ def inspect_runtime(lerobot_source_root: Path) -> dict[str, Any]:
         "torch_cuda_version": torch.version.cuda,
         "cuda_available": True,
         "cuda_bfloat16_supported": True,
+        "hub_dependencies": hub_dependencies,
         "gpu": {
             "name": properties.name,
             "capability": list(torch.cuda.get_device_capability(0)),
