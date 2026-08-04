@@ -8,6 +8,7 @@ complete logs stay on the lab machine and are excluded from Git.
 
 - LeRobot: `0.6.0`
 - base policy: `lerobot/pi05_base`
+- base policy revision: `338b5c22c12dbdd0d2ab19046802de2eb7696a6b`
 - instruction: `Pick up the thermal pad and place it on the target RAM board.`
 - state: official 37-D `observation.state`; set `max_state_dim=37`
 - action: official absolute 20-D action; PI05 boundary is 32-D
@@ -32,39 +33,42 @@ python3 task2_isaacsim/baselines/pi05/verify_dataset_contract.py \
 ```
 
 It validates the ordered state/action names and shapes, the four recorded
-cameras, FPS, robot type, and LeRobot dataset version. A passing result proves
-only that the metadata adapter is correct; the existing regression episode is
+cameras, FPS, robot type, LeRobot dataset version, and the `q01`/`q99`
+quantiles required by PI05 normalization. A passing result proves only that the
+metadata adapter is correct; the existing regression episode is
 `success=false` and is not suitable for policy training.
 
-## Lab-only PI05 smoke command
+## Lab-only PI05 smoke gate
 
 Install and pin LeRobot in a separate GPU environment. Do not modify the
-CPU-only recorder image.
+CPU-only recorder image. The wrapper verifies the Task 2 metadata and success
+labels, selects at most two successful episodes, pins LeRobot `v0.6.0` source
+commit `30da8e687a6dfc617fcd94afc367ac7071c376ce`, checks CUDA/bfloat16, disables
+Hub uploads, pins the model revision, and prints the exact command before
+executing it.
+
+The lab environment should use Python 3.12, LeRobot source `v0.6.0`, PyTorch
+`2.11.0+cu128`, torchvision `0.26.0+cu128`, and the `training,pi` extras. Keep
+that environment separate from Isaac Sim and the recorder container, and save
+its `pip freeze` with the experiment evidence.
 
 ```bash
-lerobot-train \
-  --dataset.repo_id=LOCAL_OR_HF_DATASET_ID \
-  --policy.path=lerobot/pi05_base \
-  --output_dir=/home/robot/2026_ebim_ssd/ebim_outputs/pi05_task2_smoke \
-  --job_name=pi05_task2_smoke \
-  --policy.dtype=bfloat16 \
-  --policy.device=cuda \
-  --policy.max_state_dim=37 \
-  --policy.max_action_dim=32 \
-  --policy.chunk_size=50 \
-  --policy.n_action_steps=5 \
-  --policy.gradient_checkpointing=true \
-  --policy.train_expert_only=true \
-  --policy.use_relative_actions=false \
-  --rename_map='{"observation.images.head":"observation.images.base_0_rgb","observation.images.wrist_left":"observation.images.left_wrist_0_rgb","observation.images.wrist_right":"observation.images.right_wrist_0_rgb"}' \
-  --batch_size=1 \
-  --steps=20 \
-  --wandb.enable=false
+python3 task2_isaacsim/baselines/pi05/train_smoke.py \
+  --dataset-root task2_isaacsim/dataset/task2_regression_591def2_v1 \
+  --output-dir /home/robot/2026_ebim_ssd/ebim_outputs/pi05_code_smoke \
+  --lerobot-source-root /home/robot/2026_ebim_ssd/LeRobot_v0.6.0
 ```
 
-Before running this command, verify its flags with `lerobot-train --help` in the
-pinned LeRobot 0.6.0 environment. The smoke run requires successful episodes;
-do not train on the current failed regression episode merely to obtain a loss.
+That is a dry run. Add `--execute` only after Isaac Sim and its helper/evaluator
+containers are stopped. The current regression dataset contains no successful
+episode. It may still exercise one forward/backward/update step if
+`--allow-unsuccessful-smoke-data` is explicitly supplied, but the output must
+then be deleted and must never be called a baseline. Use `--save-checkpoint`
+only for the separate checkpoint round-trip gate because a PI05 checkpoint is
+large.
+
+The generated preflight JSON and full training log belong under
+`/home/robot/2026_ebim_ssd/ebim_evidence` or `ebim_outputs`, never in Git.
 
 ## Safety boundary for the future policy runner
 
