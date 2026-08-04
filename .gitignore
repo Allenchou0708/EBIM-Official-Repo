@@ -111,6 +111,11 @@ checkpoints/
 *.pt
 *.pth
 *.onnx
+*.safetensors
+
+# Task 2 local training artifacts
+task2_isaacsim/dataset/
+task2_isaacsim/baselines/pi05/outputs/
 
 # Secrets — defense in depth
 *.pem
