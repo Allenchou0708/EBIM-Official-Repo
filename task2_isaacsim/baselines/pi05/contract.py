@@ -16,6 +16,7 @@ from typing import Any
 ACTION_SIZE = 20
 STATE_SIZE = 37
 PI05_ACTION_SIZE = 32
+PI05_MODEL_REVISION = "338b5c22c12dbdd0d2ab19046802de2eb7696a6b"
 
 BASE_ACTION_SLICE = slice(0, 3)
 SPINE_ACTION_INDEX = 19
@@ -103,6 +104,7 @@ class Pi05Task2Contract:
     """Configuration choices shared by training and rollout."""
 
     policy_path: str = "lerobot/pi05_base"
+    policy_revision: str = PI05_MODEL_REVISION
     task_instruction: str = (
         "Pick up the thermal pad and place it on the target RAM board."
     )
@@ -269,4 +271,52 @@ def validate_dataset_root(
         return {}, [f"unable to read {info_path}: {error}"]
     if not isinstance(info, dict):
         return {}, [f"{info_path} must contain a JSON object"]
-    return info, validate_info(info)
+    errors = validate_info(info)
+    stats_path = root / "meta" / "stats.json"
+    if not stats_path.is_file():
+        return info, [*errors, f"missing dataset statistics: {stats_path}"]
+
+    try:
+        stats = json.loads(stats_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return info, [*errors, f"unable to read {stats_path}: {error}"]
+    if not isinstance(stats, dict):
+        return info, [*errors, f"{stats_path} must contain a JSON object"]
+
+    for key, expected_size in (
+        ("action", ACTION_SIZE),
+        ("observation.state", STATE_SIZE),
+    ):
+        feature_stats = stats.get(key)
+        if not isinstance(feature_stats, dict):
+            errors.append(f"missing quantile statistics: {key}")
+            continue
+        quantiles: dict[str, list[float]] = {}
+        for quantile in ("q01", "q99"):
+            raw_values = feature_stats.get(quantile)
+            if not isinstance(raw_values, list):
+                errors.append(f"missing quantile statistics: {key}.{quantile}")
+                continue
+            try:
+                values = [float(value) for value in raw_values]
+            except (TypeError, ValueError):
+                errors.append(f"{key}.{quantile} must contain numeric values")
+                continue
+            if len(values) != expected_size:
+                errors.append(
+                    f"{key}.{quantile} must have {expected_size} values, "
+                    f"got {len(values)}"
+                )
+                continue
+            if not all(math.isfinite(value) for value in values):
+                errors.append(f"{key}.{quantile} contains non-finite values")
+                continue
+            quantiles[quantile] = values
+        if quantiles.keys() >= {"q01", "q99"} and any(
+            low > high
+            for low, high in zip(
+                quantiles["q01"], quantiles["q99"], strict=True
+            )
+        ):
+            errors.append(f"{key} has q01 values greater than q99")
+    return info, errors
