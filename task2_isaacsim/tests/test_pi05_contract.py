@@ -1,3 +1,6 @@
+# Copyright (c) 2026 The EBiM Benchmark Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the Task 2 PI05 data and action boundary."""
 
 from __future__ import annotations

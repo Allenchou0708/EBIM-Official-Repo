@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The EBiM Benchmark Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Build and optionally run a pinned, local-only PI05 training smoke test.
 
 The module is dependency-light until ``--execute`` is used. This lets the

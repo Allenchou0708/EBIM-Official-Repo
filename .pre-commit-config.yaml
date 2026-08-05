@@ -15,6 +15,9 @@ repos:
     rev: v6.0.0
     hooks:
       - id: trailing-whitespace
+        # Unified diff context lines consist of one leading space. Stripping
+        # that space corrupts participant-maintained patch files.
+        exclude: ^task2_isaacsim/baselines/pi05/patches/.*\.patch$
       - id: check-symlinks
       - id: destroyed-symlinks
       - id: check-added-large-files

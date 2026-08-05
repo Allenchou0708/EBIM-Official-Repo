@@ -1,3 +1,6 @@
+# Copyright (c) 2026 The EBiM Benchmark Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Dependency-light Task 2 dataset and PI05 boundary contract.
 
 This module deliberately imports only the Python standard library. It can be

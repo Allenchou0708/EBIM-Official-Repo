@@ -1,3 +1,6 @@
+# Copyright (c) 2026 The EBiM Benchmark Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Task 2 integration helpers for the LeRobot PI05 policy."""
 
 from .contract import (
