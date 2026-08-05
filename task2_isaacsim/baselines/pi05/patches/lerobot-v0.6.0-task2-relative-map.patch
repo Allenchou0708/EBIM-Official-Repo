@@ -1,0 +1,188 @@
+diff --git a/src/lerobot/policies/pi05/configuration_pi05.py b/src/lerobot/policies/pi05/configuration_pi05.py
+index bfd2f69..2b7a8f1 100644
+--- a/src/lerobot/policies/pi05/configuration_pi05.py
++++ b/src/lerobot/policies/pi05/configuration_pi05.py
+@@ -53,6 +53,9 @@ class PI05Config(PreTrainedConfig):
+     use_relative_actions: bool = False
+     # Joint names to exclude from relative (kept absolute). Empty list = all dims relative.
+     relative_exclude_joints: list[str] = field(default_factory=lambda: ["gripper"])
++    # Optional action-to-state mapping. ``None`` entries remain absolute. When
++    # omitted, the original sequential action[i] - state[i] behavior is kept.
++    relative_action_state_indices: list[int | None] | None = None
+     # Populated at runtime from dataset metadata by make_policy.
+     action_feature_names: list[str] | None = None
+ 
+diff --git a/src/lerobot/policies/pi05/processor_pi05.py b/src/lerobot/policies/pi05/processor_pi05.py
+index e8e84b0..ae84a7d 100644
+--- a/src/lerobot/policies/pi05/processor_pi05.py
++++ b/src/lerobot/policies/pi05/processor_pi05.py
+@@ -133,4 +133,5 @@ def make_pi05_pre_post_processors(
+         enabled=config.use_relative_actions,
+         exclude_joints=getattr(config, "relative_exclude_joints", []),
+         action_names=getattr(config, "action_feature_names", None),
++        state_indices=getattr(config, "relative_action_state_indices", None),
+     )
+diff --git a/src/lerobot/processor/relative_action_processor.py b/src/lerobot/processor/relative_action_processor.py
+index cd3d083..d21fe6e 100644
+--- a/src/lerobot/processor/relative_action_processor.py
++++ b/src/lerobot/processor/relative_action_processor.py
+@@ -30,7 +30,12 @@ __all__ = [
+ ]
+ 
+ 
+-def to_relative_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) -> Tensor:
++def to_relative_actions(
++    actions: Tensor,
++    state: Tensor,
++    mask: Sequence[bool],
++    state_indices: Sequence[int | None] | None = None,
++) -> Tensor:
+     """Convert absolute actions to relative: relative = action - state (for masked dims).
+ 
+     Args:
+@@ -38,6 +44,8 @@ def to_relative_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) ->
+         actions: (B, T, action_dim) or (B, action_dim).
+         state: (B, state_dim). Broadcast across time dimension.
+         mask: Which dims to convert. Can be shorter than action_dim.
++        state_indices: Optional state index per action dimension. ``None`` keeps
++            that action absolute. Omit to preserve sequential index behavior.
+     """
+     mask_t = torch.tensor(mask, dtype=actions.dtype, device=actions.device)
+     dims = mask_t.shape[0]
+@@ -46,14 +54,34 @@ def to_relative_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) ->
+     if state.device != actions.device or state.dtype != actions.dtype:
+         state = state.to(device=actions.device, dtype=actions.dtype)
+-    state_offset = state[..., :dims] * mask_t
+-    if actions.ndim == 3:
+-        state_offset = state_offset.unsqueeze(-2)
+     actions = actions.clone()
+-    actions[..., :dims] -= state_offset
++    if state_indices is None:
++        state_offset = state[..., :dims] * mask_t
++        if actions.ndim == 3:
++            state_offset = state_offset.unsqueeze(-2)
++        actions[..., :dims] -= state_offset
++        return actions
++
++    if len(state_indices) != actions.shape[-1]:
++        raise ValueError(
++            "state_indices must contain one entry per action dimension: "
++            f"got {len(state_indices)} for {actions.shape[-1]} actions"
++        )
++    for action_index, state_index in enumerate(state_indices):
++        if state_index is None or not mask[action_index]:
++            continue
++        offset = state[..., state_index]
++        if actions.ndim == 3:
++            offset = offset.unsqueeze(-1)
++        actions[..., action_index] -= offset
+     return actions
+ 
+ 
+-def to_absolute_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) -> Tensor:
++def to_absolute_actions(
++    actions: Tensor,
++    state: Tensor,
++    mask: Sequence[bool],
++    state_indices: Sequence[int | None] | None = None,
++) -> Tensor:
+     """Convert relative actions back to absolute: absolute = relative + state (for masked dims).
+ 
+     Args:
+@@ -61,6 +85,8 @@ def to_absolute_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) ->
+         actions: (B, T, action_dim) or (B, action_dim).
+         state: (B, state_dim). Broadcast across time dimension.
+         mask: Which dims to convert. Can be shorter than action_dim.
++        state_indices: Optional state index per action dimension. ``None`` keeps
++            that action absolute. Omit to preserve sequential index behavior.
+     """
+     mask_t = torch.tensor(mask, dtype=actions.dtype, device=actions.device)
+     dims = mask_t.shape[0]
+@@ -69,10 +95,25 @@ def to_absolute_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) ->
+     if state.device != actions.device or state.dtype != actions.dtype:
+         state = state.to(device=actions.device, dtype=actions.dtype)
+-    state_offset = state[..., :dims] * mask_t
+-    if actions.ndim == 3:
+-        state_offset = state_offset.unsqueeze(-2)
+     actions = actions.clone()
+-    actions[..., :dims] += state_offset
++    if state_indices is None:
++        state_offset = state[..., :dims] * mask_t
++        if actions.ndim == 3:
++            state_offset = state_offset.unsqueeze(-2)
++        actions[..., :dims] += state_offset
++        return actions
++
++    if len(state_indices) != actions.shape[-1]:
++        raise ValueError(
++            "state_indices must contain one entry per action dimension: "
++            f"got {len(state_indices)} for {actions.shape[-1]} actions"
++        )
++    for action_index, state_index in enumerate(state_indices):
++        if state_index is None or not mask[action_index]:
++            continue
++        offset = state[..., state_index]
++        if actions.ndim == 3:
++            offset = offset.unsqueeze(-1)
++        actions[..., action_index] += offset
+     return actions
+ 
+ 
+@@ -98,10 +140,13 @@ class RelativeActionsProcessorStep(ProcessorStep):
+         action_names: Action dimension names from dataset metadata, used to build
+             the mask from exclude_joints. If None, all dims are converted.
++        state_indices: Optional explicit action-to-state mapping. ``None``
++            entries stay absolute; a missing mapping keeps sequential behavior.
+     """
+ 
+     enabled: bool = False
+     exclude_joints: list[str] = field(default_factory=list)
+     action_names: list[str] | None = None
++    state_indices: list[int | None] | None = None
+     _last_state: torch.Tensor | None = field(default=None, init=False, repr=False)
+ 
+     def _build_mask(self, action_dim: int) -> list[bool]:
+@@ -135,7 +181,13 @@ class RelativeActionsProcessorStep(ProcessorStep):
+             return new_transition
+ 
+         mask = self._build_mask(action.shape[-1])
+-        new_transition[TransitionKey.ACTION] = to_relative_actions(action, state, mask)
++        if self.state_indices is not None:
++            invalid = [index for index in self.state_indices if index is not None and not 0 <= index < state.shape[-1]]
++            if invalid:
++                raise ValueError(f"state_indices references unavailable state dimensions: {invalid}")
++        new_transition[TransitionKey.ACTION] = to_relative_actions(
++            action, state, mask, self.state_indices
++        )
+         return new_transition
+ 
+     def get_cached_state(self) -> torch.Tensor | None:
+@@ -147,6 +199,7 @@ class RelativeActionsProcessorStep(ProcessorStep):
+             "enabled": self.enabled,
+             "exclude_joints": self.exclude_joints,
+             "action_names": self.action_names,
++            "state_indices": self.state_indices,
+         }
+ 
+     def transform_features(
+@@ -196,7 +249,9 @@ class AbsoluteActionsProcessorStep(ProcessorStep):
+             return new_transition
+ 
+         mask = self.relative_step._build_mask(action.shape[-1])
+-        new_transition[TransitionKey.ACTION] = to_absolute_actions(action, cached_state, mask)
++        new_transition[TransitionKey.ACTION] = to_absolute_actions(
++            action, cached_state, mask, self.relative_step.state_indices
++        )
+         return new_transition
+ 
+     def get_config(self) -> dict[str, Any]:
+diff --git a/src/lerobot/scripts/lerobot_train.py b/src/lerobot/scripts/lerobot_train.py
+index 1e7fc8e..98c108a 100644
+--- a/src/lerobot/scripts/lerobot_train.py
++++ b/src/lerobot/scripts/lerobot_train.py
+@@ -340,4 +340,5 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
+                 "enabled": True,
+                 "exclude_joints": getattr(active_cfg, "relative_exclude_joints", []),
+                 "action_names": getattr(active_cfg, "action_feature_names", None),
++                "state_indices": getattr(active_cfg, "relative_action_state_indices", None),
+             }

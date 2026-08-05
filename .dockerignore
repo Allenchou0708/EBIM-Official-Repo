@@ -10,6 +10,17 @@ docs/
 **/output/*
 **/outputs/*
 **/videos/*
+**/dataset/*
+**/datasets/*
+**/checkpoints/*
+**/wandb/*
+**/*.safetensors
+**/*.ckpt
+**/*.pt
+**/*.pth
+**/*.onnx
+**/*.bin
+**/*.gguf
 *.tmp
 # ignore docker
 docker/cluster/exports/

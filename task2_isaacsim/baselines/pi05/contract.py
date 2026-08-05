@@ -21,6 +21,34 @@ PI05_MODEL_REVISION = "338b5c22c12dbdd0d2ab19046802de2eb7696a6b"
 BASE_ACTION_SLICE = slice(0, 3)
 SPINE_ACTION_INDEX = 19
 
+# Task 2's action and state vectors are not index-aligned. ``None`` means the
+# action is already expressed in the command space used at runtime and must
+# remain absolute. Integer entries identify the state element used as the
+# reference for both training-time delta conversion and inference-time inverse
+# conversion.
+RELATIVE_ACTION_STATE_INDICES: tuple[int | None, ...] = (
+    None,
+    None,
+    None,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    None,
+    None,
+    28,
+)
+
 ACTION_NAMES = (
     "base.vx",
     "base.vy",
@@ -114,14 +142,27 @@ class Pi05Task2Contract:
     n_action_steps: int = 5
     dtype: str = "bfloat16"
     gradient_checkpointing: bool = True
-    train_expert_only: bool = True
-    use_relative_actions: bool = False
+    train_expert_only: bool = False
+    freeze_vision_encoder: bool = False
+    use_relative_actions: bool = True
+    relative_action_state_indices: tuple[int | None, ...] = (
+        RELATIVE_ACTION_STATE_INDICES
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-PI05_CONTRACT = Pi05Task2Contract()
+FULL_FINETUNE_CONTRACT = Pi05Task2Contract()
+SMOKE_EXPERT_CONTRACT = Pi05Task2Contract(
+    train_expert_only=True,
+    freeze_vision_encoder=False,
+)
+
+# The public default is the formal full-finetune contract. Call sites that are
+# intentionally limited to a disposable expert-only smoke must opt in to
+# ``SMOKE_EXPERT_CONTRACT`` explicitly.
+PI05_CONTRACT = FULL_FINETUNE_CONTRACT
 
 
 def _finite_vector(
@@ -136,9 +177,7 @@ def _finite_vector(
 
     vector = [float(value) for value in values]
     invalid = [
-        index
-        for index, value in enumerate(vector)
-        if not math.isfinite(value)
+        index for index, value in enumerate(vector) if not math.isfinite(value)
     ]
     if invalid:
         raise ValueError(
@@ -160,6 +199,73 @@ def unpad_action(pi05_action: Sequence[float]) -> tuple[float, ...]:
 
     vector = _finite_vector(pi05_action, PI05_ACTION_SIZE, "PI05 action")
     return tuple(vector[:ACTION_SIZE])
+
+
+def validate_relative_action_state_indices(
+    indices: Sequence[int | None],
+) -> tuple[int | None, ...]:
+    """Validate and freeze an explicit action-to-state mapping."""
+
+    if len(indices) != ACTION_SIZE:
+        raise ValueError(
+            "relative action mapping must have "
+            f"{ACTION_SIZE} entries, got {len(indices)}"
+        )
+
+    validated: list[int | None] = []
+    for action_index, state_index in enumerate(indices):
+        if state_index is None:
+            validated.append(None)
+            continue
+        if isinstance(state_index, bool) or not isinstance(state_index, int):
+            raise ValueError(
+                "relative action mapping entries must be integer state "
+                f"indices or null; action {action_index} got {state_index!r}"
+            )
+        if not 0 <= state_index < STATE_SIZE:
+            raise ValueError(
+                "relative action mapping for action "
+                f"{action_index} references "
+                f"state {state_index}, outside 0..{STATE_SIZE - 1}"
+            )
+        validated.append(state_index)
+    return tuple(validated)
+
+
+def to_relative_action(
+    action: Sequence[float],
+    state: Sequence[float],
+    *,
+    state_indices: Sequence[int | None] = RELATIVE_ACTION_STATE_INDICES,
+) -> tuple[float, ...]:
+    """Convert one official 20-D Task 2 command to the mapped delta space."""
+
+    action_vector = _finite_vector(action, ACTION_SIZE, "Task 2 action")
+    state_vector = _finite_vector(state, STATE_SIZE, "Task 2 state")
+    mapping = validate_relative_action_state_indices(state_indices)
+    for action_index, state_index in enumerate(mapping):
+        if state_index is not None:
+            action_vector[action_index] -= state_vector[state_index]
+    return tuple(action_vector)
+
+
+def to_absolute_action(
+    relative_action: Sequence[float],
+    state: Sequence[float],
+    *,
+    state_indices: Sequence[int | None] = RELATIVE_ACTION_STATE_INDICES,
+) -> tuple[float, ...]:
+    """Invert :func:`to_relative_action` for policy output publication."""
+
+    action_vector = _finite_vector(
+        relative_action, ACTION_SIZE, "Task 2 relative action"
+    )
+    state_vector = _finite_vector(state, STATE_SIZE, "Task 2 state")
+    mapping = validate_relative_action_state_indices(state_indices)
+    for action_index, state_index in enumerate(mapping):
+        if state_index is not None:
+            action_vector[action_index] += state_vector[state_index]
+    return tuple(action_vector)
 
 
 def apply_fixed_mobile_axes(

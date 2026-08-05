@@ -1,91 +1,239 @@
-# Task 2 PI05 baseline
+# Task 2 PI0.5 baseline
 
 This directory is the code-only boundary between the official EBiM Task 2
-dataset contract and LeRobot PI05. Datasets, model weights, checkpoints, and
-complete logs stay on the lab machine and are excluded from Git.
+dataset contract and LeRobot PI0.5. Dataset frames, model weights, checkpoints,
+Hub tokens, caches, and full logs are not part of the competition repository.
 
-## Locked pilot contract
+## Reproducible source boundary
 
-- LeRobot: `0.6.0`
+- LeRobot version: `v0.6.0`
+- LeRobot commit: `30da8e687a6dfc617fcd94afc367ac7071c376ce`
 - base policy: `lerobot/pi05_base`
 - base policy revision: `338b5c22c12dbdd0d2ab19046802de2eb7696a6b`
-- instruction: `Pick up the thermal pad and place it on the target RAM board.`
-- state: official 37-D `observation.state`; set `max_state_dim=37`
-- action: official absolute 20-D action; PI05 boundary is 32-D
-- cameras used by the policy: head, left wrist, right wrist
-- excluded inputs: `observation.images.eval_camera` and `task2_extras/**`
-- initial rollout: fixed mobile base and fixed spine; model controls arms and grippers
-- chunk size: 50; execute 5 actions before replanning
-- memory settings: bfloat16, gradient checkpointing, batch size 1, expert-only training
-- relative actions: disabled for the first pilot
+- policy cameras: head, left wrist, right wrist
+- evaluation-only inputs: `eval_camera` and `task2_extras/**`
+- state/action contract: official 37-D state and 20-D action; PI0.5 boundary is 32-D
+- default action representation: Task 2 mapped relative actions
 
-The 37-D state is larger than PI05's default `max_state_dim=32`, so the override
-is mandatory. The 20-D action is padded to 32 dimensions inside the policy
-boundary and cropped back to 20 dimensions before publishing.
+The OCI image clones the pinned LeRobot source and applies
+`patches/lerobot-v0.6.0-task2-relative-map.patch`. The patch is backward
+compatible: ordinary LeRobot policies keep the sequential `action[i] - state[i]`
+behavior when no mapping is provided.
 
-## Local metadata gate
+## Training profiles
 
-This command uses only the Python standard library:
+`profiles/smoke_expert.yaml` is the disposable RTX 5090 engineering profile. It
+uses bfloat16, gradient checkpointing, and `train_expert_only=true`. It verifies
+data loading, loss, backward, optimizer, checkpoint/resume, and inference, but
+is not the formal baseline.
 
-```bash
-python3 task2_isaacsim/baselines/pi05/verify_dataset_contract.py \
-  task2_isaacsim/dataset/task2_regression_591def2_v1
+`profiles/full_finetune.yaml` is the formal single-GPU profile. It uses:
+
+```yaml
+policy:
+  train_expert_only: false
+  freeze_vision_encoder: false
+  gradient_checkpointing: true
+  dtype: bfloat16
 ```
 
-It validates the ordered state/action names and shapes, the four recorded
-cameras, FPS, robot type, LeRobot dataset version, and the `q01`/`q99`
-quantiles required by PI05 normalization. A passing result proves only that the
-metadata adapter is correct; the existing regression episode is
-`success=false` and is not suitable for policy training.
+The first supported release target is one A100 80 GB, H100 80 GB, or an
+equivalent GPU. `doctor --profile full` stops below 70 GiB reported device
+memory. It never silently switches to LoRA or expert-only training. Multi-GPU
+launch arguments may be passed to LeRobot/Accelerate as a later experiment,
+but multi-node training is not a release gate.
 
-## Lab-only PI05 smoke gate
+## Task 2 relative actions
 
-Install and pin LeRobot in a separate GPU environment. Do not modify the
-CPU-only recorder image. The wrapper verifies the Task 2 metadata and success
-labels, selects at most two successful episodes, pins LeRobot `v0.6.0` source
-commit `30da8e687a6dfc617fcd94afc367ac7071c376ce`, checks CUDA/bfloat16, disables
-Hub uploads, pins the model revision, and prints the exact command before
-executing it.
+Task 2 action and state indices are not aligned. The mapping is therefore
+explicit and shared by preprocessing, postprocessing, statistics, profiles,
+tests, and the run manifest.
 
-The lab environment should use Python 3.12, LeRobot source `v0.6.0`, PyTorch
-`2.11.0+cu128`, torchvision `0.26.0+cu128`, and the `training,pi` extras. Keep
-that environment separate from Isaac Sim and the recorder container, and save
-its `pip freeze` with the experiment evidence.
+| Action indices | State reference | Representation |
+|---|---|---|
+| base `vx/vy/wz`, 0–2 | none | original velocity command |
+| left joints, 3–9 | state 14–20 | target minus current joint |
+| right joints, 10–16 | state 21–27 | target minus current joint |
+| grippers, 17–18 | none | absolute open fraction |
+| spine, 19 | state 28 | target minus current height |
 
-PI05 also loads the tokenizer from the gated
-`google/paligemma-3b-pt-224` repository. Before `--execute`, sign in to Hugging
-Face, review and accept Google's PaliGemma usage license, and run
-`hf auth login` with the same `HF_HOME` used for training. Never put a Hub token
-in Git, logs, shell history, or chat. The wrapper downloads only the pinned PI05
-and PaliGemma `config.json` files during runtime preflight, so missing access
-fails before a large model load.
+The raw dataset is never edited. `relative_dataset.py` creates a derived view,
+hard-linking files when possible and copying otherwise, then replaces only the
+view's `meta/stats.json`. Its manifest records the source checksum, relative
+stats checksum, selected training episodes, mapping, chunk size, and whether a
+file was linked or copied. Held-out episodes must not be included when these
+statistics are calculated.
+
+## Loss contract
+
+`loss_parity.py` deterministically verifies that both implementations use the
+flow target `noise - action`, records per-dimension MSE, and reports the
+difference between a 20-D and padded 32-D reduction. The release keeps
+LeRobot's native loss over the 20 real Task 2 dimensions. The padded 12-D mode
+is evidence only and is not used for training.
 
 ```bash
-python3 task2_isaacsim/baselines/pi05/train_smoke.py \
-  --dataset-root task2_isaacsim/dataset/task2_regression_591def2_v1 \
-  --output-dir /scratch1/2026_ebim/allen_task2_pi05/outputs/pi05_code_smoke \
-  --lerobot-source-root /home/robot/2026_ebim_ssd/LeRobot_v0.6.0
+python3 -m task2_isaacsim.baselines.pi05.loss_parity \
+  --output /scratch1/2026_ebim/allen_task2_pi05/evidence/loss_parity.json
 ```
 
-That is a dry run. Add `--execute` only after Isaac Sim and its helper/evaluator
-containers are stopped. The current regression dataset contains no successful
-episode. It may still exercise one forward/backward/update step if
-`--allow-unsuccessful-smoke-data` is explicitly supplied, but the output must
-then be deleted and must never be called a baseline. Use `--save-checkpoint`
-only for the separate checkpoint round-trip gate because a PI05 checkpoint is
-large.
+## Build and publish the image
 
-The generated preflight JSON and full training log belong under the dedicated
-HDD workspace `/scratch1/2026_ebim/allen_task2_pi05`, never in Git.
+Build from the repository root:
 
-## Safety boundary for the future policy runner
+```bash
+docker build \
+  -f task2_isaacsim/baselines/pi05/docker/Dockerfile \
+  -t ghcr.io/allenchou0708/ebim-task2-pi05:v0.6.0-task2 \
+  .
+```
 
-1. Reject wrong-sized or non-finite model actions.
-2. Crop PI05 output from 32 to the official 20 dimensions.
-3. Set base velocity indices 0..2 to zero.
-4. Replace spine index 19 with the current/reset spine target.
-5. Clamp grippers to `[0, 1]` and apply joint limits before ROS publication.
-6. Stop publishing on stale observations, inference timeout, or emergency stop.
+The workflow `.github/workflows/task2-pi05-image.yaml` publishes both a Git-SHA
+tag and `v0.6.0-task2` to GHCR. After its first successful run, make the package
+public in the GitHub package settings. Always deploy by digest rather than a
+mutable tag:
 
-`contract.py` implements steps 1 through 4. ROS publication, joint-limit
-clamping, and watchdog behavior belong in the later lab-validated runner.
+```bash
+docker pull ghcr.io/allenchou0708/ebim-task2-pi05:v0.6.0-task2
+docker image inspect \
+  ghcr.io/allenchou0708/ebim-task2-pi05:v0.6.0-task2 \
+  --format '{{index .RepoDigests 0}}'
+```
+
+The image contains code and dependencies only. `.dockerignore` excludes local
+datasets, checkpoints, model weights, outputs, and caches.
+
+## Docker run contract
+
+Keep large data on the HDD and mount it at runtime:
+
+```bash
+export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+export PI05_IMAGE=ghcr.io/allenchou0708/ebim-task2-pi05@sha256:REPLACE_ME
+
+docker run --rm --gpus all \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp/ebim-home \
+  -e HF_HOME=/cache/huggingface \
+  -e EBIM_PI05_IMAGE_DIGEST="${PI05_IMAGE#*@}" \
+  -v "$TASK2_PI05_ROOT/datasets:/data/dataset:ro" \
+  -v "$TASK2_PI05_ROOT/outputs:/data/output" \
+  -v "$TASK2_PI05_ROOT/cache/huggingface:/cache/huggingface" \
+  "$PI05_IMAGE" doctor --profile smoke
+```
+
+Use a read token with the gated PaliGemma license already accepted. Run
+`hf auth login` against the mounted `HF_HOME`; never pass a token as an image
+build argument or commit it to Git.
+
+The entrypoint creates a temporary passwd/group view for arbitrary host UIDs,
+so the earlier `getpwuid(): uid not found` failure is not reintroduced.
+
+## Expert-only smoke and resume
+
+For a failed-only engineering dataset, the opt-in is deliberately explicit:
+
+```bash
+docker run --rm --gpus all \
+  --user "$(id -u):$(id -g)" \
+  -e EBIM_PI05_IMAGE_DIGEST="${PI05_IMAGE#*@}" \
+  -e HOME=/tmp/ebim-home \
+  -e HF_HOME=/cache/huggingface \
+  -v "$TASK2_PI05_ROOT/datasets/task2_smoke:/data/dataset:ro" \
+  -v "$TASK2_PI05_ROOT/outputs:/data/output" \
+  -v "$TASK2_PI05_ROOT/cache/huggingface:/cache/huggingface" \
+  "$PI05_IMAGE" train \
+    --profile smoke \
+    --dataset-root /data/dataset \
+    --output-dir /data/output/smoke_001 \
+    --episodes 0,1 \
+    --allow-unsuccessful-smoke-data \
+    --execute
+```
+
+The wrapper refuses `success=false` data for the full profile. It also protects
+the full/expert flag, vision freeze flag, relative mapping, model dimensions,
+Hub upload flag, dataset path, and output path from CLI overrides.
+
+Resume is a separate gate:
+
+```bash
+docker run --rm --gpus all \
+  --user "$(id -u):$(id -g)" \
+  -e EBIM_PI05_IMAGE_DIGEST="${PI05_IMAGE#*@}" \
+  -v "$TASK2_PI05_ROOT/outputs:/data/output" \
+  -v "$TASK2_PI05_ROOT/cache/huggingface:/cache/huggingface" \
+  "$PI05_IMAGE" resume \
+    --checkpoint /data/output/smoke_001/training/checkpoints/000001 \
+    --output-dir /data/output/smoke_001/training \
+    --steps 2 \
+    --execute
+```
+
+Executable train, resume, offline, and shadow runs reject mutable or missing
+image identifiers; `EBIM_PI05_IMAGE_DIGEST` must be `sha256:<64 hex>`. Outputs
+inside the Git checkout are also rejected. Training records profile and patch
+checksums, GPU, mapping, relative stats checksum, command, parameter counts,
+finite loss evidence, and checkpoint hashes in `run_manifest.json`; resume
+records source and resumed checkpoint hashes in `resume_manifest.json`.
+
+## Full fine-tune gate
+
+On the 80 GB server, first run:
+
+```bash
+docker run --rm --gpus all ... "$PI05_IMAGE" doctor --profile full
+```
+
+Then use `train --profile full` with successful training episodes. A successful
+process is still rejected if the log does not report an approximately 4B total
+model and at least 3.5B trainable parameters. Record peak memory and step time
+from the full log before starting the long run.
+
+## Ten-episode engineering gate
+
+The deterministic split command returns `0..7` train and `8..9` held-out:
+
+```bash
+docker run --rm "$PI05_IMAGE" split --total-episodes 10 --held-out 2
+```
+
+All ten episodes may be `success=false` only for framework verification:
+
+1. Overfit two episodes with the expert profile.
+2. Train briefly on episodes `0..7` with the expert profile.
+3. Keep episodes `8,9` out of relative stats and tuning.
+4. Run offline inference on the held-out view.
+
+```bash
+docker run --rm --gpus all ... "$PI05_IMAGE" offline-inference \
+  --checkpoint /data/output/smoke_8train/training/checkpoints/STEP/pretrained_model \
+  --dataset-root /data/output/smoke_8train/relative_dataset \
+  --episodes 8,9 \
+  --output /data/output/smoke_8train/held_out_shadow.json
+```
+
+Offline/shadow inference validates finite 20-D output, mapped
+relative-to-absolute conversion, gripper range, and reports non-zero base
+commands. It never imports ROS or publishes a command. This gate proves only
+that training and inference are wired correctly; it is not task-success or
+baseline evidence.
+
+## Apptainer
+
+Use the same immutable GHCR digest:
+
+```bash
+apptainer pull task2-pi05.sif \
+  docker://ghcr.io/allenchou0708/ebim-task2-pi05@sha256:REPLACE_ME
+
+apptainer exec --nv \
+  --bind "$TASK2_PI05_ROOT/datasets:/data/dataset:ro" \
+  --bind "$TASK2_PI05_ROOT/outputs:/data/output" \
+  --bind "$TASK2_PI05_ROOT/cache/huggingface:/cache/huggingface" \
+  task2-pi05.sif python -m \
+    task2_isaacsim.baselines.pi05.portable doctor --profile full
+```
+
+Different machines may run independent experiments with the same digest. The
+first release does not claim synchronized multi-node training support.
