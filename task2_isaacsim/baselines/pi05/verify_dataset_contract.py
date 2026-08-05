@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 The EBiM Benchmark Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Validate Task 2 LeRobot metadata before starting a PI05 run."""
 
 from __future__ import annotations
