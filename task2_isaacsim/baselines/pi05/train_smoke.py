@@ -27,6 +27,8 @@ if __package__ in (None, ""):
 from task2_isaacsim.baselines.pi05.contract import (  # noqa: E402
     PI05_CONTRACT,
     POLICY_CAMERA_RENAME_MAP,
+    RELATIVE_ACTION_STATE_INDICES,
+    SMOKE_EXPERT_CONTRACT,
     validate_dataset_root,
 )
 
@@ -85,7 +87,7 @@ def select_smoke_episodes(
     allow_unsuccessful: bool,
     max_episodes: int,
 ) -> tuple[list[int], bool]:
-    """Prefer successful episodes; require opt-in for failed-only code smoke."""
+    """Prefer successful episodes; opt in to failed-only code smoke."""
 
     if max_episodes <= 0:
         raise ValueError("max_episodes must be positive")
@@ -126,7 +128,7 @@ def build_train_command(
     if not dataset_repo_id.strip():
         raise ValueError("dataset_repo_id must not be empty")
 
-    contract = PI05_CONTRACT
+    contract = SMOKE_EXPERT_CONTRACT
     return [
         executable,
         f"--dataset.repo_id={dataset_repo_id}",
@@ -145,7 +147,13 @@ def build_train_command(
             f"{str(contract.gradient_checkpointing).lower()}"
         ),
         f"--policy.train_expert_only={str(contract.train_expert_only).lower()}",
+        (
+            "--policy.freeze_vision_encoder="
+            f"{str(contract.freeze_vision_encoder).lower()}"
+        ),
         f"--policy.use_relative_actions={str(contract.use_relative_actions).lower()}",
+        "--policy.relative_action_state_indices="
+        + json.dumps(RELATIVE_ACTION_STATE_INDICES, separators=(",", ":")),
         "--policy.compile_model=false",
         "--policy.push_to_hub=false",
         "--rename_map="
@@ -187,7 +195,7 @@ def _package_versions() -> dict[str, str | None]:
 def verify_required_hub_access(
     download_file: Callable[..., str] | None = None,
 ) -> list[dict[str, str]]:
-    """Fetch only small config files to fail fast on Hub access requirements."""
+    """Fetch small config files to fail fast on Hub access requirements."""
 
     if download_file is None:
         try:
@@ -211,12 +219,13 @@ def verify_required_hub_access(
             if repo_id == PALIGEMMA_TOKENIZER_REPO:
                 action = (
                     "accept the Google PaliGemma usage license at "
-                    "https://huggingface.co/google/paligemma-3b-pt-224 and run "
-                    "`hf auth login` with the same HF_HOME; never paste the token "
-                    "into logs or chat"
+                    "https://huggingface.co/google/"
+                    "paligemma-3b-pt-224 and run `hf auth login` with the "
+                    "same HF_HOME; never paste the token into logs or chat"
                 )
             raise RuntimeError(
-                f"cannot access required Hub file {repo_id}@{revision}/{filename}; "
+                "cannot access required Hub file "
+                f"{repo_id}@{revision}/{filename}; "
                 f"{action}. Original error: {error}"
             ) from error
         dependencies.append(
@@ -257,19 +266,25 @@ def inspect_runtime(lerobot_source_root: Path) -> dict[str, Any]:
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError) as error:
         raise RuntimeError(
-            f"unable to inspect LeRobot source at {lerobot_source_root}: {error}"
+            "unable to inspect LeRobot source at "
+            f"{lerobot_source_root}: {error}"
         ) from error
     if source_commit != LEROBOT_SOURCE_COMMIT:
         raise RuntimeError(
-            f"expected LeRobot source {LEROBOT_SOURCE_COMMIT}, got {source_commit}"
+            f"expected LeRobot source {LEROBOT_SOURCE_COMMIT}, "
+            f"got {source_commit}"
         )
     if source_status:
-        raise RuntimeError("LeRobot source worktree is dirty; preserve a clean v0.6.0 pin")
+        raise RuntimeError(
+            "LeRobot source worktree is dirty; preserve a clean v0.6.0 pin"
+        )
 
     try:
         import torch
     except ImportError as error:
-        raise RuntimeError("PyTorch is not installed in the active environment") from error
+        raise RuntimeError(
+            "PyTorch is not installed in the active environment"
+        ) from error
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available to PyTorch")
     if not torch.cuda.is_bf16_supported():
@@ -315,7 +330,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-repo-id",
         default=DEFAULT_DATASET_REPO_ID,
-        help="Logical LeRobot dataset id; --dataset.root remains authoritative.",
+        help=(
+            "Logical LeRobot dataset id; --dataset.root remains authoritative."
+        ),
     )
     parser.add_argument("--steps", type=int, default=1)
     parser.add_argument("--max-episodes", type=int, default=2)
@@ -331,7 +348,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lerobot-source-root",
         type=Path,
-        help="Required with --execute; must be clean v0.6.0 at the pinned commit.",
+        help=(
+            "Required with --execute; must be clean v0.6.0 at the "
+            "pinned commit."
+        ),
     )
     parser.add_argument(
         "--min-free-gib",
@@ -346,7 +366,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--execute",
         action="store_true",
-        help="Run after validation. Without this flag, only print the command.",
+        help=(
+            "Run after validation. Without this flag, only print the command."
+        ),
     )
     return parser.parse_args()
 
@@ -367,7 +389,8 @@ def main() -> int:
         labels = load_episode_labels(dataset_root)
         if len(labels) != info.get("total_episodes"):
             raise ValueError(
-                "episode label count does not match meta/info.json total_episodes"
+                "episode label count does not match meta/info.json "
+                "total_episodes"
             )
         label_indices = sorted(item["episode_index"] for item in labels)
         expected_indices = list(range(info["total_episodes"]))
@@ -395,14 +418,18 @@ def main() -> int:
     successful_count = sum(1 for item in labels if item["success"])
     print("PASS: Task 2 PI05 smoke inputs")
     print(
-        f"  episodes={episodes} successful_labels={successful_count}/{len(labels)}"
+        f"  episodes={episodes} successful_labels="
+        f"{successful_count}/{len(labels)}"
     )
     if uses_unsuccessful_data:
         print(
-            "  WARNING: failed episode selected for pipeline verification only; "
+            "  WARNING: failed episode selected for pipeline "
+            "verification only; "
             "discard all resulting weights"
         )
-    print(f"  mode={'execute' if args.execute else 'dry-run'} steps={args.steps}")
+    print(
+        f"  mode={'execute' if args.execute else 'dry-run'} steps={args.steps}"
+    )
     print(shlex.join(command))
 
     if not args.execute:
@@ -445,7 +472,10 @@ def main() -> int:
         print("FAIL: environment report must be outside the competition repo")
         return 2
     if report_path.is_relative_to(output_dir):
-        print("FAIL: environment report must not create the training output directory")
+        print(
+            "FAIL: environment report must not create the training "
+            "output directory"
+        )
         return 2
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {

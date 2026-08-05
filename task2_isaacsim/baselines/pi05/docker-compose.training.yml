@@ -1,0 +1,26 @@
+# Copyright (c) 2026 The EBiM Benchmark Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+services:
+  task2-pi05:
+    image: ${PI05_IMAGE:-ghcr.io/allenchou0708/ebim-task2-pi05:v0.6.0-task2}
+    build:
+      context: ../../..
+      dockerfile: task2_isaacsim/baselines/pi05/docker/Dockerfile
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    gpus: all
+    environment:
+      HOME: /tmp/ebim-home
+      HF_HOME: /cache/huggingface
+      HF_HUB_CACHE: /cache/huggingface/hub
+      TORCH_HOME: /cache/torch
+      XDG_CACHE_HOME: /cache/xdg
+      EBIM_PI05_IMAGE_DIGEST: ${PI05_IMAGE_DIGEST:-unrecorded}
+    volumes:
+      - ${TASK2_DATASET_ROOT:?set TASK2_DATASET_ROOT}:/data/dataset:ro
+      - ${TASK2_OUTPUT_ROOT:?set TASK2_OUTPUT_ROOT}:/data/output
+      - ${HF_HOME:?set HF_HOME}:/cache/huggingface
+      - ${TORCH_HOME:?set TORCH_HOME}:/cache/torch
+      - ${XDG_CACHE_HOME:?set XDG_CACHE_HOME}:/cache/xdg
+    shm_size: 16gb
+    command: ["doctor", "--profile", "smoke"]
