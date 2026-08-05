@@ -466,11 +466,33 @@ class Pi05ContractTest(unittest.TestCase):
         dockerignore = (repository_root / ".dockerignore").read_text(
             encoding="utf-8"
         )
+        readme = (
+            repository_root
+            / "task2_isaacsim"
+            / "baselines"
+            / "pi05"
+            / "README.md"
+        ).read_text(encoding="utf-8")
+        entrypoint = (
+            repository_root
+            / "task2_isaacsim"
+            / "baselines"
+            / "pi05"
+            / "docker"
+            / "entrypoint.sh"
+        ).read_text(encoding="utf-8")
         self.assertIn("30da8e687a6dfc617fcd94afc367ac7071c376ce", dockerfile)
         self.assertIn("lerobot-v0.6.0-task2-relative-map.patch", dockerfile)
         self.assertNotIn("HF_TOKEN=", dockerfile)
         self.assertIn("**/dataset/*", dockerignore)
         self.assertIn("**/*.safetensors", dockerignore)
+        self.assertIn("$TASK2_PI05_ROOT/cache:/cache", readme)
+        self.assertNotIn(
+            "$TASK2_PI05_ROOT/cache/huggingface:/cache/huggingface", readme
+        )
+        self.assertIn(
+            "Mount the writable host cache root at /cache", entrypoint
+        )
         portable = (
             repository_root
             / "task2_isaacsim"
