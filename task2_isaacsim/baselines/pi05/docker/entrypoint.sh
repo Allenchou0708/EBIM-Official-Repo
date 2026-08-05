@@ -1,6 +1,12 @@
 set -euo pipefail
 
-mkdir -p "${HOME}" "${HF_HOME}" "${TORCH_HOME}" "${XDG_CACHE_HOME}"
+if ! mkdir -p "${HOME}" "${HF_HOME}" "${TORCH_HOME}" "${XDG_CACHE_HOME}"; then
+  cat >&2 <<'EOF'
+ERROR: PI0.5 runtime directories are not writable for the selected host UID.
+Mount the writable host cache root at /cache (for example, -v HOST_CACHE:/cache).
+EOF
+  exit 73
+fi
 
 if ! getent passwd "$(id -u)" >/dev/null 2>&1; then
   nss_dir="/tmp/ebim-nss-$(id -u)"

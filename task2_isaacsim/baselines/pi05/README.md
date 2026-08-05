@@ -111,6 +111,11 @@ Keep large data on the HDD and mount it at runtime:
 export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
 export PI05_IMAGE=ghcr.io/allenchou0708/ebim-task2-pi05@sha256:REPLACE_ME
 
+mkdir -p \
+  "$TASK2_PI05_ROOT/cache" \
+  "$TASK2_PI05_ROOT/datasets" \
+  "$TASK2_PI05_ROOT/outputs"
+
 docker run --rm --gpus all \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp/ebim-home \
@@ -118,13 +123,17 @@ docker run --rm --gpus all \
   -e EBIM_PI05_IMAGE_DIGEST="${PI05_IMAGE#*@}" \
   -v "$TASK2_PI05_ROOT/datasets:/data/dataset:ro" \
   -v "$TASK2_PI05_ROOT/outputs:/data/output" \
-  -v "$TASK2_PI05_ROOT/cache/huggingface:/cache/huggingface" \
+  -v "$TASK2_PI05_ROOT/cache:/cache" \
   "$PI05_IMAGE" doctor --profile smoke
 ```
 
 Use a read token with the gated PaliGemma license already accepted. Run
 `hf auth login` against the mounted `HF_HOME`; never pass a token as an image
 build argument or commit it to Git.
+
+Mount the entire writable cache root, not only `cache/huggingface`. PyTorch and
+XDG caches are sibling directories under `/cache`; a host UID cannot create
+them inside the root-owned image filesystem.
 
 The entrypoint creates a temporary passwd/group view for arbitrary host UIDs,
 so the earlier `getpwuid(): uid not found` failure is not reintroduced.
@@ -141,7 +150,7 @@ docker run --rm --gpus all \
   -e HF_HOME=/cache/huggingface \
   -v "$TASK2_PI05_ROOT/datasets/task2_smoke:/data/dataset:ro" \
   -v "$TASK2_PI05_ROOT/outputs:/data/output" \
-  -v "$TASK2_PI05_ROOT/cache/huggingface:/cache/huggingface" \
+  -v "$TASK2_PI05_ROOT/cache:/cache" \
   "$PI05_IMAGE" train \
     --profile smoke \
     --dataset-root /data/dataset \
@@ -162,7 +171,7 @@ docker run --rm --gpus all \
   --user "$(id -u):$(id -g)" \
   -e EBIM_PI05_IMAGE_DIGEST="${PI05_IMAGE#*@}" \
   -v "$TASK2_PI05_ROOT/outputs:/data/output" \
-  -v "$TASK2_PI05_ROOT/cache/huggingface:/cache/huggingface" \
+  -v "$TASK2_PI05_ROOT/cache:/cache" \
   "$PI05_IMAGE" resume \
     --checkpoint /data/output/smoke_001/training/checkpoints/000001 \
     --output-dir /data/output/smoke_001/training \
@@ -230,7 +239,7 @@ apptainer pull task2-pi05.sif \
 apptainer exec --nv \
   --bind "$TASK2_PI05_ROOT/datasets:/data/dataset:ro" \
   --bind "$TASK2_PI05_ROOT/outputs:/data/output" \
-  --bind "$TASK2_PI05_ROOT/cache/huggingface:/cache/huggingface" \
+  --bind "$TASK2_PI05_ROOT/cache:/cache" \
   task2-pi05.sif python -m \
     task2_isaacsim.baselines.pi05.portable doctor --profile full
 ```
