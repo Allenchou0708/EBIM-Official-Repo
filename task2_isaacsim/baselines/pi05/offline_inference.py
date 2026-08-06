@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import math
@@ -18,6 +19,7 @@ from .contract import (
     ACTION_SIZE,
     POLICY_CAMERA_RENAME_MAP,
     RELATIVE_ACTION_STATE_INDICES,
+    validate_absolute_action_bounds,
 )
 
 
@@ -72,6 +74,7 @@ def run_offline_inference(
     output: Path,
     samples_per_episode: int,
     seed: int,
+    rollout_constraints: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Load a local checkpoint and produce deterministic shadow commands."""
 
@@ -137,36 +140,73 @@ def run_offline_inference(
         },
     )
 
-    records: list[dict[str, Any]] = []
-    for episode, dataset_index in _sample_indices_by_episode(
-        dataset, samples_per_episode
-    ):
+    constraints = dict(rollout_constraints or {})
+    base_clamp = constraints.get("base_action_variance") is not None and (
+        constraints.get("base_vx_vy_wz_clamp_to_zero") is True
+    )
+    spine_hold = constraints.get("spine_hold_dataset_median")
+    if spine_hold is not None:
+        spine_hold = float(spine_hold)
+        if not math.isfinite(spine_hold):
+            raise ValueError("spine hold value must be finite")
+
+    def predict(dataset_index: int) -> list[float]:
         policy.reset()
-        torch.manual_seed(seed + dataset_index)
-        torch.cuda.manual_seed_all(seed + dataset_index)
+        fixed_seed = seed + dataset_index
+        torch.manual_seed(fixed_seed)
+        torch.cuda.manual_seed_all(fixed_seed)
         frame = dict(dataset[dataset_index])
         frame.pop("action", None)
         with torch.inference_mode():
             processed = preprocessor(frame)
             action = postprocessor(policy.select_action(processed))
-        values = action.detach().cpu().reshape(-1).tolist()
+        return action.detach().cpu().reshape(-1).tolist()
+
+    records: list[dict[str, Any]] = []
+    for episode, dataset_index in _sample_indices_by_episode(
+        dataset, samples_per_episode
+    ):
+        values = predict(dataset_index)
+        replay = predict(dataset_index)
         if len(values) != ACTION_SIZE:
             raise ValueError(
                 f"checkpoint produced {len(values)} values, "
                 f"expected {ACTION_SIZE}"
             )
+        if len(replay) != ACTION_SIZE:
+            raise ValueError(
+                "checkpoint replay produced the wrong action size"
+            )
         if not all(math.isfinite(value) for value in values):
             raise ValueError("checkpoint produced a non-finite action")
-        if not all(0.0 <= values[index] <= 1.0 for index in (17, 18)):
+        maximum_replay_error = max(
+            abs(left - right)
+            for left, right in zip(values, replay, strict=True)
+        )
+        if maximum_replay_error > 1e-5:
             raise ValueError(
-                "checkpoint produced a gripper command outside [0, 1]"
+                "checkpoint reload/replay is not deterministic: "
+                f"max error={maximum_replay_error}"
             )
+        validate_absolute_action_bounds(values)
+        effective = list(values)
+        if base_clamp:
+            effective[:3] = [0.0, 0.0, 0.0]
+        if spine_hold is not None:
+            effective[19] = spine_hold
+        validate_absolute_action_bounds(effective)
         records.append(
             {
                 "episode_index": episode,
                 "dataset_index": dataset_index,
-                "absolute_action": values,
+                "model_absolute_action": values,
+                "effective_absolute_action": effective,
+                "maximum_replay_error": maximum_replay_error,
+                "reproducible": True,
                 "base_nonzero": any(abs(value) > 1e-6 for value in values[:3]),
+                "effective_base_nonzero": any(
+                    abs(value) > 1e-6 for value in effective[:3]
+                ),
                 "published": False,
             }
         )
@@ -186,8 +226,14 @@ def run_offline_inference(
         "samples_per_episode": samples_per_episode,
         "seed": seed,
         "finite_20d_outputs": True,
+        "joint_and_gripper_bounds_valid": True,
+        "checkpoint_replay_reproducible": True,
+        "rollout_constraints": constraints,
         "base_nonzero_records": sum(
             1 for record in records if record["base_nonzero"]
+        ),
+        "effective_base_nonzero_records": sum(
+            1 for record in records if record["effective_base_nonzero"]
         ),
         "ros_publication": False,
         "records": records,
@@ -196,6 +242,9 @@ def run_offline_inference(
     output.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    del policy, dataset, preprocessor, postprocessor
+    gc.collect()
+    torch.cuda.empty_cache()
     return report
 
 

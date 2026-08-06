@@ -1,83 +1,85 @@
-# Task 2 PI0.5 baseline
+# Task 2 PI0.5 action-expert baseline
 
-This directory is the code-only boundary between the official EBiM Task 2
-dataset contract and LeRobot PI0.5. Dataset frames, model weights, checkpoints,
-Hub tokens, caches, and full logs are not part of the competition repository.
+This directory is the code-only boundary between EBiM Task 2 and LeRobot
+PI0.5. Datasets, model weights, checkpoints, Hub tokens, caches, and full logs
+stay outside the competition repository.
+
+The submission baseline remains on LeRobot through the 2026-08-15 deadline.
+Migration to Physical Intelligence `openpi` and full fine-tuning are separate,
+post-baseline experiments.
 
 ## Reproducible source boundary
 
-- LeRobot version: `v0.6.0`
-- LeRobot commit: `30da8e687a6dfc617fcd94afc367ac7071c376ce`
+- official benchmark base: `0004645a4b8843f0e04a5ca531fce0598e058910`
+- LeRobot: `v0.6.0@30da8e687a6dfc617fcd94afc367ac7071c376ce`
 - base policy: `lerobot/pi05_base`
 - base policy revision: `338b5c22c12dbdd0d2ab19046802de2eb7696a6b`
-- policy cameras: head, left wrist, right wrist
-- evaluation-only inputs: `eval_camera` and `task2_extras/**`
-- state/action contract: official 37-D state and 20-D action; PI0.5 boundary is 32-D
-- default action representation: Task 2 mapped relative actions
+- organizer dataset: `hermanprawiro/task2_fixpos_v1`
+- dataset revision: `1a7253a776b9a05d866da297789c456c2f0ed9f8`
+- policy cameras: head, left wrist, and right wrist
+- evaluation-only data: `eval_camera` and `task2_extras/**`
+- official boundary: 37-D state and 20-D action; PI0.5 action boundary: 32-D
 
 The OCI image clones the pinned LeRobot source and applies
-`patches/lerobot-v0.6.0-task2-relative-map.patch`. The patch is backward
-compatible: ordinary LeRobot policies keep the sequential `action[i] - state[i]`
-behavior when no mapping is provided.
+`patches/lerobot-v0.6.0-task2-relative-map.patch`. LeRobot's original
+sequential relative-action behavior remains unchanged when a policy does not
+provide an explicit mapping.
 
-## Training profiles
+## Profiles
 
-`profiles/smoke_expert.yaml` is the disposable RTX 5090 engineering profile. It
-uses bfloat16, gradient checkpointing, and `train_expert_only=true`. It verifies
-data loading, loss, backward, optimizer, checkpoint/resume, and inference, but
-is not the formal baseline.
+`profiles/smoke_expert.yaml` is disposable engineering evidence. It permits
+failed episodes only with the explicit `--allow-unsuccessful-smoke-data` flag.
 
-`profiles/full_finetune.yaml` is the formal single-GPU profile. It uses:
+`profiles/expert_finetune.yaml` is the formal RTX 5090 baseline:
 
 ```yaml
 policy:
-  train_expert_only: false
-  freeze_vision_encoder: false
+  train_expert_only: true
+  freeze_vision_encoder: true
   gradient_checkpointing: true
   dtype: bfloat16
+  use_relative_actions: true
+  chunk_size: 50
+  n_action_steps: 5
+steps: 6000
+batch_size: 1
+save_freq: 500
+seed: 1000
 ```
 
-The first supported release target is one A100 80 GB, H100 80 GB, or an
-equivalent GPU. `doctor --profile full` stops below 70 GiB reported device
-memory. It never silently switches to LoRA or expert-only training. Multi-GPU
-launch arguments may be passed to LeRobot/Accelerate as a later experiment,
-but multi-node training is not a release gate.
+The wrapper records this file as mode `expert_finetune` with `formal=true`;
+those wrapper-only fields are deliberately not inserted into LeRobot's YAML
+schema.
 
-## Task 2 relative actions
+Formal action-expert training refuses failed episodes, held-out episodes, a
+mutable dataset, or a dataset audit that does not authorize training.
 
-Task 2 action and state indices are not aligned. The mapping is therefore
-explicit and shared by preprocessing, postprocessing, statistics, profiles,
-tests, and the run manifest.
+`profiles/full_finetune.yaml` is retained but paused. It keeps both the VLM and
+vision encoder trainable and fails below 70 GiB reported GPU memory. There is
+no automatic LoRA or expert-only fallback.
 
-| Action indices | State reference | Representation |
+## Relative-action and loss contract
+
+Task 2 action and state vectors are not index-aligned:
+
+| Action | State reference | Representation |
 |---|---|---|
-| base `vx/vy/wz`, 0–2 | none | original velocity command |
-| left joints, 3–9 | state 14–20 | target minus current joint |
-| right joints, 10–16 | state 21–27 | target minus current joint |
-| grippers, 17–18 | none | absolute open fraction |
+| base `vx/vy/wz`, 0-2 | none | absolute velocity command |
+| left joints, 3-9 | state 14-20 | target minus current joint |
+| right joints, 10-16 | state 21-27 | target minus current joint |
+| grippers, 17-18 | none | absolute open fraction |
 | spine, 19 | state 28 | target minus current height |
 
-The raw dataset is never edited. `relative_dataset.py` creates a derived view,
-hard-linking files when possible and copying otherwise, then replaces only the
-view's `meta/stats.json`. Its manifest records the source checksum, relative
-stats checksum, selected training episodes, mapping, chunk size, and whether a
-file was linked or copied. Held-out episodes must not be included when these
-statistics are calculated.
+`relative_dataset.py` hard-links or copies the raw dataset to a derived view
+and replaces only `meta/stats.json`. Relative statistics use the train split
+only. The raw dataset is never edited, and the manifest records both source
+and derived checksums.
 
-## Loss contract
+`loss_parity.py` verifies the shared flow target `noise - action` and records
+the difference between 20-D and padded 32-D reductions. This release keeps
+LeRobot's native loss over the 20 real Task 2 dimensions.
 
-`loss_parity.py` deterministically verifies that both implementations use the
-flow target `noise - action`, records per-dimension MSE, and reports the
-difference between a 20-D and padded 32-D reduction. The release keeps
-LeRobot's native loss over the 20 real Task 2 dimensions. The padded 12-D mode
-is evidence only and is not used for training.
-
-```bash
-python3 -m task2_isaacsim.baselines.pi05.loss_parity \
-  --output /scratch1/2026_ebim/allen_task2_pi05/evidence/loss_parity.json
-```
-
-## Build and publish the image
+## Build and immutable image
 
 Build from the repository root:
 
@@ -88,24 +90,8 @@ docker build \
   .
 ```
 
-The workflow `.github/workflows/task2-pi05-image.yaml` publishes both a Git-SHA
-tag and `v0.6.0-task2` to GHCR. After its first successful run, make the package
-public in the GitHub package settings. Always deploy by digest rather than a
-mutable tag:
-
-```bash
-docker pull ghcr.io/allenchou0708/ebim-task2-pi05:v0.6.0-task2
-docker image inspect \
-  ghcr.io/allenchou0708/ebim-task2-pi05:v0.6.0-task2 \
-  --format '{{index .RepoDigests 0}}'
-```
-
-The image contains code and dependencies only. `.dockerignore` excludes local
-datasets, checkpoints, model weights, outputs, and caches.
-
-## Docker run contract
-
-Keep large data on the HDD and mount it at runtime:
+`.github/workflows/task2-pi05-image.yaml` publishes a Git-SHA tag and the
+mutable convenience tag. Experiments must use the resulting immutable digest:
 
 ```bash
 export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
@@ -114,57 +100,105 @@ export PI05_IMAGE=ghcr.io/allenchou0708/ebim-task2-pi05@sha256:REPLACE_ME
 mkdir -p \
   "$TASK2_PI05_ROOT/cache" \
   "$TASK2_PI05_ROOT/datasets" \
-  "$TASK2_PI05_ROOT/outputs"
+  "$TASK2_PI05_ROOT/outputs" \
+  "$TASK2_PI05_ROOT/evidence"
+```
 
-docker run --rm --gpus all \
+The image contains code and dependencies only. Use a Hugging Face read token
+with the PaliGemma terms accepted, login against the mounted cache, and never
+pass the token as a build argument or write it into a manifest.
+
+## Organizer dataset download and audit
+
+Download the exact revision to the HDD. The command creates a source manifest
+beside the dataset without reading or recording the token:
+
+```bash
+docker run --rm \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp/ebim-home \
   -e HF_HOME=/cache/huggingface \
-  -e EBIM_PI05_IMAGE_DIGEST="${PI05_IMAGE#*@}" \
-  -v "$TASK2_PI05_ROOT/datasets:/data/dataset:ro" \
-  -v "$TASK2_PI05_ROOT/outputs:/data/output" \
+  -v "$TASK2_PI05_ROOT/datasets:/data/datasets" \
   -v "$TASK2_PI05_ROOT/cache:/cache" \
-  "$PI05_IMAGE" doctor --profile smoke
+  "$PI05_IMAGE" download-organizer \
+    --destination /data/datasets/task2_fixpos_v1_1a7253a
 ```
 
-Use a read token with the gated PaliGemma license already accepted. Run
-`hf auth login` against the mounted `HF_HOME`; never pass a token as an image
-build argument or commit it to Git.
+Audit schema, license, checksums, codecs, frame counts, numeric ranges,
+success metadata, stale/encoder drops, orientation, IoU, and mobile-axis
+variance:
 
-Mount the entire writable cache root, not only `cache/huggingface`. PyTorch and
-XDG caches are sibling directories under `/cache`; a host UID cannot create
-them inside the root-owned image filesystem.
+```bash
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  -v "$TASK2_PI05_ROOT/datasets:/data/datasets:ro" \
+  -v "$TASK2_PI05_ROOT/evidence:/data/evidence" \
+  "$PI05_IMAGE" audit-dataset \
+    --dataset-root /data/datasets/task2_fixpos_v1_1a7253a \
+    --output /data/evidence/task2_fixpos_v1_audit.json
 
-The entrypoint creates a temporary passwd/group view for arbitrary host UIDs,
-so the earlier `getpwuid(): uid not found` failure is not reintroduced.
+export AUDIT="$TASK2_PI05_ROOT/evidence/task2_fixpos_v1_audit.json"
+export TRAIN_EPISODES="$(jq -r '.split.train | join(",")' "$AUDIT")"
+export HELD_OUT_EPISODES="$(jq -r '.split.held_out | join(",")' "$AUDIT")"
+jq '{audit_pass,formal_training_allowed,split,rollout_constraints}' "$AUDIT"
+```
 
-## Expert-only smoke and resume
+If all 22 episodes pass, the pinned SHA-256 ranking creates 18 train and four
+held-out episodes using seed `20260806`. Otherwise, held-out contains
+`max(2, ceil(20% eligible))`. Fewer than ten train or two held-out episodes is
+smoke-only. Held-out episodes never enter relative statistics or training.
 
-For a failed-only engineering dataset, the opt-in is deliberately explicit:
+## Gates and formal training
+
+First verify the new image:
 
 ```bash
 docker run --rm --gpus all \
   --user "$(id -u):$(id -g)" \
-  -e EBIM_PI05_IMAGE_DIGEST="${PI05_IMAGE#*@}" \
   -e HOME=/tmp/ebim-home \
   -e HF_HOME=/cache/huggingface \
-  -v "$TASK2_PI05_ROOT/datasets/task2_smoke:/data/dataset:ro" \
+  -e EBIM_PI05_IMAGE_DIGEST="${PI05_IMAGE#*@}" \
+  -v "$TASK2_PI05_ROOT/cache:/cache" \
+  "$PI05_IMAGE" doctor --profile expert
+```
+
+Use the audit train split for one-step and two-episode overfit gates. Add
+`--allow-train-subset`; formal training otherwise requires the complete split:
+
+```bash
+docker run --rm --gpus all \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp/ebim-home \
+  -e HF_HOME=/cache/huggingface \
+  -e EBIM_PI05_IMAGE_DIGEST="${PI05_IMAGE#*@}" \
+  -v "$TASK2_PI05_ROOT/datasets/task2_fixpos_v1_1a7253a:/data/dataset:ro" \
   -v "$TASK2_PI05_ROOT/outputs:/data/output" \
+  -v "$TASK2_PI05_ROOT/evidence:/data/evidence:ro" \
   -v "$TASK2_PI05_ROOT/cache:/cache" \
   "$PI05_IMAGE" train \
-    --profile smoke \
+    --profile expert \
     --dataset-root /data/dataset \
-    --output-dir /data/output/smoke_001 \
-    --episodes 0,1 \
-    --allow-unsuccessful-smoke-data \
+    --audit-report /data/evidence/task2_fixpos_v1_audit.json \
+    --output-dir /data/output/organizer_expert_6k \
+    --episodes "$TRAIN_EPISODES" \
     --execute
 ```
 
-The wrapper refuses `success=false` data for the full profile. It also protects
-the full/expert flag, vision freeze flag, relative mapping, model dimensions,
-Hub upload flag, dataset path, and output path from CLI overrides.
+For the one-step gate, add `--allow-train-subset`, pass two train episodes,
+and add these repeated overrides:
 
-Resume is a separate gate:
+```text
+--override=--steps=1
+--override=--save_checkpoint=true
+--override=--save_freq=1
+```
+
+For the two-episode overfit gate, use the same two episodes with
+`--allow-train-subset --require-loss-improvement` and override `--steps=1000`.
+The wrapper compares the initial and final loss windows and rejects a run whose
+final mean did not decrease.
+
+Resume is verified separately:
 
 ```bash
 docker run --rm --gpus all \
@@ -173,76 +207,57 @@ docker run --rm --gpus all \
   -v "$TASK2_PI05_ROOT/outputs:/data/output" \
   -v "$TASK2_PI05_ROOT/cache:/cache" \
   "$PI05_IMAGE" resume \
-    --checkpoint /data/output/smoke_001/training/checkpoints/000001 \
-    --output-dir /data/output/smoke_001/training \
+    --checkpoint /data/output/GATE/training/checkpoints/000001 \
+    --output-dir /data/output/GATE/training \
     --steps 2 \
     --execute
 ```
 
-Executable train, resume, offline, and shadow runs reject mutable or missing
-image identifiers; `EBIM_PI05_IMAGE_DIGEST` must be `sha256:<64 hex>`. Outputs
-inside the Git checkout are also rejected. Training records profile and patch
-checksums, GPU, mapping, relative stats checksum, command, parameter counts,
-finite loss evidence, and checkpoint hashes in `run_manifest.json`; resume
-records source and resumed checkpoint hashes in `resume_manifest.json`.
+Every executable manifest records the image digest, profile mode, trainable
+parameter count, organizer revision and split, relative stats checksum, GPU,
+command, finite loss evidence, and checkpoint hashes.
 
-## Full fine-tune gate
+## Held-out checkpoint sweep and shadow inference
 
-On the 80 GB server, first run:
-
-```bash
-docker run --rm --gpus all ... "$PI05_IMAGE" doctor --profile full
-```
-
-Then use `train --profile full` with successful training episodes. A successful
-process is still rejected if the log does not report an approximately 4B total
-model and at least 3.5B trainable parameters. Record peak memory and step time
-from the full log before starting the long run.
-
-## Ten-episode engineering gate
-
-The deterministic split command returns `0..7` train and `8..9` held-out:
+The sweep evaluates every `*/pretrained_model` checkpoint using fixed
+held-out frames and seeds. It also runs one deterministic shadow command per
+held-out episode, checking finite 20-D output, relative-to-absolute recovery,
+FR3 joint bounds, gripper `[0,1]`, and replay reproducibility.
 
 ```bash
-docker run --rm "$PI05_IMAGE" split --total-episodes 10 --held-out 2
+docker run --rm --gpus all \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp/ebim-home \
+  -e HF_HOME=/cache/huggingface \
+  -e EBIM_PI05_IMAGE_DIGEST="${PI05_IMAGE#*@}" \
+  -v "$TASK2_PI05_ROOT/outputs:/data/output" \
+  -v "$TASK2_PI05_ROOT/evidence:/data/evidence:ro" \
+  -v "$TASK2_PI05_ROOT/cache:/cache" \
+  "$PI05_IMAGE" checkpoint-sweep \
+    --checkpoints-root /data/output/organizer_expert_6k/training/checkpoints \
+    --dataset-root /data/output/organizer_expert_6k/relative_dataset \
+    --audit-report /data/evidence/task2_fixpos_v1_audit.json \
+    --output /data/output/organizer_expert_6k/heldout_sweep.json
 ```
 
-All ten episodes may be `success=false` only for framework verification:
+The lowest finite held-out loss wins. If loss from step 5500 to 6000 improves
+by more than 2%, the report recommends resuming to step 12000.
 
-1. Overfit two episodes with the expert profile.
-2. Train briefly on episodes `0..7` with the expert profile.
-3. Keep episodes `8,9` out of relative stats and tuning.
-4. Run offline inference on the held-out view.
+Shadow mode never imports ROS or publishes a command. If audit variance shows
+fixed base velocity, its effective output clamps `vx/vy/wz` to zero. A fixed
+spine is held at the dataset median. Closed-loop publication requires a
+separate reviewed runner and a five-reset gate of at least 3/5 with correct
+orientation and IoU greater than zero.
 
-```bash
-docker run --rm --gpus all ... "$PI05_IMAGE" offline-inference \
-  --checkpoint /data/output/smoke_8train/training/checkpoints/STEP/pretrained_model \
-  --dataset-root /data/output/smoke_8train/relative_dataset \
-  --episodes 8,9 \
-  --output /data/output/smoke_8train/held_out_shadow.json
-```
+## VR dataset and Apptainer
 
-Offline/shadow inference validates finite 20-D output, mapped
-relative-to-absolute conversion, gripper range, and reports non-zero base
-commands. It never imports ROS or publishes a command. This gate proves only
-that training and inference are wired correctly; it is not task-success or
-baseline evidence.
+Teammate VR data is audited independently. It may enter `mixed_v1` only if the
+20-D/37-D contract, camera keys, 30 FPS, mapped relative actions, and episode
+QA are compatible. It never changes the organizer held-out split.
 
-## Apptainer
-
-Use the same immutable GHCR digest:
+The same immutable image digest can run through Apptainer:
 
 ```bash
 apptainer pull task2-pi05.sif \
   docker://ghcr.io/allenchou0708/ebim-task2-pi05@sha256:REPLACE_ME
-
-apptainer exec --nv \
-  --bind "$TASK2_PI05_ROOT/datasets:/data/dataset:ro" \
-  --bind "$TASK2_PI05_ROOT/outputs:/data/output" \
-  --bind "$TASK2_PI05_ROOT/cache:/cache" \
-  task2-pi05.sif python -m \
-    task2_isaacsim.baselines.pi05.portable doctor --profile full
 ```
-
-Different machines may run independent experiments with the same digest. The
-first release does not claim synchronized multi-node training support.

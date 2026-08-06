@@ -38,6 +38,8 @@ services:
       # Disable FastDDS shared-memory transport; force UDP so frames cross the
       # Isaac<->eval container boundary (private /dev/shm). See header note.
       FASTDDS_BUILTIN_TRANSPORTS: UDPv4
+      HOME: /tmp
+      ROS_LOG_DIR: /tmp/ros-log
     command: >
       bash -lc "source /opt/ros/jazzy/setup.bash &&
       python3 /workspace/scripts/evaluation/task2/main.py --output-dir /output"

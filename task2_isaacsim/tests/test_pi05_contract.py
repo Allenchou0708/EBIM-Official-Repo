@@ -26,15 +26,26 @@ from task2_isaacsim.baselines.pi05.contract import (
     to_absolute_action,
     to_relative_action,
     unpad_action,
+    validate_absolute_action_bounds,
     validate_dataset_root,
     validate_info,
     validate_relative_action_state_indices,
+)
+from task2_isaacsim.baselines.pi05.dataset_audit import (
+    ORGANIZER_DATASET_REVISION,
+    SPLIT_SEED,
+    episode_eligibility,
+    organizer_split,
+)
+from task2_isaacsim.baselines.pi05.heldout_evaluation import (
+    deterministic_frame_indices,
 )
 from task2_isaacsim.baselines.pi05.loss_parity import loss_parity_report
 from task2_isaacsim.baselines.pi05.portable import (
     SOURCE_ROOT,
     _require_external_output,
     _require_image_digest,
+    _training_metrics,
     deterministic_split,
     validate_profile,
 )
@@ -298,7 +309,7 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn("--policy.max_state_dim=37", command)
         self.assertIn("--policy.max_action_dim=32", command)
         self.assertIn("--policy.train_expert_only=true", command)
-        self.assertIn("--policy.freeze_vision_encoder=false", command)
+        self.assertIn("--policy.freeze_vision_encoder=true", command)
         self.assertIn("--policy.use_relative_actions=true", command)
         mapping_arg = next(
             item
@@ -396,7 +407,7 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn("discard all resulting weights", output)
         self.assertIn("--policy.push_to_hub=false", output)
 
-    def test_profiles_separate_disposable_expert_and_formal_full(self) -> None:
+    def test_profiles_separate_smoke_expert_and_full_modes(self) -> None:
         profile_dir = (
             Path(__file__).resolve().parents[1]
             / "baselines"
@@ -404,14 +415,25 @@ class Pi05ContractTest(unittest.TestCase):
             / "profiles"
         )
         smoke = (profile_dir / "smoke_expert.yaml").read_text(encoding="utf-8")
+        expert = (profile_dir / "expert_finetune.yaml").read_text(
+            encoding="utf-8"
+        )
         full = (profile_dir / "full_finetune.yaml").read_text(encoding="utf-8")
+        self.assertNotIn("mode:", smoke)
+        self.assertNotIn("formal:", expert)
         self.assertIn("train_expert_only: true", smoke)
+        self.assertIn("train_expert_only: true", expert)
+        self.assertIn("freeze_vision_encoder: true", expert)
+        self.assertIn("steps: 6000", expert)
+        self.assertIn("save_freq: 500", expert)
         self.assertIn("train_expert_only: false", full)
         self.assertIn("freeze_vision_encoder: false", full)
         self.assertIn("use_relative_actions: true", smoke)
         self.assertIn("use_relative_actions: true", full)
 
-    def test_profile_validation_requires_unfrozen_vision_encoder(self) -> None:
+    def test_full_profile_validation_requires_unfrozen_vision_encoder(
+        self,
+    ) -> None:
         profile = {
             "policy": {
                 "dtype": "bfloat16",
@@ -425,6 +447,7 @@ class Pi05ContractTest(unittest.TestCase):
                 ),
                 "push_to_hub": False,
                 "train_expert_only": False,
+                "push_to_hub": False,
             }
         }
         with patch(
@@ -452,6 +475,126 @@ class Pi05ContractTest(unittest.TestCase):
                 _require_external_output(Path(directory)),
                 Path(directory).resolve(),
             )
+
+    def test_absolute_action_bounds_cover_joints_and_grippers(self) -> None:
+        one_arm = [0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0]
+        action = [0.0, 0.0, 0.0, *one_arm, *one_arm, 0.0, 1.0, 0.4]
+        self.assertEqual(
+            validate_absolute_action_bounds(action), tuple(action)
+        )
+        action[6] = 0.0
+        with self.assertRaisesRegex(ValueError, "left joint 4"):
+            validate_absolute_action_bounds(action)
+
+    def test_organizer_episode_gate_has_stable_reason_codes(self) -> None:
+        valid = {
+            "episode_index": 7,
+            "success": True,
+            "frames": 100,
+            "dropped_stale_frames": 0,
+            "encoder_dropped_frames": {
+                "head": 0,
+                "wrist_left": None,
+            },
+            "success_suggestion": {
+                "is_orientation_correct": True,
+                "iou_thermalpad_vs_target_current": 0.12,
+            },
+        }
+        self.assertEqual(
+            episode_eligibility(
+                valid, actual_frames=100, nonfinite_frames=0
+            ),
+            [],
+        )
+        invalid = dict(valid)
+        invalid.update(
+            success=False,
+            dropped_stale_frames=1,
+            encoder_dropped_frames={"head": 2},
+            success_suggestion={
+                "is_orientation_correct": False,
+                "iou_thermalpad_vs_target_current": 0.0,
+            },
+        )
+        reasons = episode_eligibility(
+            invalid, actual_frames=99, nonfinite_frames=1
+        )
+        self.assertEqual(
+            reasons,
+            [
+                "success_false",
+                "frame_mismatch",
+                "nonfinite_action_or_state",
+                "stale_frames_dropped",
+                "encoder_frames_dropped",
+                "orientation_incorrect",
+                "iou_not_positive",
+            ],
+        )
+
+    def test_organizer_split_is_pinned_and_episode_level(self) -> None:
+        split = organizer_split(list(range(22)))
+        self.assertEqual(split["revision"], ORGANIZER_DATASET_REVISION)
+        self.assertEqual(split["seed"], SPLIT_SEED)
+        self.assertEqual(len(split["train"]), 18)
+        self.assertEqual(len(split["held_out"]), 4)
+        self.assertFalse(set(split["train"]) & set(split["held_out"]))
+        self.assertEqual(split, organizer_split(list(reversed(range(22)))))
+        smoke_only = organizer_split(list(range(12)))
+        self.assertEqual(len(smoke_only["held_out"]), 3)
+        self.assertFalse(smoke_only["formal_training_allowed"])
+
+    def test_heldout_frame_sample_is_deterministic(self) -> None:
+        self.assertEqual(deterministic_frame_indices(5, 3), [0, 2, 4])
+        self.assertEqual(deterministic_frame_indices(3, 10), [0, 1, 2])
+        with self.assertRaisesRegex(ValueError, "positive"):
+            deterministic_frame_indices(0, 2)
+
+    def test_overfit_loss_windows_must_improve(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "train.log"
+            log.write_text(
+                "loss: 4.0 grdn: 1.0\n"
+                "loss: 3.0 grdn: 0.8\n"
+                "loss: 2.0 grdn: 0.6\n"
+                "loss: 1.0 grdn: 0.4\n",
+                encoding="utf-8",
+            )
+            metrics = _training_metrics(log)
+        self.assertEqual(metrics["loss"], 1.0)
+        self.assertTrue(metrics["loss_improved"])
+        self.assertLess(
+            metrics["final_loss_mean"], metrics["initial_loss_mean"]
+        )
+
+    def test_runtime_fixes_and_upstream_semantic_topics_are_composed(
+        self,
+    ) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        evaluator = (
+            repository_root
+            / "scripts"
+            / "evaluation"
+            / "task2"
+            / "docker-compose.yml"
+        ).read_text(encoding="utf-8")
+        recorder = (
+            repository_root / "task2_isaacsim" / "docker-compose.yml"
+        ).read_text(encoding="utf-8")
+        scene = (
+            repository_root
+            / "scripts"
+            / "scenes"
+            / "scene_robot_room_keyboard.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("HOME: /tmp", evaluator)
+        self.assertIn("ROS_LOG_DIR: /tmp/ros-log", evaluator)
+        self.assertIn("USER=${RECORDER_USER:-ebim}", recorder)
+        self.assertIn("LOGNAME=${RECORDER_USER:-ebim}", recorder)
+        self.assertIn('"semantic_labels"', scene)
+        self.assertIn('"bbox_2d_tight_labels"', scene)
+        self.assertIn('"bbox_2d_loose_labels"', scene)
 
     def test_container_is_pinned_and_excludes_runtime_artifacts(self) -> None:
         repository_root = Path(__file__).resolve().parents[2]

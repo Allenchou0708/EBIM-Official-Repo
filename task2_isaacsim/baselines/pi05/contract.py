@@ -24,6 +24,19 @@ PI05_MODEL_REVISION = "338b5c22c12dbdd0d2ab19046802de2eb7696a6b"
 BASE_ACTION_SLICE = slice(0, 3)
 SPINE_ACTION_INDEX = 19
 
+# Franka Research 3 joint limits from the official mobile FR3 Duo URDF. Both
+# arms share the same seven limits. The small tolerance is only for floating
+# point round-off at the policy/runtime boundary.
+FR3_JOINT_LIMITS: tuple[tuple[float, float], ...] = (
+    (-2.9007400167, 2.9007400167),
+    (-1.8360900167, 1.8360900167),
+    (-2.9007400167, 2.9007400167),
+    (-3.0770200167, -0.1169370833),
+    (-2.87630335, 2.87630335),
+    (0.43982265, 4.62163335),
+    (-3.05083335, 3.05083335),
+)
+
 # Task 2's action and state vectors are not index-aligned. ``None`` means the
 # action is already expressed in the command space used at runtime and must
 # remain absolute. Integer entries identify the state element used as the
@@ -159,13 +172,16 @@ class Pi05Task2Contract:
 FULL_FINETUNE_CONTRACT = Pi05Task2Contract()
 SMOKE_EXPERT_CONTRACT = Pi05Task2Contract(
     train_expert_only=True,
-    freeze_vision_encoder=False,
+    freeze_vision_encoder=True,
+)
+EXPERT_FINETUNE_CONTRACT = Pi05Task2Contract(
+    train_expert_only=True,
+    freeze_vision_encoder=True,
 )
 
-# The public default is the formal full-finetune contract. Call sites that are
-# intentionally limited to a disposable expert-only smoke must opt in to
-# ``SMOKE_EXPERT_CONTRACT`` explicitly.
-PI05_CONTRACT = FULL_FINETUNE_CONTRACT
+# The organizer-data baseline uses the action expert on the available 32 GiB
+# GPU. Full fine-tuning remains an explicit 80 GB-class ablation.
+PI05_CONTRACT = EXPERT_FINETUNE_CONTRACT
 
 
 def _finite_vector(
@@ -287,6 +303,31 @@ def apply_fixed_mobile_axes(
         raise ValueError("spine_height must be finite")
     vector[BASE_ACTION_SLICE] = [0.0, 0.0, 0.0]
     vector[SPINE_ACTION_INDEX] = float(spine_height)
+    return tuple(vector)
+
+
+def validate_absolute_action_bounds(
+    action: Sequence[float],
+    *,
+    tolerance: float = 1e-5,
+) -> tuple[float, ...]:
+    """Validate the publishable 20-D Task 2 command boundary."""
+
+    vector = _finite_vector(action, ACTION_SIZE, "Task 2 action")
+    for arm_offset, arm_name in ((3, "left"), (10, "right")):
+        for joint_index, (lower, upper) in enumerate(FR3_JOINT_LIMITS):
+            value = vector[arm_offset + joint_index]
+            if not lower - tolerance <= value <= upper + tolerance:
+                raise ValueError(
+                    f"{arm_name} joint {joint_index + 1} command {value} "
+                    f"is outside [{lower}, {upper}]"
+                )
+    for index, name in ((17, "left"), (18, "right")):
+        value = vector[index]
+        if not -tolerance <= value <= 1.0 + tolerance:
+            raise ValueError(
+                f"{name} gripper command {value} is outside [0, 1]"
+            )
     return tuple(vector)
 
 

@@ -7,6 +7,8 @@ from .contract import (
     ACTION_NAMES,
     ACTION_SIZE,
     EVAL_CAMERA_KEY,
+    EXPERT_FINETUNE_CONTRACT,
+    FR3_JOINT_LIMITS,
     FULL_FINETUNE_CONTRACT,
     PI05_CONTRACT,
     PI05_MODEL_REVISION,
@@ -21,15 +23,18 @@ from .contract import (
     to_absolute_action,
     to_relative_action,
     unpad_action,
-    validate_relative_action_state_indices,
+    validate_absolute_action_bounds,
     validate_dataset_root,
     validate_info,
+    validate_relative_action_state_indices,
 )
 
 __all__ = [
     "ACTION_NAMES",
     "ACTION_SIZE",
     "EVAL_CAMERA_KEY",
+    "EXPERT_FINETUNE_CONTRACT",
+    "FR3_JOINT_LIMITS",
     "FULL_FINETUNE_CONTRACT",
     "PI05_CONTRACT",
     "PI05_MODEL_REVISION",
@@ -44,7 +49,8 @@ __all__ = [
     "to_absolute_action",
     "to_relative_action",
     "unpad_action",
-    "validate_relative_action_state_indices",
+    "validate_absolute_action_bounds",
     "validate_dataset_root",
     "validate_info",
+    "validate_relative_action_state_indices",
 ]

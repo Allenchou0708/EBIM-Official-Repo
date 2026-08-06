@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 dataset:
-  repo_id: local/task2_pi05_smoke
+  repo_id: local/task2_fixpos_v1_relative
   root: /data/dataset-relative
 policy:
   path: lerobot/pi05_base
@@ -27,16 +27,17 @@ rename_map:
   observation.images.wrist_left: observation.images.left_wrist_0_rgb
   observation.images.wrist_right: observation.images.right_wrist_0_rgb
 output_dir: /data/output/training
-job_name: task2_pi05_smoke_expert_disposable
-steps: 1
+job_name: task2_pi05_organizer_expert_finetune
+steps: 6000
 batch_size: 1
-num_workers: 0
-persistent_workers: false
+num_workers: 4
+persistent_workers: true
 env_eval_freq: 0
 eval_steps: 0
-log_freq: 1
+log_freq: 10
 save_checkpoint: true
-save_freq: 1
+save_freq: 500
 save_checkpoint_to_hub: false
+seed: 1000
 wandb:
   enable: false

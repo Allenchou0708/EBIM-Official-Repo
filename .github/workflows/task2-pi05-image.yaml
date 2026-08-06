@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - allen/task2-pi05-baseline-e8c6235
+      - allen/task2-pi05-organizer-0004645
     paths:
       - task2_isaacsim/baselines/pi05/**
       - .github/workflows/task2-pi05-image.yaml
