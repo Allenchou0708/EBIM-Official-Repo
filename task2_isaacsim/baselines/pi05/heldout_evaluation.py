@@ -28,8 +28,7 @@ def _checkpoint_hashes(checkpoint: Path) -> dict[str, str]:
     return {
         str(path.relative_to(checkpoint)): _sha256_file(path)
         for path in sorted(checkpoint.rglob("*"))
-        if path.is_file()
-        and path.suffix in {".json", ".safetensors"}
+        if path.is_file() and path.suffix in {".json", ".safetensors"}
     }
 
 
@@ -41,10 +40,7 @@ def deterministic_frame_indices(length: int, maximum: int) -> list[int]:
     if maximum == 1:
         return [length // 2]
     return sorted(
-        {
-            round(slot * (length - 1) / (maximum - 1))
-            for slot in range(maximum)
-        }
+        {round(slot * (length - 1) / (maximum - 1)) for slot in range(maximum)}
     )
 
 
@@ -56,8 +52,6 @@ def run_heldout_loss(
     episodes: list[int],
     seed: int,
     max_frames: int,
-    report_directory: Path,
-    rollout_constraints: dict[str, Any],
 ) -> dict[str, Any]:
     """Compute deterministic LeRobot-native loss without updating weights."""
 
@@ -125,9 +119,7 @@ def run_heldout_loss(
 
     selected = deterministic_frame_indices(len(dataset), max_frames)
     subset = torch.utils.data.Subset(dataset, selected)
-    collate = (
-        lerobot_collate_fn if dataset.meta.has_language_columns else None
-    )
+    collate = lerobot_collate_fn if dataset.meta.has_language_columns else None
     loader = torch.utils.data.DataLoader(
         subset,
         batch_size=1,
@@ -145,9 +137,7 @@ def run_heldout_loss(
                 if camera in batch and batch[camera].dtype == torch.uint8:
                     batch[camera] = batch[camera].to(torch.float32) / 255.0
             processed = preprocessor(batch)
-            with torch.autocast(
-                device_type="cuda", dtype=torch.bfloat16
-            ):
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 loss, _ = policy.forward(processed)
             value = float(loss.detach().cpu())
             if not math.isfinite(value):
@@ -196,6 +186,8 @@ def checkpoint_sweep(
     episodes: list[int],
     seed: int,
     max_frames: int,
+    report_directory: Path,
+    rollout_constraints: dict[str, Any],
 ) -> dict[str, Any]:
     checkpoints = sorted(
         checkpoints_root.glob("*/pretrained_model"),

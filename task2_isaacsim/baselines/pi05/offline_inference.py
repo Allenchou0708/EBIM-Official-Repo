@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import argparse
-import gc
 import hashlib
 import json
 import math
@@ -242,8 +241,6 @@ def run_offline_inference(
     output.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    del policy, dataset, preprocessor, postprocessor
-    gc.collect()
     torch.cuda.empty_cache()
     return report
 

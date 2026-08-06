@@ -261,9 +261,7 @@ def _training_metrics(log_path: Path) -> dict[str, Any]:
     for key, pattern in patterns.items():
         matches = re.findall(pattern, text)
         result[key] = float(matches[-1]) if matches else None
-    losses = [
-        float(value) for value in re.findall(patterns["loss"], text)
-    ]
+    losses = [float(value) for value in re.findall(patterns["loss"], text)]
     window = max(1, min(20, len(losses) // 5)) if losses else 0
     result["loss_samples"] = len(losses)
     result["loss_window"] = window
@@ -412,8 +410,7 @@ def command_train(args: argparse.Namespace) -> int:
     is_formal = bool(environment["formal"])
     if args.allow_unsuccessful_smoke_data and is_formal:
         print(
-            "FAIL: --allow-unsuccessful-smoke-data is limited to "
-            "expert_smoke"
+            "FAIL: --allow-unsuccessful-smoke-data is limited to expert_smoke"
         )
         return 2
     if unsuccessful and is_formal:
@@ -917,9 +914,7 @@ def main() -> int:
             constraints = None
             if args.audit_report is not None:
                 audit = _read_formal_audit(args.audit_report.resolve())
-                held_out = {
-                    int(value) for value in audit["split"]["held_out"]
-                }
+                held_out = {int(value) for value in audit["split"]["held_out"]}
                 if not set(episodes) <= held_out:
                     raise ValueError(
                         "formal offline inference episodes must come from "

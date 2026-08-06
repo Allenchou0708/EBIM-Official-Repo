@@ -29,9 +29,7 @@ from .contract import (
 )
 
 ORGANIZER_DATASET_REPO = "hermanprawiro/task2_fixpos_v1"
-ORGANIZER_DATASET_REVISION = (
-    "1a7253a776b9a05d866da297789c456c2f0ed9f8"
-)
+ORGANIZER_DATASET_REVISION = "1a7253a776b9a05d866da297789c456c2f0ed9f8"
 ORGANIZER_DATASET_LICENSE = "apache-2.0"
 ORGANIZER_EXPECTED_EPISODES = 22
 ORGANIZER_EXPECTED_FRAMES = 20_869
@@ -245,8 +243,7 @@ def organizer_split(
         "eligible": eligible,
         "train": train,
         "held_out": held_out,
-        "formal_training_allowed": len(train) >= 10
-        and len(held_out) >= 2,
+        "formal_training_allowed": len(train) >= 10 and len(held_out) >= 2,
     }
 
 
@@ -284,8 +281,7 @@ class _VectorMoments:
 
     def report(self, names: Sequence[str]) -> dict[str, Any]:
         variance = [
-            value / self.count if self.count else math.nan
-            for value in self.m2
+            value / self.count if self.count else math.nan for value in self.m2
         ]
         return {
             "count": self.count,
@@ -599,9 +595,7 @@ def audit_organizer_dataset(
                 "frames_declared": item.get("frames"),
                 "frames_actual": actual_frames_by_episode.get(str(episode)),
                 "dropped_stale_frames": item.get("dropped_stale_frames"),
-                "encoder_dropped_frames": item.get(
-                    "encoder_dropped_frames"
-                ),
+                "encoder_dropped_frames": item.get("encoder_dropped_frames"),
                 "orientation_correct": (
                     suggestion.get("is_orientation_correct")
                     if isinstance(suggestion, dict)

@@ -447,7 +447,6 @@ class Pi05ContractTest(unittest.TestCase):
                 ),
                 "push_to_hub": False,
                 "train_expert_only": False,
-                "push_to_hub": False,
             }
         }
         with patch(
@@ -502,9 +501,7 @@ class Pi05ContractTest(unittest.TestCase):
             },
         }
         self.assertEqual(
-            episode_eligibility(
-                valid, actual_frames=100, nonfinite_frames=0
-            ),
+            episode_eligibility(valid, actual_frames=100, nonfinite_frames=0),
             [],
         )
         invalid = dict(valid)
