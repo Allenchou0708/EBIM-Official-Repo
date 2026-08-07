@@ -34,6 +34,8 @@ from task2_isaacsim.baselines.pi05.contract import (
 from task2_isaacsim.baselines.pi05.dataset_audit import (
     ORGANIZER_DATASET_REVISION,
     SPLIT_SEED,
+    _extract_hugging_face_license,
+    _verify_license_evidence,
     episode_eligibility,
     organizer_split,
 )
@@ -542,6 +544,38 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertEqual(len(smoke_only["held_out"]), 3)
         self.assertFalse(smoke_only["formal_training_allowed"])
 
+    def test_hugging_face_license_requires_remote_evidence(self) -> None:
+        self.assertEqual(
+            _extract_hugging_face_license(
+                {"license": "apache-2.0"},
+                [],
+            ),
+            ("apache-2.0", "huggingface_card_data"),
+        )
+        self.assertEqual(
+            _extract_hugging_face_license(None, ["license:apache-2.0"]),
+            ("apache-2.0", "huggingface_tag"),
+        )
+        self.assertEqual(
+            _extract_hugging_face_license(None, ["format:parquet"]),
+            (None, None),
+        )
+        hardcoded_only = _verify_license_evidence(
+            {"license": "apache-2.0"},
+            None,
+        )
+        self.assertFalse(hardcoded_only["verified"])
+        self.assertEqual(
+            _verify_license_evidence(
+                {
+                    "license": "apache-2.0",
+                    "license_source": "huggingface_card_data",
+                },
+                None,
+            )["verified"],
+            True,
+        )
+
     def test_heldout_frame_sample_is_deterministic(self) -> None:
         self.assertEqual(deterministic_frame_indices(5, 3), [0, 2, 4])
         self.assertEqual(deterministic_frame_indices(3, 10), [0, 1, 2])
@@ -627,6 +661,13 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn("**/dataset/*", dockerignore)
         self.assertIn("**/*.safetensors", dockerignore)
         self.assertIn("$TASK2_PI05_ROOT/cache:/cache", readme)
+        audit_section = readme.split(
+            "## Organizer dataset download and audit", 1
+        )[1].split("## Gates and formal training", 1)[0]
+        self.assertEqual(
+            audit_section.count("$TASK2_PI05_ROOT/cache:/cache"),
+            2,
+        )
         self.assertNotIn(
             "$TASK2_PI05_ROOT/cache/huggingface:/cache/huggingface", readme
         )

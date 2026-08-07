@@ -20,6 +20,13 @@ post-baseline experiments.
 - evaluation-only data: `eval_camera` and `task2_extras/**`
 - official boundary: 37-D state and 20-D action; PI0.5 action boundary: 32-D
 
+As verified on 2026-08-07, this pinned dataset revision contains no
+`README.md`, its Hugging Face `card_data` is null, and its tags do not declare
+a license. The 22-episode technical audit may therefore pass while formal
+training remains blocked. Do not treat the repository's expected
+`apache-2.0` value as license evidence; obtain an organizer clarification or
+a new pinned revision with explicit license metadata first.
+
 The OCI image clones the pinned LeRobot source and applies
 `patches/lerobot-v0.6.0-task2-relative-map.patch`. LeRobot's original
 sequential relative-action behavior remains unchanged when a policy does not
@@ -131,6 +138,9 @@ variance:
 ```bash
 docker run --rm \
   --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp/ebim-home \
+  -e HF_HOME=/cache/huggingface \
+  -v "$TASK2_PI05_ROOT/cache:/cache" \
   -v "$TASK2_PI05_ROOT/datasets:/data/datasets:ro" \
   -v "$TASK2_PI05_ROOT/evidence:/data/evidence" \
   "$PI05_IMAGE" audit-dataset \
@@ -140,13 +150,17 @@ docker run --rm \
 export AUDIT="$TASK2_PI05_ROOT/evidence/task2_fixpos_v1_audit.json"
 export TRAIN_EPISODES="$(jq -r '.split.train | join(",")' "$AUDIT")"
 export HELD_OUT_EPISODES="$(jq -r '.split.held_out | join(",")' "$AUDIT")"
-jq '{audit_pass,formal_training_allowed,split,rollout_constraints}' "$AUDIT"
+jq '{technical_audit_pass,audit_pass,license_evidence,formal_training_allowed,split,rollout_constraints}' "$AUDIT"
 ```
 
 If all 22 episodes pass, the pinned SHA-256 ranking creates 18 train and four
 held-out episodes using seed `20260806`. Otherwise, held-out contains
 `max(2, ceil(20% eligible))`. Fewer than ten train or two held-out episodes is
 smoke-only. Held-out episodes never enter relative statistics or training.
+
+`technical_audit_pass=true` is not permission to train. Formal profiles still
+require both `audit_pass=true` and `formal_training_allowed=true`, including
+verifiable license evidence from the exact pinned revision.
 
 ## Gates and formal training
 

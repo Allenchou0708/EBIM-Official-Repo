@@ -13,7 +13,7 @@ import math
 import re
 import shutil
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +61,47 @@ def _normalise_license(value: object) -> str:
     return str(value or "").strip().lower().replace("_", "-")
 
 
+def _extract_hugging_face_license(
+    card_data: object,
+    tags: object,
+) -> tuple[str | None, str | None]:
+    """Return license metadata declared by the pinned Hub revision.
+
+    A constant in this repository is an expectation, not evidence. Only
+    revision-scoped Hub card data or a Hub license tag may populate the source
+    manifest.
+    """
+
+    payload: Mapping[str, object] | None = None
+    if hasattr(card_data, "to_dict"):
+        candidate = card_data.to_dict()
+        if isinstance(candidate, Mapping):
+            payload = candidate
+    elif isinstance(card_data, Mapping):
+        payload = card_data
+
+    declared = payload.get("license") if payload is not None else None
+    candidates = (
+        declared
+        if isinstance(declared, Sequence)
+        and not isinstance(declared, (str, bytes))
+        else [declared]
+    )
+    for candidate in candidates:
+        normalised = _normalise_license(candidate)
+        if normalised:
+            return normalised, "huggingface_card_data"
+
+    if isinstance(tags, Sequence) and not isinstance(tags, (str, bytes)):
+        for tag in tags:
+            if not isinstance(tag, str) or not tag.startswith("license:"):
+                continue
+            normalised = _normalise_license(tag.partition(":")[2])
+            if normalised:
+                return normalised, "huggingface_tag"
+    return None, None
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -105,6 +146,10 @@ def download_organizer_dataset(
             "Hugging Face resolved an unexpected dataset revision: "
             f"{resolved_revision}"
         )
+    declared_license, license_source = _extract_hugging_face_license(
+        getattr(info, "card_data", None),
+        getattr(info, "tags", None),
+    )
     snapshot_download(
         repo_id=ORGANIZER_DATASET_REPO,
         repo_type="dataset",
@@ -123,7 +168,9 @@ def download_organizer_dataset(
         "repo_id": ORGANIZER_DATASET_REPO,
         "requested_revision": ORGANIZER_DATASET_REVISION,
         "resolved_revision": resolved_revision,
-        "license": ORGANIZER_DATASET_LICENSE,
+        "license": declared_license,
+        "license_source": license_source,
+        "expected_license": ORGANIZER_DATASET_LICENSE,
         "dataset_root": str(destination),
         "token_recorded": False,
     }
@@ -487,6 +534,48 @@ def _read_card_license(dataset_root: Path) -> str | None:
     return _normalise_license(match.group(1)) if match else None
 
 
+def _verify_license_evidence(
+    source: Mapping[str, object],
+    card_license: str | None,
+) -> dict[str, Any]:
+    source_license = _normalise_license(source.get("license")) or None
+    source_license_source = source.get("license_source")
+    source_verified = (
+        source_license == ORGANIZER_DATASET_LICENSE
+        and source_license_source
+        in {"huggingface_card_data", "huggingface_tag"}
+    )
+    errors: list[str] = []
+    if source_license is not None and (
+        source_license != ORGANIZER_DATASET_LICENSE
+    ):
+        errors.append(
+            "source manifest license must be "
+            f"{ORGANIZER_DATASET_LICENSE!r}, got {source_license!r}"
+        )
+
+    card_verified = card_license == ORGANIZER_DATASET_LICENSE
+    if card_license is not None and not card_verified:
+        errors.append(
+            "dataset card license must be "
+            f"{ORGANIZER_DATASET_LICENSE!r}, got {card_license!r}"
+        )
+    verified = source_verified or card_verified
+    if not verified:
+        errors.append(
+            "pinned dataset revision has no verifiable Apache-2.0 license "
+            "in Hugging Face metadata or its dataset card"
+        )
+    return {
+        "source_manifest_license": source_license,
+        "source_manifest_license_source": source_license_source,
+        "source_manifest_verified": source_verified,
+        "dataset_card_verified": card_verified,
+        "verified": verified,
+        "errors": errors,
+    }
+
+
 def audit_organizer_dataset(
     dataset_root: Path,
     *,
@@ -499,7 +588,6 @@ def audit_organizer_dataset(
         else _source_manifest_path(dataset_root)
     )
     structural_errors: list[str] = []
-
     info, contract_errors = validate_dataset_root(dataset_root)
     structural_errors.extend(contract_errors)
     source: dict[str, Any] = {}
@@ -517,17 +605,9 @@ def audit_organizer_dataset(
                 structural_errors.append(
                     f"source manifest {key} must be {expected!r}"
                 )
-        if _normalise_license(source.get("license")) != (
-            ORGANIZER_DATASET_LICENSE
-        ):
-            structural_errors.append("source manifest license mismatch")
-
     card_license = _read_card_license(dataset_root)
-    if card_license != ORGANIZER_DATASET_LICENSE:
-        structural_errors.append(
-            f"dataset card license must be {ORGANIZER_DATASET_LICENSE!r}, "
-            f"got {card_license!r}"
-        )
+    license_evidence = _verify_license_evidence(source, card_license)
+    license_verified = bool(license_evidence["verified"])
 
     records = load_episode_metadata(dataset_root)
     try:
@@ -627,19 +707,24 @@ def audit_organizer_dataset(
         and spine_variance <= FIXED_AXIS_VARIANCE_EPSILON
     )
 
-    audit_pass = not structural_errors
+    technical_audit_pass = not structural_errors
+    audit_pass = technical_audit_pass and license_verified
     report = {
         "schema_version": 1,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "dataset_root": str(dataset_root),
         "dataset_repo_id": ORGANIZER_DATASET_REPO,
         "dataset_revision": ORGANIZER_DATASET_REVISION,
-        "dataset_license": ORGANIZER_DATASET_LICENSE,
+        "dataset_license": (
+            ORGANIZER_DATASET_LICENSE if license_verified else None
+        ),
+        "expected_dataset_license": ORGANIZER_DATASET_LICENSE,
         "source_manifest": str(source_path),
         "source_manifest_sha256": (
             _sha256_file(source_path) if source_path.is_file() else None
         ),
         "dataset_card_license": card_license,
+        "license_evidence": license_evidence,
         "info": {
             "codebase_version": info.get("codebase_version"),
             "fps": info.get("fps"),
@@ -672,6 +757,7 @@ def audit_organizer_dataset(
             ),
         },
         "structural_errors": structural_errors,
+        "technical_audit_pass": technical_audit_pass,
         "audit_pass": audit_pass,
         "formal_training_allowed": audit_pass
         and split["formal_training_allowed"],
