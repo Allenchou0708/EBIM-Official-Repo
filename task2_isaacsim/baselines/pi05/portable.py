@@ -176,9 +176,24 @@ def inspect_gpu() -> dict[str, Any]:
     }
 
 
+def inspect_video_runtime() -> dict[str, Any]:
+    try:
+        from torchcodec.decoders import VideoDecoder
+    except (ImportError, OSError, RuntimeError) as error:
+        raise RuntimeError(
+            "TorchCodec video backend is unavailable; verify FFmpeg and "
+            "the Python shared runtime in the image"
+        ) from error
+    return {
+        "backend": "torchcodec",
+        "decoder": VideoDecoder.__name__,
+    }
+
+
 def doctor(profile_path: Path) -> tuple[dict[str, Any], list[str]]:
     profile = validate_profile(profile_path)
     gpu = inspect_gpu()
+    video_runtime = inspect_video_runtime()
     errors: list[str] = []
     if not gpu["bf16_supported"]:
         errors.append("selected GPU does not support bfloat16")
@@ -196,6 +211,7 @@ def doctor(profile_path: Path) -> tuple[dict[str, Any], list[str]]:
         "mode": mode,
         "formal": profile["_ebim_formal"],
         "gpu": gpu,
+        "video_runtime": video_runtime,
         "lerobot_source_commit": LEROBOT_SOURCE_COMMIT,
         "lerobot_patch_sha256": _sha256_file(PATCH_PATH),
     }, errors

@@ -23,6 +23,7 @@ RUN apt-get update \
         libglib2.0-0 \
         libgl1 \
         libnss-wrapper \
+        libpython3.12t64 \
         python3.12 \
         python3.12-venv \
         tini \
@@ -45,7 +46,9 @@ WORKDIR /opt/ebim
 COPY task2_isaacsim/baselines/__init__.py /opt/ebim/task2_isaacsim/baselines/__init__.py
 COPY task2_isaacsim/baselines/pi05 /opt/ebim/task2_isaacsim/baselines/pi05
 COPY task2_isaacsim/baselines/pi05/docker/entrypoint.sh /usr/local/libexec/ebim-pi05-entrypoint
-RUN python -c "import lerobot; from task2_isaacsim.baselines.pi05.contract import RELATIVE_ACTION_STATE_INDICES; assert len(RELATIVE_ACTION_STATE_INDICES) == 20"
+RUN ffmpeg -version >/dev/null \
+    && python -c "from torchcodec.decoders import VideoDecoder; assert VideoDecoder" \
+    && python -c "import lerobot; from task2_isaacsim.baselines.pi05.contract import RELATIVE_ACTION_STATE_INDICES; assert len(RELATIVE_ACTION_STATE_INDICES) == 20"
 
 ENV PYTHONPATH=/opt/ebim
 ENTRYPOINT ["/usr/bin/tini", "--", "/bin/bash", "/usr/local/libexec/ebim-pi05-entrypoint"]

@@ -8,11 +8,13 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import patch
 
 from task2_isaacsim.baselines.pi05.contract import (
@@ -52,6 +54,7 @@ from task2_isaacsim.baselines.pi05.portable import (
     _require_image_digest,
     _training_metrics,
     deterministic_split,
+    inspect_video_runtime,
     validate_profile,
 )
 from task2_isaacsim.baselines.pi05.relative_dataset import (
@@ -741,6 +744,44 @@ class Pi05ContractTest(unittest.TestCase):
             '"state_indices": getattr(active_cfg, '
             '"relative_action_state_indices", None)',
             patch_text,
+        )
+
+    def test_video_runtime_probe_imports_torchcodec_decoder(self) -> None:
+        torchcodec = ModuleType("torchcodec")
+        decoders = ModuleType("torchcodec.decoders")
+
+        class FakeVideoDecoder:
+            pass
+
+        decoders.VideoDecoder = FakeVideoDecoder
+        with patch.dict(
+            sys.modules,
+            {
+                "torchcodec": torchcodec,
+                "torchcodec.decoders": decoders,
+            },
+        ):
+            self.assertEqual(
+                inspect_video_runtime(),
+                {
+                    "backend": "torchcodec",
+                    "decoder": "FakeVideoDecoder",
+                },
+            )
+
+    def test_image_installs_torchcodec_shared_dependencies(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        dockerfile = (
+            repository_root
+            / "task2_isaacsim"
+            / "baselines"
+            / "pi05"
+            / "docker"
+            / "Dockerfile"
+        ).read_text(encoding="utf-8")
+        self.assertIn("libpython3.12t64", dockerfile)
+        self.assertIn(
+            "from torchcodec.decoders import VideoDecoder", dockerfile
         )
 
 
