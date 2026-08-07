@@ -727,7 +727,7 @@ class Pi05ContractTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn(
-            'rebuild_relative_processors = not cfg.resume and getattr(',
+            "rebuild_relative_processors = not cfg.resume and getattr(",
             patch_text,
         )
         self.assertIn("processor_pretrained_path = None", patch_text)
