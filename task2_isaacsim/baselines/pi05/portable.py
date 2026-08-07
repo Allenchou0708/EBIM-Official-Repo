@@ -89,6 +89,33 @@ def _require_image_digest() -> str:
     return digest
 
 
+def _task2_relative_mapping_override() -> str:
+    """Pin the Task 2 map after PI0.5 pretrained config resolution."""
+
+    mapping = json.dumps(
+        RELATIVE_ACTION_STATE_INDICES,
+        separators=(",", ":"),
+    )
+    return f"--policy.relative_action_state_indices={mapping}"
+
+
+def _build_train_command(
+    profile_path: Path,
+    prepared_root: Path,
+    train_episodes: list[int],
+    training_root: Path,
+) -> list[str]:
+    return [
+        "lerobot-train",
+        f"--config_path={profile_path}",
+        _task2_relative_mapping_override(),
+        f"--dataset.root={prepared_root}",
+        "--dataset.episodes="
+        + json.dumps(train_episodes, separators=(",", ":")),
+        f"--output_dir={training_root}",
+    ]
+
+
 def _profile_path(name_or_path: str) -> Path:
     candidate = Path(name_or_path)
     if candidate.is_file():
@@ -496,14 +523,12 @@ def command_train(args: argparse.Namespace) -> int:
         }
     prepared_root = output_dir / "relative_dataset"
     training_root = output_dir / "training"
-    command = [
-        "lerobot-train",
-        f"--config_path={profile_path}",
-        f"--dataset.root={prepared_root}",
-        "--dataset.episodes="
-        + json.dumps(train_episodes, separators=(",", ":")),
-        f"--output_dir={training_root}",
-    ]
+    command = _build_train_command(
+        profile_path,
+        prepared_root,
+        train_episodes,
+        training_root,
+    )
     for override in args.override:
         if not override.startswith("--"):
             print(f"FAIL: override must begin with --: {override}")

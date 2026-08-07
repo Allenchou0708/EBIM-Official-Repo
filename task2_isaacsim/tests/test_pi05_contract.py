@@ -50,8 +50,10 @@ from task2_isaacsim.baselines.pi05.heldout_evaluation import (
 from task2_isaacsim.baselines.pi05.loss_parity import loss_parity_report
 from task2_isaacsim.baselines.pi05.portable import (
     SOURCE_ROOT,
+    _build_train_command,
     _require_external_output,
     _require_image_digest,
+    _task2_relative_mapping_override,
     _training_metrics,
     deterministic_split,
     inspect_video_runtime,
@@ -438,6 +440,26 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn("freeze_vision_encoder: false", full)
         self.assertIn("use_relative_actions: true", smoke)
         self.assertIn("use_relative_actions: true", full)
+
+    def test_portable_training_pins_task2_relative_mapping(self) -> None:
+        expected = json.dumps(
+            RELATIVE_ACTION_STATE_INDICES,
+            separators=(",", ":"),
+        )
+        self.assertEqual(
+            _task2_relative_mapping_override(),
+            f"--policy.relative_action_state_indices={expected}",
+        )
+        command = _build_train_command(
+            Path("/profiles/expert.yaml"),
+            Path("/output/relative_dataset"),
+            [2, 5],
+            Path("/output/training"),
+        )
+        self.assertIn(
+            f"--policy.relative_action_state_indices={expected}",
+            command,
+        )
 
     def test_full_profile_validation_requires_unfrozen_vision_encoder(
         self,
