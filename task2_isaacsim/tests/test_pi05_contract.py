@@ -33,9 +33,12 @@ from task2_isaacsim.baselines.pi05.contract import (
 )
 from task2_isaacsim.baselines.pi05.dataset_audit import (
     ORGANIZER_DATASET_REVISION,
+    ORGANIZER_USE_AUTHORIZATION_KIND,
+    ORGANIZER_USE_SCOPE,
     SPLIT_SEED,
     _extract_hugging_face_license,
     _verify_license_evidence,
+    _verify_organizer_use_attestation,
     episode_eligibility,
     organizer_split,
 )
@@ -576,6 +579,33 @@ class Pi05ContractTest(unittest.TestCase):
             True,
         )
 
+    def test_organizer_use_attestation_is_pinned_and_hashed(self) -> None:
+        payload = {
+            "schema_version": 1,
+            "authorization_kind": ORGANIZER_USE_AUTHORIZATION_KIND,
+            "dataset_repo_id": "hermanprawiro/task2_fixpos_v1",
+            "dataset_revision": ORGANIZER_DATASET_REVISION,
+            "scope": ORGANIZER_USE_SCOPE,
+            "acknowledged_by": "Allen_HZL",
+            "acknowledged_utc": "2026-08-07T15:30:00+00:00",
+            "statement": "Organizer-provided Task 2 competition data.",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "attestation.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            valid = _verify_organizer_use_attestation(path)
+            self.assertTrue(valid["authorized"])
+            self.assertEqual(len(valid["sha256"]), 64)
+
+            payload["dataset_revision"] = "mutable-main"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            invalid = _verify_organizer_use_attestation(path)
+            self.assertFalse(invalid["authorized"])
+            self.assertIn(
+                "attestation dataset_revision must be",
+                invalid["errors"][0],
+            )
+
     def test_heldout_frame_sample_is_deterministic(self) -> None:
         self.assertEqual(deterministic_frame_indices(5, 3), [0, 2, 4])
         self.assertEqual(deterministic_frame_indices(3, 10), [0, 1, 2])
@@ -668,6 +698,7 @@ class Pi05ContractTest(unittest.TestCase):
             audit_section.count("$TASK2_PI05_ROOT/cache:/cache"),
             2,
         )
+        self.assertIn("--organizer-use-attestation", audit_section)
         self.assertNotIn(
             "$TASK2_PI05_ROOT/cache/huggingface:/cache/huggingface", readme
         )

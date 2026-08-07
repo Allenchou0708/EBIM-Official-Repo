@@ -724,6 +724,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit_parser = subparsers.add_parser("audit-dataset")
     audit_parser.add_argument("--dataset-root", type=Path, required=True)
     audit_parser.add_argument("--source-manifest", type=Path)
+    audit_parser.add_argument("--organizer-use-attestation", type=Path)
     audit_parser.add_argument("--output", type=Path, required=True)
 
     split_parser = subparsers.add_parser("split")
@@ -823,6 +824,7 @@ def main() -> int:
             report = audit_organizer_dataset(
                 dataset_root,
                 source_manifest=args.source_manifest,
+                organizer_use_attestation=args.organizer_use_attestation,
             )
             _write_json(output, report)
         except (OSError, RuntimeError, ValueError) as error:

@@ -22,10 +22,11 @@ post-baseline experiments.
 
 As verified on 2026-08-07, this pinned dataset revision contains no
 `README.md`, its Hugging Face `card_data` is null, and its tags do not declare
-a license. The 22-episode technical audit may therefore pass while formal
-training remains blocked. Do not treat the repository's expected
-`apache-2.0` value as license evidence; obtain an organizer clarification or
-a new pinned revision with explicit license metadata first.
+a license. Do not treat the repository's expected `apache-2.0` value as
+license evidence. The team confirmed that the dataset was provided by the
+EBiM organizers for Task 2 competition use, so formal runs require a separate
+checksum-backed organizer-use attestation. That attestation authorizes only
+the recorded competition scope; it does not invent a dataset license.
 
 The OCI image clones the pinned LeRobot source and applies
 `patches/lerobot-v0.6.0-task2-relative-map.patch`. LeRobot's original
@@ -136,6 +137,22 @@ success metadata, stale/encoder drops, orientation, IoU, and mobile-axis
 variance:
 
 ```bash
+export ORGANIZER_USE_ATTESTATION="$TASK2_PI05_ROOT/evidence/organizer_use_attestation.json"
+export ACKNOWLEDGED_UTC="$(date --iso-8601=seconds)"
+
+tee "$ORGANIZER_USE_ATTESTATION" >/dev/null <<EOF
+{
+  "schema_version": 1,
+  "authorization_kind": "organizer_provided_competition_data",
+  "dataset_repo_id": "hermanprawiro/task2_fixpos_v1",
+  "dataset_revision": "1a7253a776b9a05d866da297789c456c2f0ed9f8",
+  "scope": "ebim_task2_training_and_evaluation",
+  "acknowledged_by": "Allen_HZL",
+  "acknowledged_utc": "$ACKNOWLEDGED_UTC",
+  "statement": "The team confirms this dataset was provided by the EBiM organizers for Task 2 competition training and evaluation."
+}
+EOF
+
 docker run --rm \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp/ebim-home \
@@ -145,12 +162,13 @@ docker run --rm \
   -v "$TASK2_PI05_ROOT/evidence:/data/evidence" \
   "$PI05_IMAGE" audit-dataset \
     --dataset-root /data/datasets/task2_fixpos_v1_1a7253a \
+    --organizer-use-attestation /data/evidence/organizer_use_attestation.json \
     --output /data/evidence/task2_fixpos_v1_audit.json
 
 export AUDIT="$TASK2_PI05_ROOT/evidence/task2_fixpos_v1_audit.json"
 export TRAIN_EPISODES="$(jq -r '.split.train | join(",")' "$AUDIT")"
 export HELD_OUT_EPISODES="$(jq -r '.split.held_out | join(",")' "$AUDIT")"
-jq '{technical_audit_pass,audit_pass,license_evidence,formal_training_allowed,split,rollout_constraints}' "$AUDIT"
+jq '{technical_audit_pass,audit_pass,license_evidence,organizer_use_attestation,dataset_use_authorized,formal_training_allowed,split,rollout_constraints}' "$AUDIT"
 ```
 
 If all 22 episodes pass, the pinned SHA-256 ranking creates 18 train and four
@@ -158,9 +176,10 @@ held-out episodes using seed `20260806`. Otherwise, held-out contains
 `max(2, ceil(20% eligible))`. Fewer than ten train or two held-out episodes is
 smoke-only. Held-out episodes never enter relative statistics or training.
 
-`technical_audit_pass=true` is not permission to train. Formal profiles still
-require both `audit_pass=true` and `formal_training_allowed=true`, including
-verifiable license evidence from the exact pinned revision.
+`technical_audit_pass=true` alone is not permission to train. Formal profiles
+still require both `audit_pass=true` and `formal_training_allowed=true`, backed
+by either verifiable license evidence from the exact pinned revision or the
+validated organizer-use attestation above.
 
 ## Gates and formal training
 

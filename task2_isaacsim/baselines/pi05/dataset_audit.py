@@ -31,6 +31,8 @@ from .contract import (
 ORGANIZER_DATASET_REPO = "hermanprawiro/task2_fixpos_v1"
 ORGANIZER_DATASET_REVISION = "1a7253a776b9a05d866da297789c456c2f0ed9f8"
 ORGANIZER_DATASET_LICENSE = "apache-2.0"
+ORGANIZER_USE_AUTHORIZATION_KIND = "organizer_provided_competition_data"
+ORGANIZER_USE_SCOPE = "ebim_task2_training_and_evaluation"
 ORGANIZER_EXPECTED_EPISODES = 22
 ORGANIZER_EXPECTED_FRAMES = 20_869
 SPLIT_SEED = 20260806
@@ -576,10 +578,67 @@ def _verify_license_evidence(
     }
 
 
+def _verify_organizer_use_attestation(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {
+            "provided": False,
+            "authorized": False,
+            "path": None,
+            "sha256": None,
+            "errors": [],
+        }
+
+    resolved = path.resolve()
+    payload = _read_json(resolved)
+    errors: list[str] = []
+    expected = {
+        "schema_version": 1,
+        "authorization_kind": ORGANIZER_USE_AUTHORIZATION_KIND,
+        "dataset_repo_id": ORGANIZER_DATASET_REPO,
+        "dataset_revision": ORGANIZER_DATASET_REVISION,
+        "scope": ORGANIZER_USE_SCOPE,
+    }
+    for key, value in expected.items():
+        if payload.get(key) != value:
+            errors.append(f"attestation {key} must be {value!r}")
+
+    for key in ("acknowledged_by", "acknowledged_utc", "statement"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"attestation {key} must be a non-empty string")
+    acknowledged_utc = payload.get("acknowledged_utc")
+    if isinstance(acknowledged_utc, str) and acknowledged_utc.strip():
+        try:
+            parsed = datetime.fromisoformat(
+                acknowledged_utc.strip().replace("Z", "+00:00")
+            )
+        except ValueError:
+            errors.append("attestation acknowledged_utc must be ISO 8601")
+        else:
+            if parsed.tzinfo is None:
+                errors.append(
+                    "attestation acknowledged_utc must include a timezone"
+                )
+
+    return {
+        "provided": True,
+        "authorized": not errors,
+        "path": str(resolved),
+        "sha256": _sha256_file(resolved),
+        "authorization_kind": payload.get("authorization_kind"),
+        "scope": payload.get("scope"),
+        "acknowledged_by": payload.get("acknowledged_by"),
+        "acknowledged_utc": payload.get("acknowledged_utc"),
+        "statement": payload.get("statement"),
+        "errors": errors,
+    }
+
+
 def audit_organizer_dataset(
     dataset_root: Path,
     *,
     source_manifest: Path | None = None,
+    organizer_use_attestation: Path | None = None,
 ) -> dict[str, Any]:
     dataset_root = dataset_root.resolve()
     source_path = (
@@ -608,6 +667,12 @@ def audit_organizer_dataset(
     card_license = _read_card_license(dataset_root)
     license_evidence = _verify_license_evidence(source, card_license)
     license_verified = bool(license_evidence["verified"])
+    use_attestation = _verify_organizer_use_attestation(
+        organizer_use_attestation
+    )
+    dataset_use_authorized = license_verified or bool(
+        use_attestation["authorized"]
+    )
 
     records = load_episode_metadata(dataset_root)
     try:
@@ -708,7 +773,7 @@ def audit_organizer_dataset(
     )
 
     technical_audit_pass = not structural_errors
-    audit_pass = technical_audit_pass and license_verified
+    audit_pass = technical_audit_pass and dataset_use_authorized
     report = {
         "schema_version": 1,
         "created_utc": datetime.now(timezone.utc).isoformat(),
@@ -725,6 +790,8 @@ def audit_organizer_dataset(
         ),
         "dataset_card_license": card_license,
         "license_evidence": license_evidence,
+        "organizer_use_attestation": use_attestation,
+        "dataset_use_authorized": dataset_use_authorized,
         "info": {
             "codebase_version": info.get("codebase_version"),
             "fps": info.get("fps"),
@@ -774,6 +841,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit_parser = subparsers.add_parser("audit")
     audit_parser.add_argument("--dataset-root", type=Path, required=True)
     audit_parser.add_argument("--source-manifest", type=Path)
+    audit_parser.add_argument("--organizer-use-attestation", type=Path)
     audit_parser.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -795,6 +863,7 @@ def main() -> int:
         report = audit_organizer_dataset(
             dataset_root,
             source_manifest=args.source_manifest,
+            organizer_use_attestation=args.organizer_use_attestation,
         )
         _write_json(output, report)
     except (OSError, RuntimeError, ValueError) as error:
