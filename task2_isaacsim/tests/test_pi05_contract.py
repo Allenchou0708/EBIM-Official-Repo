@@ -732,12 +732,14 @@ class Pi05ContractTest(unittest.TestCase):
         )
         self.assertIn("processor_pretrained_path = None", patch_text)
         self.assertIn(
-            '"PI0.5 canonical preprocessor no longer begins with the rename step"',
+            '"PI0.5 canonical preprocessor no longer begins with the '
+            'rename step"',
             patch_text,
         )
         self.assertIn("rename_step.rename_map = cfg.rename_map", patch_text)
         self.assertIn(
-            '"state_indices": getattr(active_cfg, "relative_action_state_indices", None)',
+            '"state_indices": getattr(active_cfg, '
+            '"relative_action_state_indices", None)',
             patch_text,
         )
 
