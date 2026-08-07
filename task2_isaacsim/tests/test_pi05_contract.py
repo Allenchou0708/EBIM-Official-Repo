@@ -715,6 +715,32 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn('"resume_manifest.json"', portable)
         self.assertIn('"resumed_checkpoint_hashes"', portable)
 
+    def test_relative_training_rebuilds_missing_base_processors(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        patch_text = (
+            repository_root
+            / "task2_isaacsim"
+            / "baselines"
+            / "pi05"
+            / "patches"
+            / "lerobot-v0.6.0-task2-relative-map.patch"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'rebuild_relative_processors = not cfg.resume and getattr(',
+            patch_text,
+        )
+        self.assertIn("processor_pretrained_path = None", patch_text)
+        self.assertIn(
+            '"PI0.5 canonical preprocessor no longer begins with the rename step"',
+            patch_text,
+        )
+        self.assertIn("rename_step.rename_map = cfg.rename_map", patch_text)
+        self.assertIn(
+            '"state_indices": getattr(active_cfg, "relative_action_state_indices", None)',
+            patch_text,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

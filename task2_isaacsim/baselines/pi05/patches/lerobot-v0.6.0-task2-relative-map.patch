@@ -177,12 +177,49 @@ index cd3d083..d21fe6e 100644
  
      def get_config(self) -> dict[str, Any]:
 diff --git a/src/lerobot/scripts/lerobot_train.py b/src/lerobot/scripts/lerobot_train.py
-index 1e7fc8e..98c108a 100644
+index 1e7fc8e..a4bf429 100644
 --- a/src/lerobot/scripts/lerobot_train.py
 +++ b/src/lerobot/scripts/lerobot_train.py
-@@ -340,4 +340,5 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
+@@ -314,6 +314,14 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
+     active_cfg = cfg.trainable_config
+     processor_pretrained_path = active_cfg.pretrained_path
+ 
++    # The stock pi05_base processor configs predate the relative-action steps,
++    # so treating those steps as overrides raises before training starts. Build
++    # the current canonical PI0.5 pipeline for a new relative-action run; resume
++    # still reloads the processors saved with our checkpoint.
++    rebuild_relative_processors = not cfg.resume and getattr(active_cfg, "use_relative_actions", False)
++    if rebuild_relative_processors:
++        processor_pretrained_path = None
++
+     processor_kwargs = {}
+     if (processor_pretrained_path and not cfg.resume) or not processor_pretrained_path:
+         processor_kwargs["dataset_stats"] = dataset.meta.stats
+@@ -340,11 +348,12 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
+             preprocessor_overrides["relative_actions_processor"] = {
                  "enabled": True,
                  "exclude_joints": getattr(active_cfg, "relative_exclude_joints", []),
                  "action_names": getattr(active_cfg, "action_feature_names", None),
 +                "state_indices": getattr(active_cfg, "relative_action_state_indices", None),
              }
+             postprocessor_overrides["absolute_actions_processor"] = {"enabled": True}
+         processor_kwargs["preprocessor_overrides"] = preprocessor_overrides
+         processor_kwargs["postprocessor_overrides"] = postprocessor_overrides
+ 
+     if cfg.is_reward_model_training:
+         preprocessor, postprocessor = make_reward_pre_post_processors(
+@@ -360,6 +369,14 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
+             pretrained_revision=getattr(cfg.policy, "pretrained_revision", None),
+             **processor_kwargs,
+         )
++        if rebuild_relative_processors:
++            rename_step = preprocessor.steps[0]
++            if rename_step.__class__.__name__ != "RenameObservationsProcessorStep":
++                raise RuntimeError(
++                    "PI0.5 canonical preprocessor no longer begins with the rename step"
++                )
++            rename_step.rename_map = cfg.rename_map
++
+ 
+     if is_main_process:
+         logging.info("Creating optimizer and scheduler")
