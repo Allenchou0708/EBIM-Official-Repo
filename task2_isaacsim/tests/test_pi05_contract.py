@@ -53,7 +53,6 @@ from task2_isaacsim.baselines.pi05.portable import (
     _build_train_command,
     _require_external_output,
     _require_image_digest,
-    _task2_relative_mapping_override,
     _training_metrics,
     deterministic_split,
     inspect_video_runtime,
@@ -440,31 +439,55 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn("freeze_vision_encoder: false", full)
         self.assertIn("use_relative_actions: true", smoke)
         self.assertIn("use_relative_actions: true", full)
+        self.assertIn("task2_relative_action_state_indices:", smoke)
+        self.assertIn("task2_relative_action_state_indices:", expert)
+        self.assertIn("task2_relative_action_state_indices:", full)
 
     def test_portable_training_pins_task2_relative_mapping(self) -> None:
-        expected = json.dumps(
-            RELATIVE_ACTION_STATE_INDICES,
-            separators=(",", ":"),
-        )
-        self.assertEqual(
-            _task2_relative_mapping_override(),
-            f"--policy.relative_action_state_indices={expected}",
-        )
         command = _build_train_command(
             Path("/profiles/expert.yaml"),
             Path("/output/relative_dataset"),
             [2, 5],
             Path("/output/training"),
         )
-        self.assertIn(
-            f"--policy.relative_action_state_indices={expected}",
-            command,
+        self.assertFalse(
+            any(
+                item.startswith("--policy.relative_action_state_indices=")
+                for item in command
+            )
+        )
+        parsed_profile = {
+            "task2_relative_action_state_indices": list(
+                RELATIVE_ACTION_STATE_INDICES
+            ),
+            "policy": {
+                "dtype": "bfloat16",
+                "gradient_checkpointing": True,
+                "freeze_vision_encoder": True,
+                "train_expert_only": True,
+                "use_relative_actions": True,
+                "max_state_dim": 37,
+                "max_action_dim": 32,
+                "push_to_hub": False,
+            },
+        }
+        with patch(
+            "task2_isaacsim.baselines.pi05.portable._load_yaml",
+            return_value=parsed_profile,
+        ):
+            profile = validate_profile(Path("expert_finetune.yaml"))
+        self.assertEqual(
+            profile["task2_relative_action_state_indices"],
+            list(RELATIVE_ACTION_STATE_INDICES),
         )
 
     def test_full_profile_validation_requires_unfrozen_vision_encoder(
         self,
     ) -> None:
         profile = {
+            "task2_relative_action_state_indices": list(
+                RELATIVE_ACTION_STATE_INDICES
+            ),
             "policy": {
                 "dtype": "bfloat16",
                 "gradient_checkpointing": True,
@@ -472,12 +495,9 @@ class Pi05ContractTest(unittest.TestCase):
                 "use_relative_actions": True,
                 "max_state_dim": 37,
                 "max_action_dim": 32,
-                "relative_action_state_indices": list(
-                    RELATIVE_ACTION_STATE_INDICES
-                ),
                 "push_to_hub": False,
                 "train_expert_only": False,
-            }
+            },
         }
         with patch(
             "task2_isaacsim.baselines.pi05.portable._load_yaml",
@@ -765,6 +785,14 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn(
             '"state_indices": getattr(active_cfg, '
             '"relative_action_state_indices", None)',
+            patch_text,
+        )
+        self.assertIn(
+            "task2_relative_action_state_indices: list[int | None] | None",
+            patch_text,
+        )
+        self.assertIn(
+            "self.policy.relative_action_state_indices = list(",
             patch_text,
         )
 

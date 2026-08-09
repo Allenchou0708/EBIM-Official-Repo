@@ -176,6 +176,35 @@ index cd3d083..d21fe6e 100644
          return new_transition
  
      def get_config(self) -> dict[str, Any]:
+diff --git a/src/lerobot/configs/train.py b/src/lerobot/configs/train.py
+index 5619d73..b730302 100644
+--- a/src/lerobot/configs/train.py
++++ b/src/lerobot/configs/train.py
+@@ -80,6 +80,8 @@ class TrainPipelineConfig(HubMixin):
+     env: envs.EnvConfig | None = None
+     policy: PreTrainedConfig | None = None
+     reward_model: RewardModelConfig | None = None
++    # Task 2 contract applied only after the pretrained PI0.5 config resolves.
++    task2_relative_action_state_indices: list[int | None] | None = None
+     # Set `dir` to where you would like to save all of the run outputs. If you run another training session
+     # with the same value for `dir` its contents will be overwritten unless you set `resume` to true.
+     output_dir: Path | None = None
+@@ -214,6 +216,15 @@ class TrainPipelineConfig(HubMixin):
+     def validate(self) -> None:
+         self._resolve_pretrained_from_cli()
+ 
++        if self.task2_relative_action_state_indices is not None:
++            if self.policy is None or not hasattr(self.policy, "relative_action_state_indices"):
++                raise ValueError(
++                    "task2_relative_action_state_indices requires a PI0.5 policy"
++                )
++            self.policy.relative_action_state_indices = list(
++                self.task2_relative_action_state_indices
++            )
++
+         if self.policy is None and self.reward_model is None:
+             raise ValueError(
+                 "Neither policy nor reward_model is configured. "
 diff --git a/src/lerobot/scripts/lerobot_train.py b/src/lerobot/scripts/lerobot_train.py
 index 1e7fc8e..a4bf429 100644
 --- a/src/lerobot/scripts/lerobot_train.py

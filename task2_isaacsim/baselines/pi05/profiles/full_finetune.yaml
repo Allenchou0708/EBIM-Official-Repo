@@ -17,11 +17,11 @@ policy:
   train_expert_only: false
   freeze_vision_encoder: false
   use_relative_actions: true
-  relative_action_state_indices:
-    [null, null, null, 14, 15, 16, 17, 18, 19, 20,
-     21, 22, 23, 24, 25, 26, 27, null, null, 28]
   compile_model: false
   push_to_hub: false
+task2_relative_action_state_indices:
+  [null, null, null, 14, 15, 16, 17, 18, 19, 20,
+   21, 22, 23, 24, 25, 26, 27, null, null, 28]
 rename_map:
   observation.images.head: observation.images.base_0_rgb
   observation.images.wrist_left: observation.images.left_wrist_0_rgb

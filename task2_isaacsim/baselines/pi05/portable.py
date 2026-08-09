@@ -23,6 +23,7 @@ if __package__ in (None, ""):
 from task2_isaacsim.baselines.pi05.contract import (  # noqa: E402
     ACTION_SIZE,
     PI05_ACTION_SIZE,
+    PI05_MODEL_REVISION,
     RELATIVE_ACTION_STATE_INDICES,
     to_absolute_action,
 )
@@ -89,16 +90,6 @@ def _require_image_digest() -> str:
     return digest
 
 
-def _task2_relative_mapping_override() -> str:
-    """Pin the Task 2 map after PI0.5 pretrained config resolution."""
-
-    mapping = json.dumps(
-        RELATIVE_ACTION_STATE_INDICES,
-        separators=(",", ":"),
-    )
-    return f"--policy.relative_action_state_indices={mapping}"
-
-
 def _build_train_command(
     profile_path: Path,
     prepared_root: Path,
@@ -108,7 +99,6 @@ def _build_train_command(
     return [
         "lerobot-train",
         f"--config_path={profile_path}",
-        _task2_relative_mapping_override(),
         f"--dataset.root={prepared_root}",
         "--dataset.episodes="
         + json.dumps(train_episodes, separators=(",", ":")),
@@ -176,9 +166,10 @@ def validate_profile(path: Path) -> dict[str, Any]:
     for key, value in required.items():
         if policy.get(key) != value:
             raise ValueError(f"profile.policy.{key} must be {value!r}")
-    if policy.get("relative_action_state_indices") != expected_mapping:
+    if profile.get("task2_relative_action_state_indices") != expected_mapping:
         raise ValueError(
-            "profile uses the wrong Task 2 relative action mapping"
+            "profile.task2_relative_action_state_indices uses the wrong "
+            "Task 2 relative action mapping"
         )
     if policy.get("push_to_hub") is not False:
         raise ValueError("profile must keep policy.push_to_hub=false")
@@ -214,6 +205,71 @@ def inspect_video_runtime() -> dict[str, Any]:
     return {
         "backend": "torchcodec",
         "decoder": VideoDecoder.__name__,
+    }
+
+
+def parser_integration_gate(profile_path: Path) -> dict[str, Any]:
+    """Parse the formal config through LeRobot/Draccus without training."""
+
+    from lerobot.configs import parser as lerobot_parser
+    from lerobot.configs.train import TrainPipelineConfig
+    from lerobot.policies.pi05.configuration_pi05 import PI05Config
+    from lerobot.processor import RelativeActionsProcessorStep
+
+    # Importing the concrete config registers the ``pi05`` Draccus choice,
+    # matching the registration performed by the real training entry point.
+    assert PI05Config
+
+    def capture_config(cfg: Any) -> Any:
+        return cfg
+
+    # This module postpones annotations, while LeRobot's parser wrapper expects
+    # the concrete config class in ``__annotations__``.
+    capture_config.__annotations__["cfg"] = TrainPipelineConfig
+    wrapped_capture = lerobot_parser.wrap()(capture_config)
+    previous_argv = sys.argv
+    try:
+        sys.argv = [
+            "ebim-pi05-parser-gate",
+            f"--config_path={profile_path}",
+        ]
+        cfg = wrapped_capture()
+    finally:
+        sys.argv = previous_argv
+
+    cfg.validate()
+    active_cfg = cfg.trainable_config
+    mapping = getattr(active_cfg, "relative_action_state_indices", None)
+    processor = RelativeActionsProcessorStep(
+        enabled=active_cfg.use_relative_actions,
+        exclude_joints=getattr(active_cfg, "relative_exclude_joints", []),
+        action_names=getattr(active_cfg, "action_feature_names", None),
+        state_indices=mapping,
+    )
+    processor_mapping = processor.get_config().get("state_indices")
+    expected = list(RELATIVE_ACTION_STATE_INDICES)
+    errors = []
+    if list(mapping or []) != expected:
+        errors.append("active PI0.5 config did not receive the Task 2 mapping")
+    if list(processor_mapping or []) != expected:
+        errors.append("relative processor did not receive the Task 2 mapping")
+    if active_cfg.pretrained_revision != PI05_MODEL_REVISION:
+        errors.append("pretrained PI0.5 revision drifted")
+    if active_cfg.train_expert_only is not True:
+        errors.append("train_expert_only must be true")
+    if active_cfg.freeze_vision_encoder is not True:
+        errors.append("freeze_vision_encoder must be true")
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    return {
+        "parser": "lerobot.configs.parser.wrap/draccus",
+        "policy_type": active_cfg.type,
+        "pretrained_path": str(active_cfg.pretrained_path),
+        "pretrained_revision": active_cfg.pretrained_revision,
+        "train_expert_only": active_cfg.train_expert_only,
+        "freeze_vision_encoder": active_cfg.freeze_vision_encoder,
+        "relative_action_state_indices": list(mapping),
+        "processor_state_indices": list(processor_mapping),
     }
 
 
@@ -758,6 +814,9 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser = subparsers.add_parser("doctor")
     doctor_parser.add_argument("--profile", default="smoke")
 
+    parser_gate_parser = subparsers.add_parser("parser-gate")
+    parser_gate_parser.add_argument("--profile", default="expert")
+
     download_parser = subparsers.add_parser("download-organizer")
     download_parser.add_argument("--destination", type=Path, required=True)
     download_parser.add_argument("--source-manifest", type=Path)
@@ -844,6 +903,17 @@ def main() -> int:
         for error in errors:
             print(f"FAIL: {error}")
         return 2 if errors else 0
+    if args.command == "parser-gate":
+        try:
+            profile_path = _profile_path(args.profile)
+            validate_profile(profile_path)
+            report = parser_integration_gate(profile_path)
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"FAIL: parser integration: {error}")
+            return 3
+        print("PASS: parser integration")
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
     if args.command == "download-organizer":
         try:
             destination = _require_external_output(args.destination)
