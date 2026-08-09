@@ -1,0 +1,9 @@
+# Copyright (c) 2026 The EBiM Benchmark Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "EBiM Local-Lab Workflow"
+  short_description: "Coordinate local planning and lab execution"
+  default_prompt: "Use $ebim-local-lab-workflow to coordinate this EBiM task between the local planning machine and the lab execution machine."
+policy:
+  allow_implicit_invocation: true
