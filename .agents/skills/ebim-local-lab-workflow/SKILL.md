@@ -14,6 +14,18 @@ Use one owner for each kind of work:
 
 Do not shuttle an unverified patch back to the local machine for a second implementation or review cycle. Keep runtime-dependent work on the lab machine from first edit through final push.
 
+## Competition-Speed Policy
+
+Optimize for finishing a working robotics competition entry before the deadline. This is not a security-hardening or adversarial network-defense project.
+
+- Do not add speculative guards, redundant validations, generalized abstractions, or failure branches without evidence that they address a current competition blocker.
+- Prefer the smallest direct implementation that can be tested in the simulator. Reuse official interfaces and existing repository behavior.
+- Keep only essential physical safety: shadow-before-publish, no unintended base/spine command, bounded actuator commands, emergency stop, and publisher-contention checks when commands can move the robot.
+- Do not turn ordinary file, configuration, or provenance handling into a security protocol. A Git commit, dataset revision, image digest, or checkpoint path is normally sufficient identification.
+- Do not calculate or report SHA-256 hashes by default. Use a checksum only when the user explicitly requests it, corruption is suspected, or a submission/download interface specifically requires integrity verification. Never produce several equivalent hashes for the same run.
+- Use one minimal smoke test that exercises the changed path. Add a second targeted test only for a distinct high-risk interface. Do not run broad suites, repeated resume tests, clean-clone rehearsals, or GitHub Actions during iteration unless the change reaches a release/submission boundary or a failure makes them necessary.
+- Stop expanding infrastructure once the current gate is measurable. Move quickly to simulator evidence and task success.
+
 ## Select the Role
 
 Determine the role from the current environment and the requested work:
@@ -47,7 +59,7 @@ Define the outcome, not a brittle command transcript. Include:
 - relevant dataset, cache, output, checkpoint, and evidence paths;
 - allowed files or interfaces and explicit exclusions;
 - reproduction signal or known failure;
-- required runtime gates and Definition of Done;
+- the smallest decisive runtime gate and Definition of Done;
 - evidence the lab must return;
 - stop conditions and decisions that require user approval.
 
@@ -57,7 +69,7 @@ Let the lab executor inspect the repository and choose the concrete debug steps.
 
 Treat the lab executor as the code owner for the handoff. Do not independently recreate its patch, rerun GPU/simulator tests locally, or trigger intermediate GitHub Actions.
 
-Accept the handoff only when it reports the final commit, clean working tree, required gates, experiment evidence, and pushed remote ref. If CI fails, return ownership to the lab executor for the minimal correction and final re-push.
+Accept the handoff when it reports the final commit, intended diff, the agreed minimal gate, experiment evidence, and pushed remote ref. Require CI only when it is already part of the release path or the user asks for it. If required CI fails, return ownership to the lab executor for the minimal correction and final re-push.
 
 ### 4. Interpret and close the notes
 
@@ -67,7 +79,7 @@ Check that the returned evidence satisfies the Definition of Done. Update HOME a
 - branch and pushed ref;
 - concise diff scope;
 - pass/fail gates and key metrics;
-- dataset/image/checkpoint revisions and checksums when relevant;
+- dataset/image/checkpoint identifiers needed to reproduce the result;
 - limitations, decision, and one next action.
 
 Do not copy the full terminal output. Distinguish code-pipeline evidence from task-success evidence.
@@ -76,12 +88,13 @@ Do not copy the full terminal output. Distinguish code-pipeline evidence from ta
 
 ### 1. Establish a reproducible baseline
 
-Read the local handoff, repository `STATUS.md`, relevant participant documentation, and existing local evidence before editing. Record:
+Read the local handoff, repository `STATUS.md`, relevant participant documentation, and existing local evidence before editing. Record only what is needed to avoid working on the wrong code or data:
 
-- repository root, current branch, HEAD, upstream/fork heads, ahead/behind counts, and working tree;
-- Docker image or environment revision;
-- dataset revision and source metadata;
-- GPU/runtime information when relevant.
+- repository root, current branch, HEAD, and working tree;
+- Docker image/environment and dataset/checkpoint paths used by the run;
+- GPU/runtime information only when it can explain the current failure.
+
+Do not repeatedly fetch every remote, print long commit graphs, inventory the whole machine, or re-verify unchanged data on every iteration.
 
 Preserve unrelated user changes. Never add datasets, model weights, checkpoints, caches, generated outputs, or full logs to the competition repository.
 
@@ -91,27 +104,25 @@ For the current Task 2 PI0.5 workflow, keep bulk data under the HDD root (normal
 
 Create or use the handoff branch and keep iterations local. Reproduce the failure, make the smallest coherent fix, and review the resulting diff on the lab machine.
 
-Run targeted tests first, then the complete release gates named in the handoff. Typical gates include:
+Run the smallest test that can disprove the fix. A normal debug cycle is: reproduce once, patch, run one focused smoke, then run the simulator or training gate that matters. Possible targeted gates include:
 
-- parser/config integration;
-- focused unit tests and the full relevant suite;
-- patch apply check or compile check;
-- `git diff --check` and repository pre-commit hooks;
-- local Docker image build and runtime doctor;
-- one-step training, checkpoint reload, and resume;
-- simulator/evaluator regression when the change affects live execution.
+- one parser/config or focused unit test;
+- one-step training only when the training path changed;
+- checkpoint load/inference only when serialization or inference changed;
+- simulator/evaluator smoke when live execution changed;
+- full pre-commit or broader suites only immediately before a release/submission push, or when requested.
 
-Keep full logs and experiment artifacts in the HDD evidence/output directories. Record hashes for material manifests, checkpoints, patches, and immutable images.
+Keep useful logs and experiment artifacts in the HDD evidence/output directories. Do not preserve duplicate logs, failed scratch outputs, or routine hashes unless they are needed to diagnose the result.
 
 ### 3. Commit and push from the lab
 
 The lab executor owns completion of the code change:
 
-1. Confirm all required gates pass and the working tree contains only intended source changes.
+1. Confirm the agreed minimal gate passes and the working tree contains only intended source changes.
 2. Run the final code review and inspect the staged diff.
 3. Create or amend the final commit with the configured repository identity.
 4. Push the completed branch to the collaboration fork once the local result is ready.
-5. Check the pushed ref and any required CI result.
+5. Check the pushed ref. Check CI only when required for this boundary.
 
 Avoid micro-pushes during debugging. If CI finds a real issue, fix and retest it on the lab machine, then push the correction. Use force-with-lease only on a private feature branch when rewriting it is explicitly acceptable.
 
@@ -124,13 +135,10 @@ Outcome:
 Repository / branch / base / final commit:
 Remote ref and push result:
 Working tree:
-Diff stat and changed interfaces:
-Tests and runtime gates:
-Image tag, ID, and digest:
-Dataset revision and split:
-Key metrics:
-HDD evidence, output, and checkpoint paths:
-Material SHA-256 values:
+Changed interfaces:
+Minimal smoke/runtime gate:
+Dataset, image, checkpoint, and output identifiers actually used:
+Key result or failure metric:
 Known limitations:
 Recommended next action:
 ```
@@ -140,6 +148,6 @@ Include failure evidence only when it explains a decision. Do not paste complete
 ## Completion Rules
 
 - A local handoff is complete when the lab has an unambiguous objective and measurable Definition of Done.
-- A lab implementation is complete only after review, tests, final commit, push, and compact evidence return.
+- A lab implementation is complete after a focused review, the agreed minimal gate, final commit, push, and compact evidence return. Do not delay simulator progress for optional hardening.
 - A project cycle is complete only after the local coordinator interprets the evidence and updates the single cross-day next action.
 - If a required gate cannot run, report the exact blocker and last passing gate; do not label the work complete.
