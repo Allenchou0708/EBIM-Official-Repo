@@ -282,6 +282,48 @@ spine is held at the dataset median. Closed-loop publication requires a
 separate reviewed runner and a five-reset gate of at least 3/5 with correct
 orientation and IoU greater than zero.
 
+## Live simulator runner
+
+The reviewed live path is in `live/`. It derives a ROS Jazzy image from the
+immutable training digest, subscribes only to the three robot cameras and the
+official 37-D state sources, and loads the checkpoint's saved pre/post
+processors. The postprocessor performs the relative-to-absolute inverse once;
+the runner does not repeat that transform.
+
+The default is shadow mode and creates no command publishers. Simulator
+publication requires `--arm-simulator --confirm-manual-staging` and is limited
+to the official left/right arm and gripper topics. Effective base velocity is
+always zero and the spine holds its current measured position; the runner has
+no base or spine publisher. Every reset clears image/action state and requires
+the configurable pose/settle gate again.
+
+Build and run from the repository root:
+
+```bash
+docker build \
+  -f task2_isaacsim/baselines/pi05/live/docker/Dockerfile \
+  -t ebim-task2-pi05-live:local .
+
+task2_isaacsim/baselines/pi05/live/run_live_runner.sh \
+  --base-target 0 0 0 \
+  --base-coordinate-frame room_reset_relative_odom \
+  --confirm-manual-staging \
+  --max-decisions 20
+```
+
+The example target is valid only when the checksum-backed organizer extraction
+report identifies state indices 31:34 as reset-relative odometry and the room
+scene is at its reproducible reset pose. Do not treat it as a table/world
+transform. Add `--arm-simulator` only after a passing shadow run, operator
+staging, teleop shutdown, and zero command-topic publisher counts.
+
+For a headless room scene, `live/manual_stage_base.py` provides a bounded
+operator pulse on `/pedal/state` and always ends with repeated `NONE` messages.
+Run it with Isaac Sim's bundled ROS environment, then stop the helper and
+verify the odometry settle gate before starting the live runner. Spine height
+must be checked against state index 28 in the train-only extraction report;
+the live runner only holds the measured value and never publishes spine.
+
 ## VR dataset and Apptainer
 
 Teammate VR data is audited independently. It may enter `mixed_v1` only if the

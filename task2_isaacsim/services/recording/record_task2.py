@@ -83,6 +83,20 @@ from rosgraph_msgs.msg import Clock  # noqa: E402
 from sensor_msgs.msg import Image, JointState  # noqa: E402
 from std_msgs.msg import Float32MultiArray, String  # noqa: E402
 
+# The recorder is launched as a script from task2_isaacsim/. Add the repository
+# root so the dependency-light common contract remains importable there too.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from task2_isaacsim.common.state_contract import (  # noqa: E402
+    LEFT_GRIPPER_DRIVER,
+    LEFT_JOINTS,
+    RIGHT_GRIPPER_DRIVER,
+    RIGHT_JOINTS,
+    SPINE_JOINT,
+    assemble_state,
+    gripper_open_fraction,
+    resolve_joint,
+)
+
 try:
     from vision_msgs.msg import Detection2DArray
 except ImportError:  # pragma: no cover - needed only for --suggest-success
@@ -151,13 +165,6 @@ EVAL_MODULE_DIR = (
 # Keys that only make sense per-invocation and are rejected in the YAML.
 CONFIG_CLI_ONLY_KEYS = {"help", "config", "resume", "resume_version"}
 
-LEFT_JOINTS = [f"left_fr3v2_joint{i}" for i in range(1, 8)]
-RIGHT_JOINTS = [f"right_fr3v2_joint{i}" for i in range(1, 8)]
-SPINE_JOINT = "franka_spine_vertical_joint"
-LEFT_GRIPPER_DRIVER = "left_right_finger_joint"
-RIGHT_GRIPPER_DRIVER = "right_right_finger_joint"
-GRIPPER_CLOSED_RAD = 0.8
-
 ACTION_DIM = 20
 STATE_DIM = 37
 
@@ -188,39 +195,6 @@ STATE_NAMES = (
     + ["base.odom.x", "base.odom.y", "base.odom.yaw"]
     + ["base.vel.vx", "base.vel.vy", "base.vel.wz"]
 )
-
-
-def _candidate_joint_names(name):
-    """Robot-USD joint-name variants, mirroring the sim bridge's resolver."""
-    yield name
-    if "fr3v2_joint" in name:
-        yield name.replace("fr3v2_joint", "fr3v2_1_joint")
-    if name == "left_right_finger_joint":
-        yield "left_fr3v2_finger_joint1"
-    if name == "right_right_finger_joint":
-        yield "right_fr3v2_finger_joint1"
-
-
-def resolve_joint(joint_map: dict, name: str, default=math.nan) -> float:
-    for candidate in _candidate_joint_names(name):
-        value = joint_map.get(candidate)
-        if value is not None and math.isfinite(value):
-            return float(value)
-    return default
-
-
-def gripper_open_fraction(driver_position_rad: float) -> float:
-    if not math.isfinite(driver_position_rad):
-        return math.nan
-    return float(
-        np.clip(1.0 - driver_position_rad / GRIPPER_CLOSED_RAD, 0.0, 1.0)
-    )
-
-
-def quat_to_yaw(qx: float, qy: float, qz: float, qw: float) -> float:
-    return math.atan2(
-        2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz)
-    )
 
 
 def image_msg_to_array(msg) -> np.ndarray:
@@ -522,27 +496,7 @@ def build_action(snap: dict) -> np.ndarray:
 
 
 def build_state(snap: dict) -> np.ndarray:
-    state = np.full(STATE_DIM, np.nan, dtype=np.float32)
-    for offset, side in ((0, "left"), (7, "right")):
-        pose = snap["ee_poses"].get(side)
-        if pose is not None:
-            state[offset : offset + 7] = pose
-    measured = snap["joint_states"]
-    for i, name in enumerate(LEFT_JOINTS + RIGHT_JOINTS):
-        state[14 + i] = resolve_joint(measured, name)
-    state[28] = resolve_joint(measured, SPINE_JOINT, 0.0)
-    state[29] = gripper_open_fraction(
-        resolve_joint(measured, LEFT_GRIPPER_DRIVER, 0.0)
-    )
-    state[30] = gripper_open_fraction(
-        resolve_joint(measured, RIGHT_GRIPPER_DRIVER, 0.0)
-    )
-    odom = snap["odom"]
-    if odom is not None:
-        x, y, _, qx, qy, qz, qw, vx, vy, _, wz = odom
-        state[31:34] = (x, y, quat_to_yaw(qx, qy, qz, qw))
-        state[34:37] = (vx, vy, wz)
-    return state
+    return np.asarray(assemble_state(snap), dtype=np.float32)
 
 
 def parse_pad_points(raw) -> tuple:

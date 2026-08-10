@@ -1,0 +1,25 @@
+# Copyright (c) 2026 The EBiM Benchmark Contributors
+# SPDX-License-Identifier: Apache-2.0
+version: 1
+manual_staging: true
+manipulation_only: true
+policy:
+  chunk_size: 50
+  n_action_steps: 5
+  seed: 1000
+safety:
+  position_tolerance_m: 0.05
+  yaw_tolerance_rad: 0.10
+  velocity_threshold: 0.02
+  settle_duration_s: 1.0
+  camera_max_age_s: 0.25
+  camera_max_skew_s: 0.10
+  state_max_age_s: 0.10
+  action_queue_max_age_s: 0.25
+  action_rate_hz: 30.0
+  effective_base: [0.0, 0.0, 0.0]
+  spine: hold_current
+publication:
+  default: shadow
+  permitted_groups: [left_arm, right_arm, left_gripper, right_gripper]
+  forbidden_groups: [base, spine]
