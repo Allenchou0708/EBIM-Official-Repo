@@ -32,6 +32,7 @@ from task2_isaacsim.baselines.pi05.live.core import (
     ReadinessConfig,
     RunnerPhase,
     freshness_metrics,
+    replace_action_queue,
     safe_action,
     validate_live_state,
     validate_rgb_frame,
@@ -281,7 +282,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-decisions", type=int, default=3)
     parser.add_argument("--max-decisions", type=int, default=5)
     parser.add_argument("--max-publish-actions", type=int, default=50)
-    parser.add_argument("--queue-refill-actions", type=int, default=30)
+    parser.add_argument("--queue-refill-actions", type=int, default=24)
     parser.add_argument("--max-duration-s", type=float, default=300.0)
     parser.add_argument("--position-tolerance-m", type=float, default=0.05)
     parser.add_argument("--yaw-tolerance-rad", type=float, default=0.10)
@@ -365,6 +366,8 @@ def main() -> int:
     invalid_actions = 0
     stale_observations = 0
     reset_recoveries = 0
+    queue_replacements = 0
+    replaced_residual_actions = 0
     queue: deque[tuple[tuple[float, ...], float, int]] = deque()
     future: Future | None = None
     future_context: dict | None = None
@@ -505,8 +508,16 @@ def main() -> int:
                     flush=True,
                 )
                 if args.arm_simulator:
-                    for _, effective in validated:
-                        queue.append((effective, created_at, event_index))
+                    residual_actions = replace_action_queue(
+                        queue,
+                        [effective for _, effective in validated],
+                        completed_at=created_at,
+                        event_index=event_index,
+                    )
+                    if residual_actions:
+                        queue_replacements += 1
+                        replaced_residual_actions += residual_actions
+                        event["replaced_residual_actions"] = residual_actions
                 future = None
                 future_context = None
 
@@ -536,6 +547,10 @@ def main() -> int:
                     break
                 if published_actions >= args.max_publish_actions:
                     queue.clear()
+                    break
+                if not queue:
+                    publish_blocked = "action_queue_exhausted"
+                    gate.stop(publish_blocked)
                     break
 
             decisions_started = len(events) + int(future is not None)
@@ -643,6 +658,8 @@ def main() -> int:
         "stale_observation_rejections": stale_observations,
         "reset_events": node.reset_count,
         "reset_recoveries": reset_recoveries,
+        "queue_replacements": queue_replacements,
+        "replaced_residual_actions": replaced_residual_actions,
         "command_publications": node.publish_count,
         "published_actions": published_actions,
         "publish_blocked": publish_blocked,

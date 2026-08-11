@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import math
 import unittest
+from collections import deque
 
 import numpy as np
 
@@ -17,6 +18,7 @@ from task2_isaacsim.baselines.pi05.live.core import (
     ReadinessConfig,
     RunnerPhase,
     freshness_metrics,
+    replace_action_queue,
     safe_action,
     validate_rgb_frame,
 )
@@ -87,6 +89,26 @@ class StateContractTest(unittest.TestCase):
 
 
 class LiveSafetyTest(unittest.TestCase):
+    def test_refill_replaces_residual_with_fresh_complete_chunk(self) -> None:
+        queue = deque(
+            ((float(index),), 10.0, 0) for index in range(24)
+        )
+        fresh_chunk = [(100.0 + index,) for index in range(50)]
+
+        residual = replace_action_queue(
+            queue,
+            fresh_chunk,
+            completed_at=12.5,
+            event_index=1,
+        )
+
+        self.assertEqual(residual, 24)
+        self.assertEqual(len(queue), 50)
+        self.assertEqual(
+            list(queue),
+            [(action, 12.5, 1) for action in fresh_chunk],
+        )
+
     def test_policy_reset_clears_action_queue_seed_index(self) -> None:
         class FakePolicy:
             reset_called = False

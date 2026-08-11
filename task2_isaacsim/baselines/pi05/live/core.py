@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -18,6 +19,23 @@ from task2_isaacsim.baselines.pi05.contract import (
 from task2_isaacsim.common.state_contract import finite_state
 
 ROBOT_CAMERA_KEYS = ("head", "wrist_left", "wrist_right")
+
+
+def replace_action_queue(
+    queue: deque[tuple[tuple[float, ...], float, int]],
+    actions: list[tuple[float, ...]],
+    *,
+    completed_at: float,
+    event_index: int,
+) -> int:
+    """Replace an obsolete residual with one newly completed action chunk."""
+
+    residual_actions = len(queue)
+    queue.clear()
+    queue.extend(
+        (action, completed_at, event_index) for action in actions
+    )
+    return residual_actions
 
 
 class RunnerPhase(str, Enum):

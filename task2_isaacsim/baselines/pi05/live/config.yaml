@@ -17,7 +17,7 @@ safety:
   camera_max_skew_s: 0.10
   state_max_age_s: 0.10
   action_queue_max_age_s: 2.0
-  queue_refill_actions: 30
+  queue_refill_actions: 24
   action_rate_hz: 30.0
   effective_base: [0.0, 0.0, 0.0]
   spine: hold_current

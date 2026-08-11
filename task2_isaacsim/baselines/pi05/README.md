@@ -297,9 +297,11 @@ always zero and the spine holds its current measured position; the runner has
 no base or spine publisher. Every reset clears image/action state and requires
 the configurable pose/settle gate again. Finite raw gripper outputs remain
 absolute and the simulator adapter projects them to `[0,1]`; arm limits remain
-hard stops. Three warm-up decisions precede steady-state timing, and full
-50-step chunks refill in a background thread while the ROS control loop keeps
-executing its existing queue.
+hard stops. Three warm-up decisions precede steady-state timing. Background
+inference starts with 24 actions remaining; a completed 50-step chunk replaces
+the old residual and is timestamped at completion while the ROS control loop
+keeps executing. An exhausted queue stops safely, and the two-second queue
+watchdog is unchanged.
 
 Build and run from the repository root:
 
