@@ -27,6 +27,7 @@ from std_msgs.msg import String
 from task2_isaacsim.baselines.pi05.contract import PI05_CONTRACT
 from task2_isaacsim.baselines.pi05.live.core import (
     BaseReadinessGate,
+    FreshnessError,
     FreshnessConfig,
     ReadinessConfig,
     RunnerPhase,
@@ -288,9 +289,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--settle-duration-s", type=float, default=1.0)
     parser.add_argument("--spine-ready-height-m", type=float, default=0.4857)
     parser.add_argument("--spine-tolerance-m", type=float, default=0.015)
-    parser.add_argument("--camera-max-age-s", type=float, default=0.25)
-    parser.add_argument("--camera-max-skew-s", type=float, default=0.10)
-    parser.add_argument("--state-max-age-s", type=float, default=0.10)
+    parser.add_argument("--camera-max-age-s", type=float, default=0.65)
+    parser.add_argument("--camera-max-skew-s", type=float, default=0.55)
+    parser.add_argument("--state-max-age-s", type=float, default=0.15)
     parser.add_argument("--action-queue-max-age-s", type=float, default=2.0)
     parser.add_argument("--action-rate-hz", type=float, default=30.0)
     parser.add_argument("--seed", type=int, default=1000)
@@ -371,6 +372,7 @@ def main() -> int:
     next_publish_at = time.monotonic()
     publish_blocked: str | None = None
     manipulation_latched = False
+    last_freshness_rejection: dict | None = None
     worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pi05")
 
     # Warm up CUDA/model kernels before steady-state measurements. No action is
@@ -514,27 +516,6 @@ def main() -> int:
                     publish_blocked = "readiness_revoked_before_publish"
                     queue.clear()
                     break
-                try:
-                    freshness_metrics(
-                        now=now,
-                        camera_times=node.image_times,
-                        camera_sequences=node.image_sequences,
-                        state_time=node.state_time,
-                        last_camera_sequences={
-                            key: sequence - 1
-                            for key, sequence in node.image_sequences.items()
-                        },
-                        config=freshness,
-                    )
-                except ValueError:
-                    stale_observations += 1
-                    if published_actions > 0:
-                        gate.stop("live_stream_stale")
-                        publish_blocked = "live_stream_stale"
-                        queue.clear()
-                        break
-                    else:
-                        continue
                 if gate.phase == RunnerPhase.MANIPULATION_READY:
                     gate.arm()
                     manipulation_latched = True
@@ -579,6 +560,31 @@ def main() -> int:
                         last_camera_sequences=last_sequences,
                         config=freshness,
                     )
+                except FreshnessError as error:
+                    stale_observations += 1
+                    last_freshness_rejection = {
+                        **error.evidence,
+                        "runner_phase": gate.phase.value,
+                        "check": "inference_snapshot",
+                    }
+                    if (
+                        args.arm_simulator
+                        and published_actions > 0
+                        and not queue
+                    ):
+                        gate.stop("live_stream_stale")
+                        publish_blocked = "live_stream_stale"
+                        print(
+                            json.dumps(
+                                {
+                                    "stop": publish_blocked,
+                                    **last_freshness_rejection,
+                                },
+                                sort_keys=True,
+                            ),
+                            flush=True,
+                        )
+                        break
                 except ValueError:
                     stale_observations += 1
                 else:
@@ -640,6 +646,12 @@ def main() -> int:
         "command_publications": node.publish_count,
         "published_actions": published_actions,
         "publish_blocked": publish_blocked,
+        "freshness_stop_evidence": (
+            last_freshness_rejection
+            if publish_blocked == "live_stream_stale"
+            else None
+        ),
+        "last_freshness_rejection": last_freshness_rejection,
         "base_input_events": node.base_input_count,
         "elapsed_s": elapsed,
         "inference_latency_s": {

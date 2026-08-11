@@ -13,6 +13,7 @@ from task2_isaacsim.baselines.pi05.contract import STATE_NAMES
 from task2_isaacsim.baselines.pi05.live.core import (
     BaseReadinessGate,
     FreshnessConfig,
+    FreshnessError,
     ReadinessConfig,
     RunnerPhase,
     freshness_metrics,
@@ -112,7 +113,9 @@ class LiveSafetyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "image shape"):
             validate_rgb_frame("head", np.zeros((480, 848, 3), dtype=np.uint8))
 
-    def test_freshness_requires_three_new_frames(self) -> None:
+    def test_freshness_evidence_identifies_stale_stream_and_recovers(
+        self,
+    ) -> None:
         result = freshness_metrics(
             now=10.0,
             camera_times={
@@ -130,11 +133,11 @@ class LiveSafetyTest(unittest.TestCase):
             config=FreshnessConfig(),
         )
         self.assertAlmostEqual(result["inter_camera_skew_s"], 0.02)
-        with self.assertRaisesRegex(ValueError, "reused"):
+        with self.assertRaises(FreshnessError) as caught:
             freshness_metrics(
                 now=10.0,
                 camera_times={
-                    "head": 9.95,
+                    "head": 9.60,
                     "wrist_left": 9.96,
                     "wrist_right": 9.97,
                 },
@@ -143,10 +146,39 @@ class LiveSafetyTest(unittest.TestCase):
                     "wrist_left": 3,
                     "wrist_right": 4,
                 },
-                state_time=9.98,
+                state_time=9.80,
                 last_camera_sequences={"head": 1},
-                config=FreshnessConfig(),
+                config=FreshnessConfig(
+                    camera_max_age_s=0.25,
+                    camera_max_skew_s=0.10,
+                    state_max_age_s=0.10,
+                ),
             )
+        evidence = caught.exception.evidence
+        self.assertEqual(
+            evidence["offending_streams"],
+            ["head", "camera_skew", "state"],
+        )
+        self.assertAlmostEqual(evidence["frame_age_s"]["head"], 0.40)
+        self.assertAlmostEqual(evidence["state_age_s"], 0.20)
+
+        recovered = freshness_metrics(
+            now=10.1,
+            camera_times={
+                "head": 10.05,
+                "wrist_left": 10.06,
+                "wrist_right": 10.07,
+            },
+            camera_sequences={"head": 3, "wrist_left": 4, "wrist_right": 5},
+            state_time=10.08,
+            last_camera_sequences={
+                "head": 2,
+                "wrist_left": 3,
+                "wrist_right": 4,
+            },
+            config=FreshnessConfig(),
+        )
+        self.assertAlmostEqual(recovered["state_age_s"], 0.02)
 
     def test_safety_adapter_projects_grippers_and_holds_mobile_axes(
         self,

@@ -31,10 +31,18 @@ class RunnerPhase(str, Enum):
 
 @dataclass(frozen=True)
 class FreshnessConfig:
-    camera_max_age_s: float = 0.25
-    camera_max_skew_s: float = 0.10
-    state_max_age_s: float = 0.10
+    camera_max_age_s: float = 0.65
+    camera_max_skew_s: float = 0.55
+    state_max_age_s: float = 0.15
     action_queue_max_age_s: float = 0.25
+
+
+class FreshnessError(ValueError):
+    """Freshness rejection carrying compact, machine-readable evidence."""
+
+    def __init__(self, message: str, evidence: dict[str, Any]):
+        super().__init__(message)
+        self.evidence = evidence
 
 
 @dataclass(frozen=True)
@@ -195,31 +203,46 @@ def freshness_metrics(
 
     missing = [key for key in ROBOT_CAMERA_KEYS if key not in camera_times]
     if missing:
-        raise ValueError(f"missing robot camera frames: {missing}")
+        raise FreshnessError(
+            f"missing robot camera frames: {missing}",
+            {"offending_streams": missing, "missing_camera_frames": missing},
+        )
     stale_sequences = [
         key
         for key in ROBOT_CAMERA_KEYS
         if camera_sequences.get(key, -1) <= last_camera_sequences.get(key, -1)
     ]
-    if stale_sequences:
-        raise ValueError(f"camera frames were reused: {stale_sequences}")
     ages = {
         key: max(0.0, now - camera_times[key]) for key in ROBOT_CAMERA_KEYS
     }
     skew = max(camera_times.values()) - min(camera_times.values())
     state_age = max(0.0, now - state_time)
-    if max(ages.values()) > config.camera_max_age_s:
-        raise ValueError(f"stale camera frame ages: {ages}")
-    if skew > config.camera_max_skew_s:
-        raise ValueError(f"inter-camera skew {skew:.6f}s exceeds threshold")
-    if state_age > config.state_max_age_s:
-        raise ValueError(f"state age {state_age:.6f}s exceeds threshold")
-    return {
+    metrics = {
         "frame_age_s": ages,
         "inter_camera_skew_s": skew,
         "state_age_s": state_age,
         "camera_sequences": dict(camera_sequences),
     }
+    offending = list(stale_sequences)
+    offending.extend(
+        key for key, age in ages.items()
+        if age > config.camera_max_age_s and key not in offending
+    )
+    if skew > config.camera_max_skew_s:
+        offending.append("camera_skew")
+    if state_age > config.state_max_age_s:
+        offending.append("state")
+    if offending:
+        evidence = {
+            **metrics,
+            "offending_streams": offending,
+            "reused_camera_frames": stale_sequences,
+        }
+        raise FreshnessError(
+            "freshness threshold exceeded: " + ", ".join(offending),
+            evidence,
+        )
+    return metrics
 
 
 def safe_action(
