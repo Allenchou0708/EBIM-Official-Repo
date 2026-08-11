@@ -291,11 +291,15 @@ processors. The postprocessor performs the relative-to-absolute inverse once;
 the runner does not repeat that transform.
 
 The default is shadow mode and creates no command publishers. Simulator
-publication requires `--arm-simulator --confirm-manual-staging` and is limited
+publication requires `--arm-simulator --confirm-fixed-staging` and is limited
 to the official left/right arm and gripper topics. Effective base velocity is
 always zero and the spine holds its current measured position; the runner has
 no base or spine publisher. Every reset clears image/action state and requires
-the configurable pose/settle gate again.
+the configurable pose/settle gate again. Finite raw gripper outputs remain
+absolute and the simulator adapter projects them to `[0,1]`; arm limits remain
+hard stops. Three warm-up decisions precede steady-state timing, and full
+50-step chunks refill in a background thread while the ROS control loop keeps
+executing its existing queue.
 
 Build and run from the repository root:
 
@@ -305,10 +309,10 @@ docker build \
   -t ebim-task2-pi05-live:local .
 
 task2_isaacsim/baselines/pi05/live/run_live_runner.sh \
-  --base-target 0 0 0 \
-  --base-coordinate-frame room_reset_relative_odom \
-  --confirm-manual-staging \
-  --max-decisions 20
+  --base-target 2.10 3.05 -1.571 \
+  --base-coordinate-frame dataset_odom_world_verified_against_room_scene \
+  --confirm-fixed-staging \
+  --max-decisions 5
 ```
 
 The example target is valid only when the checksum-backed organizer extraction
@@ -317,12 +321,13 @@ scene is at its reproducible reset pose. Do not treat it as a table/world
 transform. Add `--arm-simulator` only after a passing shadow run, operator
 staging, teleop shutdown, and zero command-topic publisher counts.
 
-For a headless room scene, `live/manual_stage_base.py` provides a bounded
-operator pulse on `/pedal/state` and always ends with repeated `NONE` messages.
-Run it with Isaac Sim's bundled ROS environment, then stop the helper and
-verify the odometry settle gate before starting the live runner. Spine height
-must be checked against state index 28 in the train-only extraction report;
-the live runner only holds the measured value and never publishes spine.
+Before the runner, `live/fixed_stage_base.py` uses the room-scene odometry to
+execute `BACK -> stop -> right strafe -> stop -> correction -> STOP/settle` on
+`/pedal/state`. It must run with Isaac Sim's bundled ROS environment and with
+no other pedal publisher. The operator watches the GUI and retains emergency
+stop authority, but does not steer the base. Spine height must be checked
+against state index 28 in the train-only extraction report; the live runner
+only holds the measured value and never publishes spine.
 
 ## VR dataset and Apptainer
 

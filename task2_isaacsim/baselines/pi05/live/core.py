@@ -174,15 +174,23 @@ def freshness_metrics(
 def safe_action(
     raw_action: Any, *, spine_hold: float
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
-    """Validate raw absolute output, then fix base and hold current spine."""
+    """Project grippers for simulation, fix base, and hold current spine.
+
+    Gripper outputs remain absolute policy dimensions.  The simulator adapter
+    clips their finite raw values to the actuator range while arm targets stay
+    subject to the exact FR3 joint limits.
+    """
 
     raw = tuple(float(value) for value in raw_action)
     if len(raw) != ACTION_SIZE:
         raise ValueError(f"policy action must contain {ACTION_SIZE} values")
-    validate_absolute_action_bounds(raw)
-    effective = apply_fixed_mobile_axes(raw, spine_height=spine_hold)
+    if not all(math.isfinite(raw[index]) for index in (17, 18)):
+        raise ValueError("policy gripper actions must be finite")
+    effective = list(apply_fixed_mobile_axes(raw, spine_height=spine_hold))
+    effective[17] = min(1.0, max(0.0, effective[17]))
+    effective[18] = min(1.0, max(0.0, effective[18]))
     validate_absolute_action_bounds(effective)
-    return raw, effective
+    return raw, tuple(effective)
 
 
 class ActionWatchdog:

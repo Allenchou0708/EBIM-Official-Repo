@@ -148,17 +148,26 @@ class LiveSafetyTest(unittest.TestCase):
                 config=FreshnessConfig(),
             )
 
-    def test_safety_adapter_holds_base_and_spine_without_clipping(
+    def test_safety_adapter_projects_grippers_and_holds_mobile_axes(
         self,
     ) -> None:
         raw, effective = safe_action(valid_action(), spine_hold=0.44)
         self.assertEqual(raw[:3], (0.1, -0.1, 0.2))
         self.assertEqual(effective[:3], (0.0, 0.0, 0.0))
         self.assertEqual(effective[19], 0.44)
-        invalid = valid_action()
-        invalid[17] = -0.1
+        projected = valid_action()
+        projected[17] = -0.1
+        projected[18] = 1.0131
+        raw, effective = safe_action(projected, spine_hold=0.44)
+        self.assertEqual(raw[17:19], (-0.1, 1.0131))
+        self.assertEqual(effective[17:19], (0.0, 1.0))
+        projected[17] = float("nan")
+        with self.assertRaisesRegex(ValueError, "finite"):
+            safe_action(projected, spine_hold=0.44)
+        invalid_arm = valid_action()
+        invalid_arm[3] = 4.0
         with self.assertRaisesRegex(ValueError, "outside"):
-            safe_action(invalid, spine_hold=0.44)
+            safe_action(invalid_arm, spine_hold=0.44)
 
     def test_readiness_settle_reset_and_new_input(self) -> None:
         gate = BaseReadinessGate(

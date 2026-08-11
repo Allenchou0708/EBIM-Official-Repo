@@ -6,7 +6,8 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import math
 import signal
@@ -25,10 +26,10 @@ from std_msgs.msg import String
 
 from task2_isaacsim.baselines.pi05.contract import PI05_CONTRACT
 from task2_isaacsim.baselines.pi05.live.core import (
-    ActionWatchdog,
     BaseReadinessGate,
     FreshnessConfig,
     ReadinessConfig,
+    RunnerPhase,
     freshness_metrics,
     safe_action,
     validate_live_state,
@@ -48,14 +49,6 @@ from task2_isaacsim.scripts.topics import camera_topic, load_topics
 TOPICS = load_topics()
 CAMERA_ENTRIES = TOPICS["cameras"]["robot"]
 COMMAND_ENTRIES = TOPICS["bridge"]["joint_groups"]
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _image_array(message: Image) -> np.ndarray:
@@ -90,7 +83,7 @@ class LiveObservationNode(Node):
         self.stop_requested = False
         self.base_input_count = 0
         self.publish_count = 0
-        self._publishers: dict[str, object] = {}
+        self._command_publishers: dict[str, object] = {}
 
         for key, entry in CAMERA_ENTRIES.items():
             topic = camera_topic(TOPICS, entry["namespace"], "image")
@@ -136,7 +129,7 @@ class LiveObservationNode(Node):
                     f"command publisher contention: {conflicts}"
                 )
             for group, entry in COMMAND_ENTRIES.items():
-                self._publishers[group] = self.create_publisher(
+                self._command_publishers[group] = self.create_publisher(
                     JointState, entry["command"], 10
                 )
 
@@ -251,7 +244,7 @@ class LiveObservationNode(Node):
             message.header.stamp = self.get_clock().now().to_msg()
             message.name = list(names)
             message.position = list(positions)
-            self._publishers[group].publish(message)
+            self._command_publishers[group].publish(message)
         self.publish_count += 4
 
 
@@ -276,9 +269,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--base-target", nargs=3, type=float, required=True)
     parser.add_argument("--base-coordinate-frame", required=True)
-    parser.add_argument("--confirm-manual-staging", action="store_true")
+    parser.add_argument("--confirm-fixed-staging", action="store_true")
     parser.add_argument("--arm-simulator", action="store_true")
-    parser.add_argument("--max-decisions", type=int, default=20)
+    parser.add_argument("--warmup-decisions", type=int, default=3)
+    parser.add_argument("--max-decisions", type=int, default=5)
+    parser.add_argument("--max-publish-actions", type=int, default=50)
+    parser.add_argument("--queue-refill-actions", type=int, default=30)
     parser.add_argument("--max-duration-s", type=float, default=300.0)
     parser.add_argument("--position-tolerance-m", type=float, default=0.05)
     parser.add_argument("--yaw-tolerance-rad", type=float, default=0.10)
@@ -287,7 +283,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-max-age-s", type=float, default=0.25)
     parser.add_argument("--camera-max-skew-s", type=float, default=0.10)
     parser.add_argument("--state-max-age-s", type=float, default=0.10)
-    parser.add_argument("--action-queue-max-age-s", type=float, default=0.25)
+    parser.add_argument("--action-queue-max-age-s", type=float, default=2.0)
     parser.add_argument("--action-rate-hz", type=float, default=30.0)
     parser.add_argument("--seed", type=int, default=1000)
     return parser.parse_args()
@@ -295,10 +291,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if not args.confirm_manual_staging:
-        print("FAIL: --confirm-manual-staging is required")
+    if not args.confirm_fixed_staging:
+        print("FAIL: --confirm-fixed-staging is required")
         return 2
-    checkpoint_hash = _sha256(args.checkpoint / "model.safetensors")
+    if args.arm_simulator and args.max_publish_actions <= 0:
+        print("FAIL: --max-publish-actions must be positive")
+        return 2
+    if not 0 < args.queue_refill_actions <= PI05_CONTRACT.chunk_size:
+        print("FAIL: --queue-refill-actions must be within the policy chunk")
+        return 2
     readiness = ReadinessConfig(
         *args.base_target,
         position_tolerance_m=args.position_tolerance_m,
@@ -324,6 +325,9 @@ def main() -> int:
     signal.signal(
         signal.SIGTERM, lambda *_: setattr(node, "stop_requested", True)
     )
+    signal.signal(
+        signal.SIGINT, lambda *_: setattr(node, "stop_requested", True)
+    )
     mode = "simulator_publish" if args.arm_simulator else "shadow"
     print(f"Mode: {mode}")
     print(
@@ -345,15 +349,25 @@ def main() -> int:
     last_sequences: dict[str, int] = {}
     last_reset_count = node.reset_count
     events: list[dict] = []
+    warmup_latencies: list[float] = []
     latencies: list[float] = []
     invalid_actions = 0
     stale_observations = 0
     reset_recoveries = 0
-    watchdog = ActionWatchdog(freshness.action_queue_max_age_s)
-    horizon_s = PI05_CONTRACT.n_action_steps / args.action_rate_hz
+    queue: deque[tuple[tuple[float, ...], float, int]] = deque()
+    future: Future | None = None
+    future_context: dict | None = None
+    published_actions = 0
+    next_publish_at = time.monotonic()
+    publish_blocked: str | None = None
+    worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pi05")
 
+    # Warm up CUDA/model kernels before steady-state measurements. No action is
+    # published here and the same valid observation can be reused safely.
+    warmup_images: dict[str, np.ndarray] | None = None
+    warmup_state: tuple[float, ...] | None = None
     while (
-        len(events) < args.max_decisions
+        warmup_images is None
         and time.monotonic() - started < args.max_duration_s
         and not node.stop_requested
     ):
@@ -362,104 +376,201 @@ def main() -> int:
         if not node.update_readiness(now):
             continue
         try:
-            images, state = node.snapshot()
-            validate_live_state(state)
-            metrics = freshness_metrics(
+            warmup_images, warmup_state = node.snapshot()
+            validate_live_state(warmup_state)
+            freshness_metrics(
                 now=now,
                 camera_times=node.image_times,
                 camera_sequences=node.image_sequences,
                 state_time=node.state_time,
-                last_camera_sequences=last_sequences,
+                last_camera_sequences={},
                 config=freshness,
             )
         except ValueError:
+            warmup_images = None
             stale_observations += 1
-            continue
-        if node.reset_count != last_reset_count:
-            policy.reset()
-            last_sequences.clear()
-            last_reset_count = node.reset_count
-            reset_recoveries += 1
-            continue
-        last_sequences = dict(node.image_sequences)
-        validation_index = 0
-        latency: float | None = None
-        try:
-            chunk, latency = policy.predict_chunk(images=images, state=state)
-            latencies.append(latency)
-            created_at = time.monotonic()
-            validated = []
-            for validation_index, action in enumerate(chunk):
-                validated.append(safe_action(action, spine_hold=state[28]))
-        except (RuntimeError, ValueError) as error:
-            invalid_actions += 1
-            events.append(
-                {
-                    "decision": len(events),
-                    "valid": False,
-                    "error": str(error),
-                    "invalid_action_index": validation_index,
-                    "inference_latency_s": latency,
-                    "five_step_horizon_s": horizon_s,
-                }
+    if warmup_images is not None and warmup_state is not None:
+        for _ in range(args.warmup_decisions):
+            _, latency = policy.predict_chunk(
+                images=warmup_images, state=warmup_state
             )
-            break
-        event = {
-            "decision": len(events),
-            "valid": True,
-            "manual_staging": True,
-            "readiness": dict(gate.last_evidence),
-            "freshness": metrics,
-            "inference_latency_s": latency,
-            "five_step_horizon_s": horizon_s,
-            "latency_within_horizon": latency <= horizon_s,
-            "raw_actions": [list(raw) for raw, _ in validated],
-            "effective_actions": [
-                list(effective) for _, effective in validated
-            ],
-            "published": False,
-        }
-        if args.arm_simulator:
-            if latency > horizon_s:
-                event["publish_blocked"] = "inference_latency_exceeds_horizon"
-                events.append(event)
-                break
-            gate.arm()
-            for _, effective in validated:
-                action_time = time.monotonic()
-                if not watchdog.valid(now=action_time, created_at=created_at):
-                    event["publish_blocked"] = "action_queue_watchdog"
+            warmup_latencies.append(latency)
+        policy.reset()
+
+    try:
+        while (
+            time.monotonic() - started < args.max_duration_s
+            and not node.stop_requested
+        ):
+            rclpy.spin_once(node, timeout_sec=0.005)
+            now = time.monotonic()
+            ready = node.update_readiness(now)
+
+            if node.reset_count != last_reset_count:
+                policy.reset()
+                queue.clear()
+                last_sequences.clear()
+                last_reset_count = node.reset_count
+                reset_recoveries += 1
+                continue
+
+            if future is not None and future.done():
+                validation_index = 0
+                latency: float | None = None
+                assert future_context is not None
+                state = future_context["state"]
+                try:
+                    chunk, latency = future.result()
+                    latencies.append(latency)
+                    created_at = time.monotonic()
+                    validated = []
+                    for validation_index, action in enumerate(chunk):
+                        validated.append(
+                            safe_action(action, spine_hold=state[28])
+                        )
+                except (RuntimeError, ValueError) as error:
+                    invalid_actions += 1
+                    events.append(
+                        {
+                            "decision": len(events),
+                            "valid": False,
+                            "error": str(error),
+                            "invalid_action_index": validation_index,
+                            "inference_latency_s": latency,
+                        }
+                    )
+                    publish_blocked = "invalid_policy_action"
+                    queue.clear()
+                    future = None
+                    future_context = None
                     break
-                counts = node.command_publisher_counts()
-                if any(count > 1 for count in counts.values()):
-                    event["publish_blocked"] = f"command_contention:{counts}"
-                    break
-                node.publish_action(effective)
-                event["published"] = True
-                deadline = action_time + 1.0 / args.action_rate_hz
-                while time.monotonic() < deadline:
-                    rclpy.spin_once(node, timeout_sec=0.002)
-            if event.get("publish_blocked"):
+
+                event_index = len(events)
+                refill_window_s = (
+                    args.queue_refill_actions / args.action_rate_hz
+                )
+                event = {
+                    "decision": event_index,
+                    "valid": True,
+                    "fixed_staging": True,
+                    "readiness": future_context["readiness"],
+                    "freshness": future_context["freshness"],
+                    "inference_latency_s": latency,
+                    "queue_refill_window_s": refill_window_s,
+                    "latency_within_refill_window": latency <= refill_window_s,
+                    "raw_actions": [list(raw) for raw, _ in validated],
+                    "effective_actions": [
+                        list(effective) for _, effective in validated
+                    ],
+                    "published_actions": 0,
+                }
                 events.append(event)
+                first_raw, first_effective = validated[0]
+                print(
+                    json.dumps(
+                        {
+                            "decision": event_index,
+                            "latency_s": latency,
+                            "raw_gripper": first_raw[17:19],
+                            "effective_gripper": first_effective[17:19],
+                            "first_arm_target": first_effective[3:17],
+                        }
+                    ),
+                    flush=True,
+                )
+                if args.arm_simulator:
+                    for _, effective in validated:
+                        queue.append((effective, created_at, event_index))
+                future = None
+                future_context = None
+
+            if args.arm_simulator and queue and now >= next_publish_at:
+                if gate.phase == RunnerPhase.MANIPULATION_READY:
+                    gate.arm()
+                effective, created_at, event_index = queue.popleft()
+                if now - created_at > freshness.action_queue_max_age_s:
+                    publish_blocked = "action_queue_watchdog"
+                else:
+                    counts = node.command_publisher_counts()
+                    if any(count > 1 for count in counts.values()):
+                        publish_blocked = f"command_contention:{counts}"
+                    else:
+                        node.publish_action(effective)
+                        published_actions += 1
+                        events[event_index]["published_actions"] += 1
+                        next_publish_at = now + 1.0 / args.action_rate_hz
+                if publish_blocked:
+                    queue.clear()
+                    break
+                if published_actions >= args.max_publish_actions:
+                    queue.clear()
+                    break
+
+            decisions_started = len(events) + int(future is not None)
+            needs_inference = (
+                decisions_started < args.max_decisions
+                and future is None
+                and ready
+                and (
+                    not args.arm_simulator
+                    or len(queue) <= args.queue_refill_actions
+                )
+            )
+            if needs_inference:
+                try:
+                    images, state = node.snapshot()
+                    validate_live_state(state)
+                    metrics = freshness_metrics(
+                        now=now,
+                        camera_times=node.image_times,
+                        camera_sequences=node.image_sequences,
+                        state_time=node.state_time,
+                        last_camera_sequences=last_sequences,
+                        config=freshness,
+                    )
+                except ValueError:
+                    stale_observations += 1
+                else:
+                    last_sequences = dict(node.image_sequences)
+                    future_context = {
+                        "state": state,
+                        "readiness": dict(gate.last_evidence),
+                        "freshness": metrics,
+                    }
+                    future = worker.submit(
+                        policy.predict_chunk, images=images, state=state
+                    )
+
+            if not args.arm_simulator:
+                if len(events) >= args.max_decisions and future is None:
+                    break
+            elif (
+                len(events) >= args.max_decisions
+                and future is None
+                and not queue
+            ):
                 break
-        events.append(event)
+    finally:
+        worker.shutdown(wait=True, cancel_futures=True)
 
     elapsed = time.monotonic() - started
+    refill_window_s = args.queue_refill_actions / args.action_rate_hz
     latency_contract_pass = bool(latencies) and all(
-        value <= horizon_s for value in latencies
+        value <= refill_window_s for value in latencies
     )
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "mode": mode,
-        "manual_staging": True,
+        "fixed_staging": True,
         "manipulation_only": True,
         "checkpoint": str(args.checkpoint.resolve()),
-        "checkpoint_model_sha256": checkpoint_hash,
         "dataset_root": str(args.dataset_root.resolve()),
         "dataset_repo_id": args.dataset_repo_id,
         "task_instruction": PI05_CONTRACT.task_instruction,
         "chunk_size": PI05_CONTRACT.chunk_size,
         "n_action_steps": PI05_CONTRACT.n_action_steps,
+        "warmup_decisions": args.warmup_decisions,
+        "warmup_latency_s": warmup_latencies,
         "seed": args.seed,
         "base_coordinate_frame": args.base_coordinate_frame,
         "readiness_config": readiness.__dict__,
@@ -472,6 +583,8 @@ def main() -> int:
         "reset_events": node.reset_count,
         "reset_recoveries": reset_recoveries,
         "command_publications": node.publish_count,
+        "published_actions": published_actions,
+        "publish_blocked": publish_blocked,
         "base_input_events": node.base_input_count,
         "elapsed_s": elapsed,
         "inference_latency_s": {
@@ -479,11 +592,23 @@ def main() -> int:
             "p95": _percentile(latencies, 0.95) if latencies else None,
             "max": max(latencies) if latencies else None,
         },
-        "five_step_horizon_s": horizon_s,
+        "queue_refill_actions": args.queue_refill_actions,
+        "queue_refill_window_s": refill_window_s,
         "latency_contract_pass": latency_contract_pass,
-        "completed": len(events) == args.max_decisions
-        and invalid_actions == 0
-        and not node.stop_requested,
+        "completed": invalid_actions == 0
+        and not node.stop_requested
+        and publish_blocked is None
+        and (
+            (
+                not args.arm_simulator
+                and len(events) == args.max_decisions
+            )
+            or (
+                args.arm_simulator
+                and bool(events)
+                and published_actions == args.max_publish_actions
+            )
+        ),
         "ros_publication": args.arm_simulator and node.publish_count > 0,
         "events": events,
     }

@@ -88,7 +88,7 @@ class LivePi05Policy:
     def predict_chunk(
         self, *, images: dict[str, Any], state: tuple[float, ...]
     ) -> tuple[list[list[float]], float]:
-        """Return the first five postprocessed absolute actions."""
+        """Return one complete postprocessed absolute action chunk."""
 
         torch = self.torch
         fixed_seed = self.seed + self.decision_index
@@ -106,7 +106,7 @@ class LivePi05Policy:
         started = time.monotonic()
         with torch.inference_mode():
             processed = self.preprocessor(observation)
-            relative_chunk = self.policy.predict_action_chunk(processed)[:, :5]
+            relative_chunk = self.policy.predict_action_chunk(processed)
             absolute_chunk = self.postprocessor(relative_chunk)
         torch.cuda.synchronize()
         latency = time.monotonic() - started
