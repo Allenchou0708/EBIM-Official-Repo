@@ -42,6 +42,7 @@ from task2_isaacsim.baselines.pi05.dataset_audit import (
     organizer_split,
 )
 from task2_isaacsim.baselines.pi05.heldout_evaluation import (
+    checkpoint_sweep,
     deterministic_frame_indices,
 )
 from task2_isaacsim.baselines.pi05.loss_parity import loss_parity_report
@@ -600,6 +601,58 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertEqual(deterministic_frame_indices(3, 10), [0, 1, 2])
         with self.assertRaisesRegex(ValueError, "positive"):
             deterministic_frame_indices(0, 2)
+
+    def test_checkpoint_sweep_selects_two_lowest_loss_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoints = root / "checkpoints"
+            for step in (5000, 10000, 15000):
+                (checkpoints / f"{step:06d}" / "pretrained_model").mkdir(
+                    parents=True
+                )
+            losses = {5000: 0.4, 10000: 0.2, 15000: 0.3}
+
+            def heldout(**kwargs: object) -> dict[str, object]:
+                checkpoint = Path(str(kwargs["checkpoint"]))
+                step = int(checkpoint.parent.name)
+                return {
+                    "checkpoint": str(checkpoint),
+                    "mean_loss": losses[step],
+                    "finite": True,
+                }
+
+            shadow = {
+                "finite_20d_outputs": True,
+                "joint_and_gripper_bounds_valid": True,
+                "checkpoint_replay_reproducible": True,
+            }
+            with (
+                patch(
+                    "task2_isaacsim.baselines.pi05.heldout_evaluation."
+                    "run_heldout_loss",
+                    side_effect=heldout,
+                ),
+                patch(
+                    "task2_isaacsim.baselines.pi05.heldout_evaluation."
+                    "run_offline_inference",
+                    return_value=shadow,
+                ),
+            ):
+                report = checkpoint_sweep(
+                    checkpoints_root=checkpoints,
+                    dataset_root=root / "dataset",
+                    dataset_repo_id="test/task2",
+                    episodes=[1, 2],
+                    seed=1000,
+                    max_frames=2,
+                    report_directory=root / "reports",
+                    rollout_constraints={},
+                )
+        self.assertEqual(report["selected_step"], 10000)
+        self.assertEqual(
+            [item["step"] for item in report["selected_candidates"]],
+            [10000, 15000],
+        )
 
     def test_overfit_loss_windows_must_improve(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

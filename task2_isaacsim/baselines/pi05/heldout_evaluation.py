@@ -7,29 +7,12 @@
 from __future__ import annotations
 
 import gc
-import hashlib
 import math
 from pathlib import Path
 from typing import Any
 
 from .contract import POLICY_CAMERA_RENAME_MAP, RELATIVE_ACTION_STATE_INDICES
 from .offline_inference import run_offline_inference
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _checkpoint_hashes(checkpoint: Path) -> dict[str, str]:
-    return {
-        str(path.relative_to(checkpoint)): _sha256_file(path)
-        for path in sorted(checkpoint.rglob("*"))
-        if path.is_file() and path.suffix in {".json", ".safetensors"}
-    }
 
 
 def deterministic_frame_indices(length: int, maximum: int) -> list[int]:
@@ -149,11 +132,7 @@ def run_heldout_loss(
     report = {
         "schema_version": 1,
         "checkpoint": str(checkpoint),
-        "checkpoint_hashes": _checkpoint_hashes(checkpoint),
         "dataset_root": str(dataset_root),
-        "relative_stats_sha256": _sha256_file(
-            dataset_root / "meta" / "stats.json"
-        ),
         "episodes": episodes,
         "seed": seed,
         "selected_dataset_indices": selected,
@@ -225,7 +204,6 @@ def checkpoint_sweep(
                 "step": step,
                 **loss_report,
                 "offline_shadow_report": str(shadow_path),
-                "offline_shadow_report_sha256": _sha256_file(shadow_path),
                 "finite_20d_outputs": shadow["finite_20d_outputs"],
                 "joint_and_gripper_bounds_valid": shadow[
                     "joint_and_gripper_bounds_valid"
@@ -236,16 +214,16 @@ def checkpoint_sweep(
             }
         )
     valid = [result for result in results if result["finite"]]
-    best = min(valid, key=lambda result: result["mean_loss"])
-    by_step = {result["step"]: result for result in valid}
-    improvement = None
-    resume_to_step = None
-    if 5500 in by_step and 6000 in by_step:
-        before = float(by_step[5500]["mean_loss"])
-        after = float(by_step[6000]["mean_loss"])
-        improvement = (before - after) / before if before else 0.0
-        if improvement > 0.02:
-            resume_to_step = 12000
+    ranked = sorted(valid, key=lambda result: result["mean_loss"])
+    candidates = [
+        {
+            "step": result["step"],
+            "checkpoint": result["checkpoint"],
+            "mean_loss": result["mean_loss"],
+        }
+        for result in ranked[:2]
+    ]
+    best = ranked[0]
     return {
         "schema_version": 1,
         "seed": seed,
@@ -254,6 +232,5 @@ def checkpoint_sweep(
         "selected_checkpoint": best["checkpoint"],
         "selected_step": best["step"],
         "selected_mean_loss": best["mean_loss"],
-        "improvement_5500_to_6000": improvement,
-        "resume_to_step": resume_to_step,
+        "selected_candidates": candidates,
     }

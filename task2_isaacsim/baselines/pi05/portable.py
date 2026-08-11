@@ -975,7 +975,6 @@ def main() -> int:
         return command_validate_shadow(args)
     if args.command == "checkpoint-sweep":
         try:
-            image_digest = _require_image_digest()
             output = _require_external_output(args.output)
             audit = _read_formal_audit(args.audit_report.resolve())
             held_out = [int(value) for value in audit["split"]["held_out"]]
@@ -991,10 +990,11 @@ def main() -> int:
                 ),
                 rollout_constraints=audit["rollout_constraints"],
             )
-            report["image_digest"] = image_digest
+            report["image"] = os.environ.get(
+                "EBIM_PI05_IMAGE", "unspecified-local-image"
+            )
             report["dataset_audit"] = {
                 "path": str(args.audit_report.resolve()),
-                "sha256": _sha256_file(args.audit_report.resolve()),
                 "revision": audit["dataset_revision"],
                 "held_out_split": held_out,
             }
@@ -1006,12 +1006,11 @@ def main() -> int:
             "PASS: checkpoint sweep selected "
             f"step={report['selected_step']} "
             f"loss={report['selected_mean_loss']:.6f} "
-            f"resume_to_step={report['resume_to_step']} output={output}"
+            f"candidates={len(report['selected_candidates'])} output={output}"
         )
         return 0
     if args.command == "offline-inference":
         try:
-            _require_image_digest()
             output = _require_external_output(args.output)
             episodes = parse_episode_list(args.episodes)
             constraints = None

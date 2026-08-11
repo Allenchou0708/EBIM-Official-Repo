@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -20,22 +19,6 @@ from .contract import (
     RELATIVE_ACTION_STATE_INDICES,
     validate_absolute_action_bounds,
 )
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _checkpoint_hashes(checkpoint: Path) -> dict[str, str]:
-    hashes: dict[str, str] = {}
-    for pattern in ("*.safetensors", "config.json", "train_config.json"):
-        for path in sorted(checkpoint.glob(pattern)):
-            hashes[path.name] = _sha256_file(path)
-    return hashes
 
 
 def _sample_indices_by_episode(
@@ -213,13 +196,9 @@ def run_offline_inference(
     report = {
         "schema_version": 1,
         "mode": "offline_shadow",
-        "image_digest": os.environ.get("EBIM_PI05_IMAGE_DIGEST", "unrecorded"),
+        "image": os.environ.get("EBIM_PI05_IMAGE", "unspecified-local-image"),
         "checkpoint": str(checkpoint.resolve()),
-        "checkpoint_hashes": _checkpoint_hashes(checkpoint.resolve()),
         "dataset_root": str(dataset_root.resolve()),
-        "dataset_stats_sha256": _sha256_file(
-            dataset_root.resolve() / "meta" / "stats.json"
-        ),
         "episodes": episodes,
         "relative_action_state_indices": list(RELATIVE_ACTION_STATE_INDICES),
         "samples_per_episode": samples_per_episode,
