@@ -42,6 +42,7 @@ from task2_isaacsim.common.state_contract import (
     LEFT_JOINTS,
     RIGHT_GRIPPER_DRIVER,
     RIGHT_JOINTS,
+    SPINE_JOINT,
     assemble_state,
 )
 from task2_isaacsim.scripts.topics import camera_topic, load_topics
@@ -209,14 +210,19 @@ class LiveObservationNode(Node):
         return {key: value.copy() for key, value in self.images.items()}, state
 
     def update_readiness(self, now: float) -> bool:
-        if self.odom is None:
+        if self.odom is None or SPINE_JOINT not in self.joints:
             return False
         x, y, _, qx, qy, qz, qw, vx, vy, _, wz = self.odom
         yaw = math.atan2(
             2.0 * (qw * qz + qx * qy),
             1.0 - 2.0 * (qy * qy + qz * qz),
         )
-        return self.gate.update(now, (x, y, yaw), (vx, vy, wz))
+        return self.gate.update(
+            now,
+            (x, y, yaw),
+            (vx, vy, wz),
+            self.joints[SPINE_JOINT],
+        )
 
     def command_publisher_counts(self) -> dict[str, int]:
         return {
@@ -280,6 +286,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yaw-tolerance-rad", type=float, default=0.10)
     parser.add_argument("--velocity-threshold", type=float, default=0.02)
     parser.add_argument("--settle-duration-s", type=float, default=1.0)
+    parser.add_argument("--spine-ready-height-m", type=float, default=0.4857)
+    parser.add_argument("--spine-tolerance-m", type=float, default=0.015)
     parser.add_argument("--camera-max-age-s", type=float, default=0.25)
     parser.add_argument("--camera-max-skew-s", type=float, default=0.10)
     parser.add_argument("--state-max-age-s", type=float, default=0.10)
@@ -302,6 +310,8 @@ def main() -> int:
         return 2
     readiness = ReadinessConfig(
         *args.base_target,
+        spine_target_m=args.spine_ready_height_m,
+        spine_tolerance_m=args.spine_tolerance_m,
         position_tolerance_m=args.position_tolerance_m,
         yaw_tolerance_rad=args.yaw_tolerance_rad,
         velocity_threshold=args.velocity_threshold,
@@ -360,6 +370,7 @@ def main() -> int:
     published_actions = 0
     next_publish_at = time.monotonic()
     publish_blocked: str | None = None
+    manipulation_latched = False
     worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pi05")
 
     # Warm up CUDA/model kernels before steady-state measurements. No action is
@@ -404,15 +415,26 @@ def main() -> int:
         ):
             rclpy.spin_once(node, timeout_sec=0.005)
             now = time.monotonic()
-            ready = node.update_readiness(now)
-
             if node.reset_count != last_reset_count:
+                if args.arm_simulator and manipulation_latched:
+                    gate.stop("scene_reset")
+                    publish_blocked = "scene_reset"
+                    queue.clear()
+                    break
                 policy.reset()
                 queue.clear()
                 last_sequences.clear()
                 last_reset_count = node.reset_count
                 reset_recoveries += 1
                 continue
+
+            ready = node.update_readiness(now)
+            if args.arm_simulator and manipulation_latched and not ready:
+                publish_blocked = str(
+                    gate.last_evidence.get("reason", "readiness_revoked")
+                )
+                queue.clear()
+                break
 
             if future is not None and future.done():
                 validation_index = 0
@@ -440,6 +462,8 @@ def main() -> int:
                         }
                     )
                     publish_blocked = "invalid_policy_action"
+                    if args.arm_simulator:
+                        gate.stop(publish_blocked)
                     queue.clear()
                     future = None
                     future_context = None
@@ -485,12 +509,39 @@ def main() -> int:
                 future_context = None
 
             if args.arm_simulator and queue and now >= next_publish_at:
+                if not ready:
+                    gate.stop("readiness_revoked_before_publish")
+                    publish_blocked = "readiness_revoked_before_publish"
+                    queue.clear()
+                    break
+                try:
+                    freshness_metrics(
+                        now=now,
+                        camera_times=node.image_times,
+                        camera_sequences=node.image_sequences,
+                        state_time=node.state_time,
+                        last_camera_sequences={
+                            key: sequence - 1
+                            for key, sequence in node.image_sequences.items()
+                        },
+                        config=freshness,
+                    )
+                except ValueError:
+                    stale_observations += 1
+                    if published_actions > 0:
+                        gate.stop("live_stream_stale")
+                        publish_blocked = "live_stream_stale"
+                        queue.clear()
+                        break
+                    else:
+                        continue
                 if gate.phase == RunnerPhase.MANIPULATION_READY:
                     gate.arm()
+                    manipulation_latched = True
                 effective, created_at, event_index = queue.popleft()
                 if now - created_at > freshness.action_queue_max_age_s:
                     publish_blocked = "action_queue_watchdog"
-                else:
+                elif publish_blocked is None:
                     counts = node.command_publisher_counts()
                     if any(count > 1 for count in counts.values()):
                         publish_blocked = f"command_contention:{counts}"
@@ -537,6 +588,10 @@ def main() -> int:
                         "readiness": dict(gate.last_evidence),
                         "freshness": metrics,
                     }
+                    if args.arm_simulator and not manipulation_latched:
+                        gate.arm()
+                        manipulation_latched = True
+                        future_context["readiness"] = dict(gate.last_evidence)
                     future = worker.submit(
                         policy.predict_chunk, images=images, state=state
                     )

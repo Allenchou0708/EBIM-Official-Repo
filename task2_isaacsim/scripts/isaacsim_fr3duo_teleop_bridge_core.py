@@ -42,7 +42,7 @@ from nav_msgs.msg import Odometry  # noqa: E402
 from rclpy.node import Node  # noqa: E402
 from rosgraph_msgs.msg import Clock  # noqa: E402
 from sensor_msgs.msg import JointState  # noqa: E402
-from std_msgs.msg import String  # noqa: E402
+from std_msgs.msg import Float64, String  # noqa: E402
 from topics import TOPICS_YAML, load_topics  # noqa: E402
 
 import omni.usd  # noqa: E402
@@ -62,6 +62,7 @@ from pxr import Gf, UsdGeom, UsdLux, UsdPhysics  # noqa: E402
 _TOPICS = load_topics()
 
 PEDAL_STATE_TOPIC = _TOPICS["teleop"]["pedal_state"]
+SPINE_TARGET_TOPIC = _TOPICS["teleop"]["spine_target"]
 # Recording streams (published only with --publish-recording-topics): the
 # post-arbitration joint position targets, base odometry/applied twist, and
 # link8 end-effector poses consumed by
@@ -675,6 +676,7 @@ class SpineKeyboardController:
         self.target = max(self.min_m, min(self.max_m, initial))
 
         self._subscription = None
+        self._ros_subscription = None
         self._input = None
         self._keyboard = None
         try:
@@ -711,6 +713,19 @@ class SpineKeyboardController:
         value = max(self.min_m, min(self.max_m, float(value)))
         self.target = value
         print(f"{self.joint_name}: target={value:.4f} m", flush=True)
+
+    def bind(self, node: Node) -> None:
+        """Add scripted staging to the existing target-hold controller."""
+        self._ros_subscription = node.create_subscription(
+            Float64, SPINE_TARGET_TOPIC, self._on_ros_target, 10
+        )
+        node.get_logger().info(
+            f"Spine target command: {SPINE_TARGET_TOPIC}"
+        )
+
+    def _on_ros_target(self, message: Float64) -> None:
+        if math.isfinite(float(message.data)):
+            self._set_target(float(message.data))
 
     def _on_keyboard_event(self, event, *args, **kwargs):
         if self._carb_input is None:
@@ -1675,6 +1690,8 @@ def run_teleop_loop(
             args, "publish_recording_topics", False
         ),
     )
+    if spine_keyboard_controller is not None:
+        spine_keyboard_controller.bind(node)
     for callback in tick_callbacks:
         if hasattr(callback, "bind"):
             callback.bind(node)

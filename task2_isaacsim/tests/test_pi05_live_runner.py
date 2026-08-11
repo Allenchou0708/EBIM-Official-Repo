@@ -169,19 +169,41 @@ class LiveSafetyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside"):
             safe_action(invalid_arm, spine_hold=0.44)
 
-    def test_readiness_settle_reset_and_new_input(self) -> None:
+    def test_spine_ready_latches_through_drift_and_revokes_safely(self) -> None:
         gate = BaseReadinessGate(
             ReadinessConfig(1.0, 2.0, 0.0, settle_duration_s=1.0)
         )
         gate.reset()
-        self.assertFalse(gate.update(0.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0)))
-        self.assertTrue(gate.update(1.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0)))
+        self.assertFalse(
+            gate.update(0.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.0)
+        )
+        self.assertFalse(
+            gate.update(0.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.4857)
+        )
+        self.assertTrue(
+            gate.update(1.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.4857)
+        )
         self.assertEqual(gate.phase, RunnerPhase.MANIPULATION_READY)
-        gate.note_base_input()
-        self.assertEqual(gate.phase, RunnerPhase.BASE_PREPOSITION)
-        gate.update(2.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0))
+        gate.arm()
+        self.assertTrue(
+            gate.update(2.0, (1.01, 1.99, 0.01), (0.03, 0.0, 0.0), 0.486)
+        )
+        self.assertEqual(gate.phase, RunnerPhase.PI05_MANIPULATION)
         gate.reset()
         self.assertEqual(gate.phase, RunnerPhase.BASE_PREPOSITION)
+        gate.update(3.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.4857)
+        gate.update(4.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.4857)
+        gate.arm()
+        self.assertFalse(
+            gate.update(5.0, (1.2, 2.0, 0.0), (0.0, 0.0, 0.0), 0.486)
+        )
+        self.assertEqual(gate.phase, RunnerPhase.STOPPED)
+        gate.reset()
+        gate.update(6.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.4857)
+        gate.update(7.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.4857)
+        gate.arm()
+        gate.note_base_input()
+        self.assertEqual(gate.phase, RunnerPhase.STOPPED)
 
 
 if __name__ == "__main__":

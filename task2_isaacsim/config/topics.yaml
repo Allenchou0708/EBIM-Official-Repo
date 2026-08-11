@@ -41,6 +41,7 @@ clock: /isaac/clock
 
 teleop:
   pedal_state: /pedal/state
+  spine_target: /isaac/spine_target
 
 bridge:
   # state: published by the bridge; command / browser_command: consumed by

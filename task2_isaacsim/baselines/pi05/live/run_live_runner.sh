@@ -18,6 +18,7 @@ exec docker run --rm --gpus all --ipc=host --network host \
   -e HOME=/tmp/ebim-live-home \
   -e USER="${USER:-ebim}" \
   -e LOGNAME="${USER:-ebim}" \
+  -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
   -e HF_HOME=/cache/huggingface \
   -e HF_DATASETS_CACHE=/data/output/hf_datasets_cache \
   -e HF_HUB_OFFLINE=1 \

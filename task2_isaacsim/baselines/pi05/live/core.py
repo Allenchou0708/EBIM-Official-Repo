@@ -42,6 +42,8 @@ class ReadinessConfig:
     target_x: float
     target_y: float
     target_yaw: float
+    spine_target_m: float = 0.4857
+    spine_tolerance_m: float = 0.015
     position_tolerance_m: float = 0.05
     yaw_tolerance_rad: float = 0.10
     velocity_threshold: float = 0.02
@@ -69,13 +71,22 @@ class BaseReadinessGate:
         self.last_evidence = {"ready": False, "reason": reason}
 
     def note_base_input(self) -> None:
-        self.reset("new_base_input")
+        if self.phase == RunnerPhase.PI05_MANIPULATION:
+            self.stop("new_base_input")
+        else:
+            self.reset("new_base_input")
+
+    def stop(self, reason: str) -> None:
+        self.phase = RunnerPhase.STOPPED
+        self._settle_since = None
+        self.last_evidence = {"ready": False, "reason": reason}
 
     def update(
         self,
         now: float,
         pose: tuple[float, float, float],
         velocity: tuple[float, float, float],
+        spine_position: float,
     ) -> bool:
         cfg = self.config
         dx = float(pose[0]) - cfg.target_x
@@ -83,11 +94,42 @@ class BaseReadinessGate:
         position_error = math.hypot(dx, dy)
         yaw_error = abs(angular_error(float(pose[2]), cfg.target_yaw))
         speed = math.sqrt(sum(float(value) ** 2 for value in velocity))
-        within = (
+        spine_error = abs(float(spine_position) - cfg.spine_target_m)
+        pose_within = (
             position_error <= cfg.position_tolerance_m
             and yaw_error <= cfg.yaw_tolerance_rad
+        )
+        spine_within = spine_error <= cfg.spine_tolerance_m
+        within = (
+            pose_within
+            and spine_within
             and speed <= cfg.velocity_threshold
         )
+        if self.phase == RunnerPhase.PI05_MANIPULATION:
+            if pose_within and spine_within:
+                self.last_evidence = {
+                    "ready": True,
+                    "phase": self.phase.value,
+                    "latched": True,
+                    "actual_pose": list(pose),
+                    "target_pose": [cfg.target_x, cfg.target_y, cfg.target_yaw],
+                    "position_error_m": position_error,
+                    "yaw_error_rad": yaw_error,
+                    "speed": speed,
+                    "spine_position_m": float(spine_position),
+                    "spine_target_m": cfg.spine_target_m,
+                    "spine_error_m": spine_error,
+                }
+                return True
+            reason = (
+                "spine_out_of_tolerance"
+                if not spine_within
+                else "base_pose_out_of_tolerance"
+            )
+            self.stop(reason)
+            return False
+        if self.phase == RunnerPhase.STOPPED:
+            return False
         if not within:
             self.phase = RunnerPhase.BASE_PREPOSITION
             self._settle_since = None
@@ -106,6 +148,9 @@ class BaseReadinessGate:
             "position_error_m": position_error,
             "yaw_error_rad": yaw_error,
             "speed": speed,
+            "spine_position_m": float(spine_position),
+            "spine_target_m": cfg.spine_target_m,
+            "spine_error_m": spine_error,
             "settled_for_s": 0.0
             if self._settle_since is None
             else max(0.0, now - self._settle_since),
@@ -116,6 +161,12 @@ class BaseReadinessGate:
         if self.phase != RunnerPhase.MANIPULATION_READY:
             raise RuntimeError("base is not MANIPULATION_READY")
         self.phase = RunnerPhase.PI05_MANIPULATION
+        self.last_evidence = {
+            **self.last_evidence,
+            "ready": True,
+            "phase": self.phase.value,
+            "latched": True,
+        }
 
 
 def validate_rgb_frame(key: str, array: Any) -> None:
