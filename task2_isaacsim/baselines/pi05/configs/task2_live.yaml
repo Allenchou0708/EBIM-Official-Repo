@@ -1,0 +1,12 @@
+# Copyright (c) 2026 The EBiM Benchmark Contributors
+# SPDX-License-Identifier: Apache-2.0
+base_target: [2.10, 3.05, -1.571]
+base_coordinate_frame: dataset_odom_world_verified_against_room_scene
+base_stage_position_tolerance_m: 0.015
+base_stage_yaw_tolerance_rad: 0.04
+spine_command_target_m: 0.50
+spine_measured_target_m: 0.4857
+max_actions: 600
+queue_refill_actions: 24
+action_queue_max_age_s: 2.0
+action_rate_hz: 30.0

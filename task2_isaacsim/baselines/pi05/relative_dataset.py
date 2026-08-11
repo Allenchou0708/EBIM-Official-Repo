@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -184,23 +183,13 @@ def _canonical_json_bytes(payload: object) -> bytes:
     )
 
 
-def _sha256_bytes(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _copy_dataset_tree(source: Path, destination: Path) -> tuple[int, int]:
     linked = 0
     copied = 0
     for source_path in source.rglob("*"):
         relative = source_path.relative_to(source)
+        if relative.parts and relative.parts[0] == ".cache":
+            continue
         if relative.as_posix() == "meta/stats.json":
             continue
         destination_path = destination / relative
@@ -275,8 +264,6 @@ def materialize_relative_dataset_view(
             "schema_version": 1,
             "created_utc": datetime.now(timezone.utc).isoformat(),
             "source_dataset_root": str(source),
-            "source_stats_sha256": _sha256_file(source_stats_path),
-            "relative_stats_sha256": _sha256_bytes(stats_bytes),
             "relative_action_state_indices": list(
                 RELATIVE_ACTION_STATE_INDICES
             ),

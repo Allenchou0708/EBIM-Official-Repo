@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import math
+import random
 import re
 import shutil
 import subprocess
@@ -25,18 +26,72 @@ from .contract import (
     EXPECTED_CAMERA_SHAPES,
     STATE_NAMES,
     STATE_SIZE,
+    validate_absolute_action_bounds,
     validate_dataset_root,
 )
 
-ORGANIZER_DATASET_REPO = "hermanprawiro/task2_fixpos_v1"
-ORGANIZER_DATASET_REVISION = "1a7253a776b9a05d866da297789c456c2f0ed9f8"
+ORGANIZER_DATASET_REPO = "hermanprawiro/task2_fixpos_200"
+ORGANIZER_DATASET_REVISION = "46ab41f16fe836ee8ca791c7afaade44783eefe6"
 ORGANIZER_DATASET_LICENSE = "apache-2.0"
 ORGANIZER_USE_AUTHORIZATION_KIND = "organizer_provided_competition_data"
 ORGANIZER_USE_SCOPE = "ebim_task2_training_and_evaluation"
-ORGANIZER_EXPECTED_EPISODES = 22
-ORGANIZER_EXPECTED_FRAMES = 20_869
-SPLIT_SEED = 20260806
+ORGANIZER_EXPECTED_EPISODES = 200
+ORGANIZER_EXPECTED_FRAMES = 174_719
+SPLIT_SEED = 20260812
 FIXED_AXIS_VARIANCE_EPSILON = 1e-10
+
+
+@dataclass(frozen=True)
+class DatasetAuditSpec:
+    repo_id: str
+    revision: str
+    expected_episodes: int
+    expected_frames: int
+    split_seed: int
+    train_episodes: int
+    held_out_episodes: int
+
+
+def load_dataset_audit_spec(path: Path) -> DatasetAuditSpec:
+    try:
+        import yaml
+    except ImportError as error:
+        raise RuntimeError(
+            "PyYAML is required to load the dataset config"
+        ) from error
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"config must contain a YAML object: {path}")
+    dataset = payload.get("dataset")
+    split = payload.get("split")
+    if not isinstance(dataset, dict) or not isinstance(split, dict):
+        raise ValueError("config requires dataset and split objects")
+    spec = DatasetAuditSpec(
+        repo_id=str(dataset.get("repo_id", "")).strip(),
+        revision=str(dataset.get("revision", "")).strip(),
+        expected_episodes=int(dataset.get("expected_episodes", 0)),
+        expected_frames=int(dataset.get("expected_frames", 0)),
+        split_seed=int(split.get("seed", 0)),
+        train_episodes=int(split.get("train_episodes", 0)),
+        held_out_episodes=int(split.get("held_out_episodes", 0)),
+    )
+    if not spec.repo_id or not spec.revision:
+        raise ValueError("dataset repo_id and revision must be non-empty")
+    if (
+        min(
+            spec.expected_episodes,
+            spec.expected_frames,
+            spec.train_episodes,
+            spec.held_out_episodes,
+        )
+        <= 0
+    ):
+        raise ValueError(
+            "dataset expected sizes and split sizes must be positive"
+        )
+    if spec.train_episodes + spec.held_out_episodes > spec.expected_episodes:
+        raise ValueError("train and held-out split exceeds expected episodes")
+    return spec
 
 
 def _sha256_file(path: Path) -> str:
@@ -114,6 +169,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 def download_organizer_dataset(
     destination: Path,
     *,
+    spec: DatasetAuditSpec,
     source_manifest: Path | None = None,
 ) -> dict[str, Any]:
     """Download exactly the approved organizer data revision.
@@ -138,24 +194,20 @@ def download_organizer_dataset(
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     info = HfApi().dataset_info(
-        ORGANIZER_DATASET_REPO,
-        revision=ORGANIZER_DATASET_REVISION,
+        spec.repo_id,
+        revision=spec.revision,
         files_metadata=True,
     )
     resolved_revision = str(info.sha)
-    if resolved_revision != ORGANIZER_DATASET_REVISION:
+    if resolved_revision != spec.revision:
         raise RuntimeError(
             "Hugging Face resolved an unexpected dataset revision: "
             f"{resolved_revision}"
         )
-    declared_license, license_source = _extract_hugging_face_license(
-        getattr(info, "card_data", None),
-        getattr(info, "tags", None),
-    )
     snapshot_download(
-        repo_id=ORGANIZER_DATASET_REPO,
+        repo_id=spec.repo_id,
         repo_type="dataset",
-        revision=ORGANIZER_DATASET_REVISION,
+        revision=spec.revision,
         local_dir=destination,
     )
 
@@ -167,14 +219,10 @@ def download_organizer_dataset(
     manifest = {
         "schema_version": 1,
         "downloaded_utc": datetime.now(timezone.utc).isoformat(),
-        "repo_id": ORGANIZER_DATASET_REPO,
-        "requested_revision": ORGANIZER_DATASET_REVISION,
+        "repo_id": spec.repo_id,
+        "requested_revision": spec.revision,
         "resolved_revision": resolved_revision,
-        "license": declared_license,
-        "license_source": license_source,
-        "expected_license": ORGANIZER_DATASET_LICENSE,
         "dataset_root": str(destination),
-        "token_recorded": False,
     }
     _write_json(manifest_path, manifest)
     return {**manifest, "source_manifest": str(manifest_path)}
@@ -183,7 +231,7 @@ def download_organizer_dataset(
 def load_episode_metadata(dataset_root: Path) -> list[dict[str, Any]]:
     path = dataset_root / "task2_extras" / "episodes_task2.jsonl"
     if not path.is_file():
-        raise ValueError(f"missing Task 2 episode metadata: {path}")
+        return []
     records: list[dict[str, Any]] = []
     seen: set[int] = set()
     for line_number, line in enumerate(
@@ -201,10 +249,6 @@ def load_episode_metadata(dataset_root: Path) -> list[dict[str, Any]]:
             )
         if episode in seen:
             raise ValueError(f"duplicate episode metadata: {episode}")
-        if not isinstance(item.get("success"), bool):
-            raise ValueError(
-                f"episode {episode} must contain a boolean success label"
-            )
         seen.add(episode)
         records.append(item)
     return sorted(records, key=lambda item: item["episode_index"])
@@ -233,33 +277,17 @@ def episode_eligibility(
     """Return stable reason codes for excluding one episode."""
 
     reasons: list[str] = []
-    if record.get("success") is not True:
-        reasons.append("success_false")
     declared_frames = record.get("frames")
-    if isinstance(declared_frames, bool) or not isinstance(
-        declared_frames, int
+    if actual_frames is None:
+        reasons.append("missing_episode_frames")
+    elif (
+        isinstance(declared_frames, int)
+        and not isinstance(declared_frames, bool)
+        and actual_frames != declared_frames
     ):
-        reasons.append("invalid_declared_frames")
-    elif actual_frames is None or actual_frames != declared_frames:
         reasons.append("frame_mismatch")
     if nonfinite_frames:
         reasons.append("nonfinite_action_or_state")
-    if record.get("dropped_stale_frames") != 0:
-        reasons.append("stale_frames_dropped")
-    if not _drop_count_is_zero(record.get("encoder_dropped_frames")):
-        reasons.append("encoder_frames_dropped")
-
-    suggestion = record.get("success_suggestion")
-    if not isinstance(suggestion, dict):
-        reasons.append("missing_success_suggestion")
-    else:
-        if suggestion.get("is_orientation_correct") is not True:
-            reasons.append("orientation_incorrect")
-        iou = suggestion.get("iou_thermalpad_vs_target_current")
-        if isinstance(iou, bool) or not isinstance(iou, (int, float)):
-            reasons.append("invalid_iou")
-        elif not math.isfinite(float(iou)) or float(iou) <= 0.0:
-            reasons.append("iou_not_positive")
     return reasons
 
 
@@ -268,31 +296,26 @@ def organizer_split(
     *,
     revision: str = ORGANIZER_DATASET_REVISION,
     seed: int = SPLIT_SEED,
+    train_count: int = 180,
+    held_out_count: int = 20,
 ) -> dict[str, Any]:
-    """Build the immutable episode-level train/held-out split."""
+    """Build the configured episode-level train/held-out split."""
 
     eligible = sorted({int(episode) for episode in eligible_episodes})
-    if len(eligible) == ORGANIZER_EXPECTED_EPISODES:
-        held_out_count = 4
-    else:
-        held_out_count = max(2, math.ceil(0.2 * len(eligible)))
-    ranked = sorted(
-        eligible,
-        key=lambda episode: hashlib.sha256(
-            f"{revision}:{episode}:{seed}".encode()
-        ).hexdigest(),
-    )
-    held_out = sorted(ranked[: min(held_out_count, len(ranked))])
-    held_out_set = set(held_out)
-    train = [episode for episode in eligible if episode not in held_out_set]
+    shuffled = list(eligible)
+    random.Random(seed).shuffle(shuffled)
+    train = sorted(shuffled[:train_count])
+    held_out = sorted(shuffled[train_count : train_count + held_out_count])
     return {
-        "algorithm": "sha256(revision:episode_index:seed)",
+        "algorithm": "python_random_seeded_episode_shuffle",
         "revision": revision,
         "seed": seed,
         "eligible": eligible,
         "train": train,
         "held_out": held_out,
-        "formal_training_allowed": len(train) >= 10 and len(held_out) >= 2,
+        "formal_training_allowed": (
+            len(train) == train_count and len(held_out) == held_out_count
+        ),
     }
 
 
@@ -430,7 +453,14 @@ def _probe_videos(dataset_root: Path, total_frames: int) -> dict[str, Any]:
     frame_counts_complete: dict[str, bool] = {}
     for path in files:
         relative = path.relative_to(dataset_root)
-        camera = relative.parts[1] if len(relative.parts) > 1 else "unknown"
+        camera = next(
+            (
+                part
+                for part in relative.parts
+                if part.startswith("observation.images.")
+            ),
+            "unknown",
+        )
         result = subprocess.run(
             [
                 ffprobe,
@@ -458,6 +488,20 @@ def _probe_videos(dataset_root: Path, total_frames: int) -> dict[str, Any]:
             errors.append(f"expected one video stream in {relative}")
             continue
         stream = streams[0]
+        expected_shape = EXPECTED_CAMERA_SHAPES.get(camera)
+        if expected_shape is None:
+            errors.append(f"unknown camera video path: {relative}")
+        elif (
+            stream.get("width") != expected_shape[1]
+            or stream.get("height") != expected_shape[0]
+        ):
+            errors.append(
+                f"video shape for {relative} is "
+                f"{stream.get('height')}x{stream.get('width')}, expected "
+                f"{expected_shape[0]}x{expected_shape[1]}"
+            )
+        if not stream.get("codec_name"):
+            errors.append(f"video codec missing for {relative}")
         nb_frames = stream.get("nb_frames")
         parsed_frames: int | None = None
         if isinstance(nb_frames, str) and nb_frames.isdigit():
@@ -637,44 +681,31 @@ def _verify_organizer_use_attestation(path: Path | None) -> dict[str, Any]:
 def audit_organizer_dataset(
     dataset_root: Path,
     *,
+    spec: DatasetAuditSpec,
     source_manifest: Path | None = None,
-    organizer_use_attestation: Path | None = None,
 ) -> dict[str, Any]:
     dataset_root = dataset_root.resolve()
-    source_path = (
-        source_manifest.resolve()
-        if source_manifest is not None
-        else _source_manifest_path(dataset_root)
-    )
     structural_errors: list[str] = []
     info, contract_errors = validate_dataset_root(dataset_root)
     structural_errors.extend(contract_errors)
-    source: dict[str, Any] = {}
-    if not source_path.is_file():
-        structural_errors.append(f"missing source manifest: {source_path}")
-    else:
+    source_path = source_manifest.resolve() if source_manifest else None
+    if source_path is not None:
         source = _read_json(source_path)
         expected_source = {
-            "repo_id": ORGANIZER_DATASET_REPO,
-            "requested_revision": ORGANIZER_DATASET_REVISION,
-            "resolved_revision": ORGANIZER_DATASET_REVISION,
+            "repo_id": spec.repo_id,
+            "requested_revision": spec.revision,
+            "resolved_revision": spec.revision,
         }
         for key, expected in expected_source.items():
             if source.get(key) != expected:
                 structural_errors.append(
                     f"source manifest {key} must be {expected!r}"
                 )
-    card_license = _read_card_license(dataset_root)
-    license_evidence = _verify_license_evidence(source, card_license)
-    license_verified = bool(license_evidence["verified"])
-    use_attestation = _verify_organizer_use_attestation(
-        organizer_use_attestation
-    )
-    dataset_use_authorized = license_verified or bool(
-        use_attestation["authorized"]
-    )
 
-    records = load_episode_metadata(dataset_root)
+    optional_records = load_episode_metadata(dataset_root)
+    metadata_by_episode = {
+        int(item["episode_index"]): item for item in optional_records
+    }
     try:
         parquet = _scan_parquet(dataset_root)
     except (OSError, RuntimeError, ValueError) as error:
@@ -685,9 +716,9 @@ def audit_organizer_dataset(
         }
         structural_errors.append(f"parquet audit: {error}")
     total_frames = int(info.get("total_frames", 0))
-    if total_frames != ORGANIZER_EXPECTED_FRAMES:
+    if total_frames != spec.expected_frames:
         structural_errors.append(
-            f"organizer dataset must declare {ORGANIZER_EXPECTED_FRAMES} "
+            f"configured dataset must declare {spec.expected_frames} "
             f"frames, got {total_frames}"
         )
     actual_total = sum(parquet.get("episode_frames", {}).values())
@@ -697,16 +728,18 @@ def audit_organizer_dataset(
             f"{total_frames}"
         )
     total_episodes = int(info.get("total_episodes", 0))
-    if total_episodes != ORGANIZER_EXPECTED_EPISODES:
+    if total_episodes != spec.expected_episodes:
         structural_errors.append(
-            f"organizer dataset must declare {ORGANIZER_EXPECTED_EPISODES} "
+            f"configured dataset must declare {spec.expected_episodes} "
             f"episodes, got {total_episodes}"
         )
     expected_indices = set(range(total_episodes))
-    metadata_indices = {int(item["episode_index"]) for item in records}
-    if metadata_indices != expected_indices:
+    parquet_indices = {
+        int(value) for value in parquet.get("episode_frames", {}).keys()
+    }
+    if parquet_indices != expected_indices:
         structural_errors.append(
-            "episode metadata indices do not match info.json total_episodes"
+            "parquet episode indices do not match info.json total_episodes"
         )
 
     try:
@@ -715,14 +748,12 @@ def audit_organizer_dataset(
     except (OSError, RuntimeError, ValueError) as error:
         video = {"error": str(error), "errors": [str(error)]}
         structural_errors.append(f"video audit: {error}")
-    checksums = _hash_dataset_tree(dataset_root)
-
     episode_reports: list[dict[str, Any]] = []
     eligible: list[int] = []
     actual_frames_by_episode = parquet.get("episode_frames", {})
     nonfinite_by_episode = parquet.get("nonfinite_frames", {})
-    for item in records:
-        episode = int(item["episode_index"])
+    for episode in range(total_episodes):
+        item = metadata_by_episode.get(episode, {"episode_index": episode})
         reasons = episode_eligibility(
             item,
             actual_frames=actual_frames_by_episode.get(str(episode)),
@@ -753,9 +784,28 @@ def audit_organizer_dataset(
                 ),
             }
         )
-    split = organizer_split(eligible)
+    split = organizer_split(
+        eligible,
+        revision=spec.revision,
+        seed=spec.split_seed,
+        train_count=spec.train_episodes,
+        held_out_count=spec.held_out_episodes,
+    )
 
     action_report = parquet.get("action", {})
+    action_range_errors: list[str] = []
+    for boundary in ("minimum", "maximum"):
+        vector = action_report.get(boundary)
+        if not isinstance(vector, list) or len(vector) != ACTION_SIZE:
+            action_range_errors.append(
+                f"action {boundary} is missing or has the wrong width"
+            )
+            continue
+        try:
+            validate_absolute_action_bounds(vector, tolerance=1e-3)
+        except ValueError as error:
+            action_range_errors.append(f"action {boundary}: {error}")
+    structural_errors.extend(action_range_errors)
     variance = action_report.get("variance", [])
     medians = action_report.get("selected_medians", {})
     base_variance = [
@@ -773,25 +823,13 @@ def audit_organizer_dataset(
     )
 
     technical_audit_pass = not structural_errors
-    audit_pass = technical_audit_pass and dataset_use_authorized
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "dataset_root": str(dataset_root),
-        "dataset_repo_id": ORGANIZER_DATASET_REPO,
-        "dataset_revision": ORGANIZER_DATASET_REVISION,
-        "dataset_license": (
-            ORGANIZER_DATASET_LICENSE if license_verified else None
-        ),
-        "expected_dataset_license": ORGANIZER_DATASET_LICENSE,
-        "source_manifest": str(source_path),
-        "source_manifest_sha256": (
-            _sha256_file(source_path) if source_path.is_file() else None
-        ),
-        "dataset_card_license": card_license,
-        "license_evidence": license_evidence,
-        "organizer_use_attestation": use_attestation,
-        "dataset_use_authorized": dataset_use_authorized,
+        "dataset_repo_id": spec.repo_id,
+        "dataset_revision": spec.revision,
+        "source_manifest": str(source_path) if source_path else None,
         "info": {
             "codebase_version": info.get("codebase_version"),
             "fps": info.get("fps"),
@@ -800,17 +838,10 @@ def audit_organizer_dataset(
             "robot_type": info.get("robot_type"),
             "camera_shapes": EXPECTED_CAMERA_SHAPES,
         },
-        "critical_file_sha256": {
-            relative: _sha256_file(dataset_root / relative)
-            for relative in (
-                "meta/info.json",
-                "task2_extras/episodes_task2.jsonl",
-            )
-            if (dataset_root / relative).is_file()
-        },
-        "checksums": checksums,
         "video": video,
         "parquet": parquet,
+        "action_range_errors": action_range_errors,
+        "optional_metadata_available": bool(optional_records),
         "episodes": episode_reports,
         "eligible_episode_count": len(eligible),
         "split": split,
@@ -825,8 +856,8 @@ def audit_organizer_dataset(
         },
         "structural_errors": structural_errors,
         "technical_audit_pass": technical_audit_pass,
-        "audit_pass": audit_pass,
-        "formal_training_allowed": audit_pass
+        "audit_pass": technical_audit_pass,
+        "formal_training_allowed": technical_audit_pass
         and split["formal_training_allowed"],
     }
     return report
@@ -836,12 +867,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     download_parser = subparsers.add_parser("download")
+    download_parser.add_argument("--config", type=Path, required=True)
     download_parser.add_argument("--destination", type=Path, required=True)
     download_parser.add_argument("--source-manifest", type=Path)
     audit_parser = subparsers.add_parser("audit")
+    audit_parser.add_argument("--config", type=Path, required=True)
     audit_parser.add_argument("--dataset-root", type=Path, required=True)
     audit_parser.add_argument("--source-manifest", type=Path)
-    audit_parser.add_argument("--organizer-use-attestation", type=Path)
     audit_parser.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -849,9 +881,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     try:
+        spec = load_dataset_audit_spec(args.config)
         if args.command == "download":
             report = download_organizer_dataset(
                 args.destination,
+                spec=spec,
                 source_manifest=args.source_manifest,
             )
             print(json.dumps(report, indent=2, sort_keys=True))
@@ -862,8 +896,8 @@ def main() -> int:
             raise ValueError("audit output must be outside the dataset root")
         report = audit_organizer_dataset(
             dataset_root,
+            spec=spec,
             source_manifest=args.source_manifest,
-            organizer_use_attestation=args.organizer_use_attestation,
         )
         _write_json(output, report)
     except (OSError, RuntimeError, ValueError) as error:

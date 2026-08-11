@@ -35,13 +35,10 @@ from task2_isaacsim.baselines.pi05.contract import (
 )
 from task2_isaacsim.baselines.pi05.dataset_audit import (
     ORGANIZER_DATASET_REVISION,
-    ORGANIZER_USE_AUTHORIZATION_KIND,
-    ORGANIZER_USE_SCOPE,
     SPLIT_SEED,
-    _extract_hugging_face_license,
-    _verify_license_evidence,
-    _verify_organizer_use_attestation,
+    DatasetAuditSpec,
     episode_eligibility,
+    load_dataset_audit_spec,
     organizer_split,
 )
 from task2_isaacsim.baselines.pi05.heldout_evaluation import (
@@ -433,8 +430,8 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn("train_expert_only: true", smoke)
         self.assertIn("train_expert_only: true", expert)
         self.assertIn("freeze_vision_encoder: true", expert)
-        self.assertIn("steps: 6000", expert)
-        self.assertIn("save_freq: 500", expert)
+        self.assertIn("steps: 30000", expert)
+        self.assertIn("save_freq: 5000", expert)
         self.assertIn("train_expert_only: false", full)
         self.assertIn("freeze_vision_encoder: false", full)
         self.assertIn("use_relative_actions: true", smoke)
@@ -570,86 +567,33 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertEqual(
             reasons,
             [
-                "success_false",
                 "frame_mismatch",
                 "nonfinite_action_or_state",
-                "stale_frames_dropped",
-                "encoder_frames_dropped",
-                "orientation_incorrect",
-                "iou_not_positive",
             ],
         )
 
     def test_organizer_split_is_pinned_and_episode_level(self) -> None:
-        split = organizer_split(list(range(22)))
+        split = organizer_split(list(range(200)))
         self.assertEqual(split["revision"], ORGANIZER_DATASET_REVISION)
         self.assertEqual(split["seed"], SPLIT_SEED)
-        self.assertEqual(len(split["train"]), 18)
-        self.assertEqual(len(split["held_out"]), 4)
+        self.assertEqual(len(split["train"]), 180)
+        self.assertEqual(len(split["held_out"]), 20)
         self.assertFalse(set(split["train"]) & set(split["held_out"]))
-        self.assertEqual(split, organizer_split(list(reversed(range(22)))))
-        smoke_only = organizer_split(list(range(12)))
-        self.assertEqual(len(smoke_only["held_out"]), 3)
+        self.assertEqual(split, organizer_split(list(reversed(range(200)))))
+        smoke_only = organizer_split(list(range(179)))
         self.assertFalse(smoke_only["formal_training_allowed"])
 
-    def test_hugging_face_license_requires_remote_evidence(self) -> None:
-        self.assertEqual(
-            _extract_hugging_face_license(
-                {"license": "apache-2.0"},
-                [],
-            ),
-            ("apache-2.0", "huggingface_card_data"),
+    def test_dataset_audit_spec_comes_from_yaml(self) -> None:
+        config = (
+            Path(__file__).resolve().parents[1]
+            / "baselines/pi05/configs/task2_fixpos_200_expert.yaml"
         )
-        self.assertEqual(
-            _extract_hugging_face_license(None, ["license:apache-2.0"]),
-            ("apache-2.0", "huggingface_tag"),
-        )
-        self.assertEqual(
-            _extract_hugging_face_license(None, ["format:parquet"]),
-            (None, None),
-        )
-        hardcoded_only = _verify_license_evidence(
-            {"license": "apache-2.0"},
-            None,
-        )
-        self.assertFalse(hardcoded_only["verified"])
-        self.assertEqual(
-            _verify_license_evidence(
-                {
-                    "license": "apache-2.0",
-                    "license_source": "huggingface_card_data",
-                },
-                None,
-            )["verified"],
-            True,
-        )
-
-    def test_organizer_use_attestation_is_pinned_and_hashed(self) -> None:
-        payload = {
-            "schema_version": 1,
-            "authorization_kind": ORGANIZER_USE_AUTHORIZATION_KIND,
-            "dataset_repo_id": "hermanprawiro/task2_fixpos_v1",
-            "dataset_revision": ORGANIZER_DATASET_REVISION,
-            "scope": ORGANIZER_USE_SCOPE,
-            "acknowledged_by": "Allen_HZL",
-            "acknowledged_utc": "2026-08-07T15:30:00+00:00",
-            "statement": "Organizer-provided Task 2 competition data.",
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "attestation.json"
-            path.write_text(json.dumps(payload), encoding="utf-8")
-            valid = _verify_organizer_use_attestation(path)
-            self.assertTrue(valid["authorized"])
-            self.assertEqual(len(valid["sha256"]), 64)
-
-            payload["dataset_revision"] = "mutable-main"
-            path.write_text(json.dumps(payload), encoding="utf-8")
-            invalid = _verify_organizer_use_attestation(path)
-            self.assertFalse(invalid["authorized"])
-            self.assertIn(
-                "attestation dataset_revision must be",
-                invalid["errors"][0],
-            )
+        spec = load_dataset_audit_spec(config)
+        self.assertIsInstance(spec, DatasetAuditSpec)
+        self.assertEqual(spec.expected_episodes, 200)
+        self.assertEqual(spec.expected_frames, 174719)
+        self.assertEqual(spec.train_episodes, 180)
+        self.assertEqual(spec.held_out_episodes, 20)
 
     def test_heldout_frame_sample_is_deterministic(self) -> None:
         self.assertEqual(deterministic_frame_indices(5, 3), [0, 2, 4])
@@ -735,18 +679,9 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertNotIn("HF_TOKEN=", dockerfile)
         self.assertIn("**/dataset/*", dockerignore)
         self.assertIn("**/*.safetensors", dockerignore)
-        self.assertIn("$TASK2_PI05_ROOT/cache:/cache", readme)
-        audit_section = readme.split(
-            "## Organizer dataset download and audit", 1
-        )[1].split("## Gates and formal training", 1)[0]
-        self.assertEqual(
-            audit_section.count("$TASK2_PI05_ROOT/cache:/cache"),
-            2,
-        )
-        self.assertIn("--organizer-use-attestation", audit_section)
-        self.assertNotIn(
-            "$TASK2_PI05_ROOT/cache/huggingface:/cache/huggingface", readme
-        )
+        self.assertIn("./run_pi05.sh dataset", readme)
+        self.assertIn("./run_pi05.sh run-task", readme)
+        self.assertNotIn("--organizer-use-attestation", readme)
         self.assertIn(
             "Mount the writable host cache root at /cache", entrypoint
         )

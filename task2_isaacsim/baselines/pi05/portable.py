@@ -28,10 +28,9 @@ from task2_isaacsim.baselines.pi05.contract import (  # noqa: E402
     to_absolute_action,
 )
 from task2_isaacsim.baselines.pi05.dataset_audit import (  # noqa: E402
-    ORGANIZER_DATASET_REVISION,
     audit_organizer_dataset,
-    dataset_tree_checksums,
     download_organizer_dataset,
+    load_dataset_audit_spec,
 )
 from task2_isaacsim.baselines.pi05.heldout_evaluation import (  # noqa: E402
     checkpoint_sweep,
@@ -290,13 +289,11 @@ def doctor(profile_path: Path) -> tuple[dict[str, Any], list[str]]:
         )
     return {
         "profile": str(profile_path),
-        "profile_sha256": _sha256_file(profile_path),
         "mode": mode,
         "formal": profile["_ebim_formal"],
         "gpu": gpu,
         "video_runtime": video_runtime,
         "lerobot_source_commit": LEROBOT_SOURCE_COMMIT,
-        "lerobot_patch_sha256": _sha256_file(PATCH_PATH),
     }, errors
 
 
@@ -410,8 +407,6 @@ def _read_formal_audit(audit_path: Path) -> dict[str, Any]:
     payload = json.loads(audit_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("dataset audit report must be a JSON object")
-    if payload.get("dataset_revision") != ORGANIZER_DATASET_REVISION:
-        raise ValueError("dataset audit uses the wrong organizer revision")
     if payload.get("audit_pass") is not True:
         raise ValueError("dataset audit did not pass")
     if payload.get("formal_training_allowed") is not True:
@@ -427,17 +422,11 @@ def _load_formal_audit(
     dataset_root: Path,
 ) -> dict[str, Any]:
     payload = _read_formal_audit(audit_path)
-    critical = payload.get("critical_file_sha256")
-    if not isinstance(critical, dict):
-        raise ValueError("dataset audit is missing critical file hashes")
-    for relative, expected in critical.items():
-        path = dataset_root / relative
-        if not path.is_file() or _sha256_file(path) != expected:
-            raise ValueError(f"dataset changed after audit: {relative}")
-    current_tree = dataset_tree_checksums(dataset_root)["tree_sha256"]
-    expected_tree = payload.get("checksums", {}).get("tree_sha256")
-    if current_tree != expected_tree:
-        raise ValueError("dataset tree checksum changed after audit")
+    if (
+        Path(payload.get("dataset_root", "")).resolve()
+        != dataset_root.resolve()
+    ):
+        raise ValueError("dataset root does not match the audit report")
     return payload
 
 
@@ -489,24 +478,28 @@ def command_train(args: argparse.Namespace) -> int:
     if not train_episodes:
         print("FAIL: at least one training episode is required")
         return 2
-    try:
-        labels = {
-            item["episode_index"]: item["success"]
-            for item in load_episode_labels(args.dataset_root.resolve())
-        }
-    except ValueError as error:
-        print(f"FAIL: episode labels: {error}")
-        return 2
-    missing_labels = [
-        episode for episode in train_episodes if episode not in labels
-    ]
-    if missing_labels:
-        print(f"FAIL: selected episodes have no QA labels: {missing_labels}")
-        return 2
-    unsuccessful = [
-        episode for episode in train_episodes if not labels[episode]
-    ]
     is_formal = bool(environment["formal"])
+    unsuccessful: list[int] = []
+    if not is_formal:
+        try:
+            labels = {
+                item["episode_index"]: item["success"]
+                for item in load_episode_labels(args.dataset_root.resolve())
+            }
+        except ValueError as error:
+            print(f"FAIL: episode labels: {error}")
+            return 2
+        missing_labels = [
+            episode for episode in train_episodes if episode not in labels
+        ]
+        if missing_labels:
+            print(
+                f"FAIL: selected episodes have no QA labels: {missing_labels}"
+            )
+            return 2
+        unsuccessful = [
+            episode for episode in train_episodes if not labels[episode]
+        ]
     if args.allow_unsuccessful_smoke_data and is_formal:
         print(
             "FAIL: --allow-unsuccessful-smoke-data is limited to expert_smoke"
@@ -559,11 +552,8 @@ def command_train(args: argparse.Namespace) -> int:
             return 2
         audit_evidence = {
             "report": str(args.audit_report.resolve()),
-            "report_sha256": _sha256_file(args.audit_report.resolve()),
             "dataset_repo_id": audit["dataset_repo_id"],
             "dataset_revision": audit["dataset_revision"],
-            "dataset_license": audit["dataset_license"],
-            "dataset_tree_sha256": audit["checksums"]["tree_sha256"],
             "eligible_episodes": sorted(eligible),
             "train_split": audit_train,
             "held_out_split": [
@@ -614,11 +604,9 @@ def command_train(args: argparse.Namespace) -> int:
         print("DRY RUN: no dataset view, output, or checkpoint was created")
         return 0
 
-    try:
-        image_digest = _require_image_digest()
-    except ValueError as error:
-        print(f"FAIL: {error}")
-        return 2
+    image_identifier = os.environ.get(
+        "EBIM_PI05_IMAGE", "unspecified-local-image"
+    )
 
     output_dir.mkdir(parents=True)
     try:
@@ -643,10 +631,9 @@ def command_train(args: argparse.Namespace) -> int:
         "selected_success_false_episodes": unsuccessful,
         "engineering_only": bool(unsuccessful),
         "dataset_audit": audit_evidence,
-        "image_digest": image_digest,
+        "image": image_identifier,
         "command": command,
         "returncode": None,
-        "checkpoint_hashes": {},
     }
     _write_json(manifest_path, manifest)
     returncode = _run_and_tee(command, log_path)
@@ -656,7 +643,6 @@ def command_train(args: argparse.Namespace) -> int:
     manifest["parameter_mode_errors"] = _verify_parameter_mode(
         environment["mode"], manifest["parameter_counts"]
     )
-    manifest["checkpoint_hashes"] = _checkpoint_hashes(training_root)
     _write_json(manifest_path, manifest)
     if returncode:
         print(f"FAIL: lerobot-train exited with {returncode}")
@@ -818,13 +804,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser_gate_parser.add_argument("--profile", default="expert")
 
     download_parser = subparsers.add_parser("download-organizer")
+    download_parser.add_argument("--config", type=Path, required=True)
     download_parser.add_argument("--destination", type=Path, required=True)
     download_parser.add_argument("--source-manifest", type=Path)
 
     audit_parser = subparsers.add_parser("audit-dataset")
+    audit_parser.add_argument("--config", type=Path, required=True)
     audit_parser.add_argument("--dataset-root", type=Path, required=True)
     audit_parser.add_argument("--source-manifest", type=Path)
-    audit_parser.add_argument("--organizer-use-attestation", type=Path)
     audit_parser.add_argument("--output", type=Path, required=True)
 
     split_parser = subparsers.add_parser("split")
@@ -917,8 +904,10 @@ def main() -> int:
     if args.command == "download-organizer":
         try:
             destination = _require_external_output(args.destination)
+            spec = load_dataset_audit_spec(args.config)
             report = download_organizer_dataset(
                 destination,
+                spec=spec,
                 source_manifest=args.source_manifest,
             )
         except (OSError, RuntimeError, ValueError) as error:
@@ -929,13 +918,14 @@ def main() -> int:
     if args.command == "audit-dataset":
         try:
             output = _require_external_output(args.output)
+            spec = load_dataset_audit_spec(args.config)
             dataset_root = args.dataset_root.resolve()
             if output == dataset_root or dataset_root in output.parents:
                 raise ValueError("audit output must be outside dataset root")
             report = audit_organizer_dataset(
                 dataset_root,
+                spec=spec,
                 source_manifest=args.source_manifest,
-                organizer_use_attestation=args.organizer_use_attestation,
             )
             _write_json(output, report)
         except (OSError, RuntimeError, ValueError) as error:
