@@ -20,6 +20,20 @@ from task2_isaacsim.baselines.pi05.contract import (
 from task2_isaacsim.common.state_contract import finite_state
 
 ROBOT_CAMERA_KEYS = ("head", "wrist_left", "wrist_right")
+SPINE_POLICY_MIN_M = 0.0
+SPINE_POLICY_MAX_M = 0.6
+
+
+def policy_command_topics(topics: dict[str, Any]) -> dict[str, str]:
+    """Return the fixed-base policy publication contract."""
+
+    return {
+        **{
+            group: entry["command"]
+            for group, entry in topics["bridge"]["joint_groups"].items()
+        },
+        "spine": topics["teleop"]["spine_target"],
+    }
 
 
 def replace_action_queue(
@@ -67,8 +81,7 @@ class ReadinessConfig:
     target_x: float
     target_y: float
     target_yaw: float
-    spine_target_m: float = 0.4857
-    spine_tolerance_m: float = 0.015
+    initial_spine_max_abs_m: float = 0.01
     position_tolerance_m: float = 0.05
     yaw_tolerance_rad: float = 0.10
     velocity_threshold: float = 0.02
@@ -119,17 +132,19 @@ class BaseReadinessGate:
         position_error = math.hypot(dx, dy)
         yaw_error = abs(angular_error(float(pose[2]), cfg.target_yaw))
         speed = math.sqrt(sum(float(value) ** 2 for value in velocity))
-        spine_error = abs(float(spine_position) - cfg.spine_target_m)
+        spine_abs = abs(float(spine_position))
         pose_within = (
             position_error <= cfg.position_tolerance_m
             and yaw_error <= cfg.yaw_tolerance_rad
         )
-        spine_within = spine_error <= cfg.spine_tolerance_m
+        initial_spine_within = spine_abs <= cfg.initial_spine_max_abs_m
         within = (
-            pose_within and spine_within and speed <= cfg.velocity_threshold
+            pose_within
+            and initial_spine_within
+            and speed <= cfg.velocity_threshold
         )
         if self.phase == RunnerPhase.PI05_MANIPULATION:
-            if pose_within and spine_within:
+            if pose_within:
                 self.last_evidence = {
                     "ready": True,
                     "phase": self.phase.value,
@@ -144,16 +159,10 @@ class BaseReadinessGate:
                     "yaw_error_rad": yaw_error,
                     "speed": speed,
                     "spine_position_m": float(spine_position),
-                    "spine_target_m": cfg.spine_target_m,
-                    "spine_error_m": spine_error,
+                    "spine_policy_controlled": True,
                 }
                 return True
-            reason = (
-                "spine_out_of_tolerance"
-                if not spine_within
-                else "base_pose_out_of_tolerance"
-            )
-            self.stop(reason)
+            self.stop("base_pose_out_of_tolerance")
             return False
         if self.phase == RunnerPhase.STOPPED:
             return False
@@ -176,8 +185,8 @@ class BaseReadinessGate:
             "yaw_error_rad": yaw_error,
             "speed": speed,
             "spine_position_m": float(spine_position),
-            "spine_target_m": cfg.spine_target_m,
-            "spine_error_m": spine_error,
+            "initial_spine_max_abs_m": cfg.initial_spine_max_abs_m,
+            "initial_spine_within": initial_spine_within,
             "settled_for_s": 0.0
             if self._settle_since is None
             else max(0.0, now - self._settle_since),
@@ -266,21 +275,22 @@ def freshness_metrics(
 
 
 def safe_action(
-    raw_action: Any, *, spine_hold: float
+    raw_action: Any,
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
-    """Project actuator targets for simulation, fix base, and hold the spine.
+    """Project actuator targets while fixing base and preserving the spine.
 
-    Gripper outputs remain absolute policy dimensions.  The simulator adapter
-    clips their finite raw values to exact actuator ranges. Non-finite values
-    are rejected before anything can be published.
+    Gripper and spine outputs remain absolute policy dimensions. The simulator
+    adapter clips their finite raw values to the demonstrated pilot ranges.
+    Non-finite values are rejected before anything can be published.
     """
 
     raw = tuple(float(value) for value in raw_action)
     if len(raw) != ACTION_SIZE:
         raise ValueError(f"policy action must contain {ACTION_SIZE} values")
-    if not all(math.isfinite(raw[index]) for index in (17, 18)):
-        raise ValueError("policy gripper actions must be finite")
-    effective = list(apply_fixed_mobile_axes(raw, spine_height=spine_hold))
+    if not all(math.isfinite(raw[index]) for index in (17, 18, 19)):
+        raise ValueError("policy gripper and spine actions must be finite")
+    spine_target = min(SPINE_POLICY_MAX_M, max(SPINE_POLICY_MIN_M, raw[19]))
+    effective = list(apply_fixed_mobile_axes(raw, spine_height=spine_target))
     effective[17] = min(1.0, max(0.0, effective[17]))
     effective[18] = min(1.0, max(0.0, effective[18]))
     effective = list(project_arm_action_bounds(effective))

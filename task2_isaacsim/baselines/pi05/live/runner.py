@@ -6,13 +6,13 @@
 from __future__ import annotations
 
 import argparse
-from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import math
 import signal
 import statistics
 import time
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -22,16 +22,17 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, JointState
-from std_msgs.msg import String
+from std_msgs.msg import Float64, String
 
 from task2_isaacsim.baselines.pi05.contract import PI05_CONTRACT
 from task2_isaacsim.baselines.pi05.live.core import (
     BaseReadinessGate,
-    FreshnessError,
     FreshnessConfig,
+    FreshnessError,
     ReadinessConfig,
     RunnerPhase,
     freshness_metrics,
+    policy_command_topics,
     replace_action_queue,
     safe_action,
     validate_live_state,
@@ -52,6 +53,8 @@ from task2_isaacsim.scripts.topics import camera_topic, load_topics
 TOPICS = load_topics()
 CAMERA_ENTRIES = TOPICS["cameras"]["robot"]
 COMMAND_ENTRIES = TOPICS["bridge"]["joint_groups"]
+SPINE_COMMAND_TOPIC = TOPICS["teleop"]["spine_target"]
+POLICY_COMMAND_TOPICS = policy_command_topics(TOPICS)
 
 
 def _image_array(message: Image) -> np.ndarray:
@@ -135,6 +138,9 @@ class LiveObservationNode(Node):
                 self._command_publishers[group] = self.create_publisher(
                     JointState, entry["command"], 10
                 )
+            self._command_publishers["spine"] = self.create_publisher(
+                Float64, SPINE_COMMAND_TOPIC, 10
+            )
 
     def _on_image(self, key: str, message: Image) -> None:
         try:
@@ -228,8 +234,8 @@ class LiveObservationNode(Node):
 
     def command_publisher_counts(self) -> dict[str, int]:
         return {
-            group: len(self.get_publishers_info_by_topic(entry["command"]))
-            for group, entry in COMMAND_ENTRIES.items()
+            group: len(self.get_publishers_info_by_topic(topic))
+            for group, topic in POLICY_COMMAND_TOPICS.items()
         }
 
     def publish_action(self, action: tuple[float, ...]) -> None:
@@ -253,7 +259,8 @@ class LiveObservationNode(Node):
             message.name = list(names)
             message.position = list(positions)
             self._command_publishers[group].publish(message)
-        self.publish_count += 4
+        self._command_publishers["spine"].publish(Float64(data=action[19]))
+        self.publish_count += 5
 
 
 def _percentile(values: list[float], fraction: float) -> float:
@@ -277,7 +284,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--base-target", nargs=3, type=float, required=True)
     parser.add_argument("--base-coordinate-frame", required=True)
-    parser.add_argument("--confirm-fixed-staging", action="store_true")
+    parser.add_argument("--confirm-fixed-base-staging", action="store_true")
     parser.add_argument("--arm-simulator", action="store_true")
     parser.add_argument("--warmup-decisions", type=int, default=3)
     parser.add_argument("--max-decisions", type=int, default=5)
@@ -288,8 +295,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yaw-tolerance-rad", type=float, default=0.10)
     parser.add_argument("--velocity-threshold", type=float, default=0.02)
     parser.add_argument("--settle-duration-s", type=float, default=1.0)
-    parser.add_argument("--spine-ready-height-m", type=float, default=0.4857)
-    parser.add_argument("--spine-tolerance-m", type=float, default=0.015)
+    parser.add_argument("--initial-spine-max-abs-m", type=float, default=0.01)
     parser.add_argument("--camera-max-age-s", type=float, default=0.65)
     parser.add_argument("--camera-max-skew-s", type=float, default=0.55)
     parser.add_argument("--state-max-age-s", type=float, default=0.15)
@@ -299,10 +305,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901 - one bounded live control loop
     args = parse_args()
-    if not args.confirm_fixed_staging:
-        print("FAIL: --confirm-fixed-staging is required")
+    if not args.confirm_fixed_base_staging:
+        print("FAIL: --confirm-fixed-base-staging is required")
         return 2
     if args.arm_simulator and args.max_publish_actions <= 0:
         print("FAIL: --max-publish-actions must be positive")
@@ -312,8 +318,7 @@ def main() -> int:
         return 2
     readiness = ReadinessConfig(
         *args.base_target,
-        spine_target_m=args.spine_ready_height_m,
-        spine_tolerance_m=args.spine_tolerance_m,
+        initial_spine_max_abs_m=args.initial_spine_max_abs_m,
         position_tolerance_m=args.position_tolerance_m,
         yaw_tolerance_rad=args.yaw_tolerance_rad,
         velocity_threshold=args.velocity_threshold,
@@ -345,7 +350,7 @@ def main() -> int:
     print(
         "Enabled command topics: "
         + (
-            ", ".join(entry["command"] for entry in COMMAND_ENTRIES.values())
+            ", ".join(POLICY_COMMAND_TOPICS.values())
             if args.arm_simulator
             else "<none>"
         )
@@ -376,6 +381,8 @@ def main() -> int:
     publish_blocked: str | None = None
     manipulation_latched = False
     last_freshness_rejection: dict | None = None
+    initial_spine_position_m: float | None = None
+    spine_trajectory: list[dict[str, float | int]] = []
     worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pi05")
 
     # Warm up CUDA/model kernels before steady-state measurements. No action is
@@ -406,6 +413,7 @@ def main() -> int:
             warmup_images = None
             stale_observations += 1
     if warmup_images is not None and warmup_state is not None:
+        initial_spine_position_m = warmup_state[28]
         for _ in range(args.warmup_decisions):
             _, latency = policy.predict_chunk(
                 images=warmup_images, state=warmup_state
@@ -452,9 +460,7 @@ def main() -> int:
                     created_at = time.monotonic()
                     validated = []
                     for validation_index, action in enumerate(chunk):
-                        validated.append(
-                            safe_action(action, spine_hold=state[28])
-                        )
+                        validated.append(safe_action(action))
                 except (RuntimeError, ValueError) as error:
                     invalid_actions += 1
                     events.append(
@@ -481,7 +487,8 @@ def main() -> int:
                 event = {
                     "decision": event_index,
                     "valid": True,
-                    "fixed_staging": True,
+                    "fixed_base_staging": True,
+                    "policy_controlled_spine": True,
                     "readiness": future_context["readiness"],
                     "freshness": future_context["freshness"],
                     "inference_latency_s": latency,
@@ -502,6 +509,8 @@ def main() -> int:
                             "latency_s": latency,
                             "raw_gripper": first_raw[17:19],
                             "effective_gripper": first_effective[17:19],
+                            "raw_spine_target_m": first_raw[19],
+                            "effective_spine_target_m": first_effective[19],
                             "first_arm_target": first_effective[3:17],
                         }
                     ),
@@ -541,6 +550,13 @@ def main() -> int:
                         node.publish_action(effective)
                         published_actions += 1
                         events[event_index]["published_actions"] += 1
+                        spine_trajectory.append(
+                            {
+                                "published_action": published_actions,
+                                "measured_m": float(node.joints[SPINE_JOINT]),
+                                "target_m": effective[19],
+                            }
+                        )
                         next_publish_at = now + 1.0 / args.action_rate_hz
                 if publish_blocked:
                     queue.clear()
@@ -637,8 +653,10 @@ def main() -> int:
     summary = {
         "schema_version": 2,
         "mode": mode,
-        "fixed_staging": True,
+        "fixed_base_staging": True,
         "manipulation_only": True,
+        "policy_controlled_groups": list(POLICY_COMMAND_TOPICS),
+        "forbidden_groups": ["base"],
         "checkpoint": str(args.checkpoint.resolve()),
         "dataset_root": str(args.dataset_root.resolve()),
         "dataset_repo_id": args.dataset_repo_id,
@@ -670,6 +688,37 @@ def main() -> int:
         ),
         "last_freshness_rejection": last_freshness_rejection,
         "base_input_events": node.base_input_count,
+        "spine_control": {
+            "policy_controlled": True,
+            "command_topic": SPINE_COMMAND_TOPIC,
+            "initial_measured_m": initial_spine_position_m,
+            "final_measured_m": (
+                float(node.joints[SPINE_JOINT])
+                if SPINE_JOINT in node.joints
+                else None
+            ),
+            "target_min_m": (
+                min(sample["target_m"] for sample in spine_trajectory)
+                if spine_trajectory
+                else None
+            ),
+            "target_max_m": (
+                max(sample["target_m"] for sample in spine_trajectory)
+                if spine_trajectory
+                else None
+            ),
+            "measured_min_m": (
+                min(sample["measured_m"] for sample in spine_trajectory)
+                if spine_trajectory
+                else None
+            ),
+            "measured_max_m": (
+                max(sample["measured_m"] for sample in spine_trajectory)
+                if spine_trajectory
+                else None
+            ),
+            "trajectory": spine_trajectory,
+        },
         "elapsed_s": elapsed,
         "inference_latency_s": {
             "p50": statistics.median(latencies) if latencies else None,
@@ -683,10 +732,7 @@ def main() -> int:
         and not node.stop_requested
         and publish_blocked is None
         and (
-            (
-                not args.arm_simulator
-                and len(events) == args.max_decisions
-            )
+            (not args.arm_simulator and len(events) == args.max_decisions)
             or (
                 args.arm_simulator
                 and bool(events)

@@ -1,7 +1,7 @@
 # Copyright (c) 2026 The EBiM Benchmark Contributors
 # SPDX-License-Identifier: Apache-2.0
 version: 1
-fixed_staging: true
+fixed_base_staging: true
 manipulation_only: true
 policy:
   chunk_size: 50
@@ -20,8 +20,11 @@ safety:
   queue_refill_actions: 24
   action_rate_hz: 30.0
   effective_base: [0.0, 0.0, 0.0]
-  spine: hold_current
+  spine:
+    control: policy
+    initial_max_abs_m: 0.01
+    target_range_m: [0.0, 0.6]
 publication:
   default: shadow
-  permitted_groups: [left_arm, right_arm, left_gripper, right_gripper]
-  forbidden_groups: [base, spine]
+  permitted_groups: [left_arm, right_arm, left_gripper, right_gripper, spine]
+  forbidden_groups: [base]

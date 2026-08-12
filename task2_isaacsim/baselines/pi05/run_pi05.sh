@@ -14,7 +14,7 @@ fi
 
 TASK2_PI05_ROOT="${TASK2_PI05_ROOT:-/scratch1/2026_ebim/allen_task2_pi05}"
 PI05_TRAIN_IMAGE="${PI05_TRAIN_IMAGE:-ebim-task2-pi05:200-submit-20260812}"
-PI05_LIVE_IMAGE="${PI05_LIVE_IMAGE:-ebim-task2-pi05-live:queue-replace-20260812}"
+PI05_LIVE_IMAGE="${PI05_LIVE_IMAGE:-ebim-task2-pi05-live:spine-policy-20260812}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export ROS_DOMAIN_ID
 ISAACSIM_CONTAINER="${ISAACSIM_CONTAINER:-isaac-sim-5-1-0-workshop}"
@@ -170,7 +170,7 @@ command_run_task() {
   mkdir -p "${output}" "${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/launcher"
   live_shell "ros2 topic pub --once /isaac/task2/scene_reset_request std_msgs/msg/String '{data: reset}'"
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_base.py --target 2.10 3.05 -1.571 --position-tolerance-m 0.015 --yaw-tolerance-rad 0.04 --output /data/evidence/task2_200_submit_20260812/launcher/fixed_base.json"
-  live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_spine.py --target-m 0.50 --output /data/evidence/task2_200_submit_20260812/launcher/fixed_spine.json"
+  live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_spine.py --target-m 0.0 --measured-target-m 0.0 --output /data/evidence/task2_200_submit_20260812/launcher/initial_spine.json"
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/eval_camera_preflight.py --output /data/evidence/task2_200_submit_20260812/launcher/eval_preflight.json"
   exec docker run --rm --gpus all --network host --ipc=host \
     --user "$(id -u):$(id -g)" \
@@ -186,7 +186,7 @@ command_run_task() {
     --dataset-root /data/dataset --dataset-repo-id hermanprawiro/task2_fixpos_200 \
     --output-dir /data/output --base-target 2.10 3.05 -1.571 \
     --base-coordinate-frame dataset_odom_world_verified_against_room_scene \
-    --confirm-fixed-staging --arm-simulator \
+    --confirm-fixed-base-staging --arm-simulator \
     --max-decisions "${max_decisions}" \
     --max-publish-actions "${max_actions}"
 }

@@ -11,7 +11,7 @@ Copy `.env.pi05.example` to `.env.pi05` and set the two local image names:
 ```bash
 TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
 PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
-PI05_LIVE_IMAGE=ebim-task2-pi05-live:queue-replace-20260812
+PI05_LIVE_IMAGE=ebim-task2-pi05-live:spine-policy-20260812
 ```
 
 The formal config pins:
@@ -69,10 +69,12 @@ Use three terminals for a GUI run:
 ```
 
 `run-task` requests a scene reset, follows the fixed base route to
-`(2.10, 3.05, -1.571)`, stages spine command `0.50 m`, checks the evaluation
-camera, and then starts arms/grippers inference. After manipulation begins,
-effective base output is always zero and spine remains at the staged measured
-height. The live runner creates no base or spine publisher.
+`(2.10, 3.05, -1.571)`, returns the spine to the demonstrated near-zero
+starting height, checks the evaluation camera, and then starts inference.
+After manipulation begins, effective base output is always zero. Action 19 is
+clamped to the demonstrated `0.0–0.6 m` range and published to the existing
+`/isaac/spine_target` bridge interface, so PI0.5 controls the spine together
+with both arms and grippers. The runner creates no base publisher.
 
 Background inference starts with 24 actions remaining. Each completed 50-step
 chunk replaces the old residual and receives its completion timestamp. Queue

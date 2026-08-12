@@ -18,6 +18,7 @@ from task2_isaacsim.baselines.pi05.live.core import (
     ReadinessConfig,
     RunnerPhase,
     freshness_metrics,
+    policy_command_topics,
     replace_action_queue,
     safe_action,
     validate_rgb_frame,
@@ -200,37 +201,74 @@ class LiveSafetyTest(unittest.TestCase):
         )
         self.assertAlmostEqual(recovered["state_age_s"], 0.02)
 
-    def test_safety_adapter_projects_grippers_and_holds_mobile_axes(
+    def test_policy_spine_is_preserved_bounded_and_base_stays_fixed(
         self,
     ) -> None:
-        raw, effective = safe_action(valid_action(), spine_hold=0.44)
+        raw, effective = safe_action(valid_action())
         self.assertEqual(raw[:3], (0.1, -0.1, 0.2))
         self.assertEqual(effective[:3], (0.0, 0.0, 0.0))
-        self.assertEqual(effective[19], 0.44)
+        self.assertEqual(effective[19], raw[19])
         projected = valid_action()
         projected[17] = -0.1
         projected[18] = 1.0131
-        raw, effective = safe_action(projected, spine_hold=0.44)
+        projected[19] = 0.7
+        raw, effective = safe_action(projected)
         self.assertEqual(raw[17:19], (-0.1, 1.0131))
         self.assertEqual(effective[17:19], (0.0, 1.0))
+        self.assertEqual(effective[19], 0.6)
+        projected[19] = -0.2
+        _, effective = safe_action(projected)
+        self.assertEqual(effective[19], 0.0)
         projected = valid_action()
         projected[13] = -3.08662
-        raw, effective = safe_action(projected, spine_hold=0.44)
+        raw, effective = safe_action(projected)
         self.assertEqual(raw[13], -3.08662)
         self.assertEqual(effective[13], -3.0770200167)
         projected[13] = -3.14735
-        raw, effective = safe_action(projected, spine_hold=0.44)
+        raw, effective = safe_action(projected)
         self.assertEqual(raw[13], -3.14735)
         self.assertEqual(effective[13], -3.0770200167)
         projected[17] = float("nan")
         with self.assertRaisesRegex(ValueError, "finite"):
-            safe_action(projected, spine_hold=0.44)
+            safe_action(projected)
         invalid_arm = valid_action()
         invalid_arm[3] = float("nan")
         with self.assertRaisesRegex(ValueError, "finite"):
-            safe_action(invalid_arm, spine_hold=0.44)
+            safe_action(invalid_arm)
+        invalid_spine = valid_action()
+        invalid_spine[19] = float("nan")
+        with self.assertRaisesRegex(ValueError, "finite"):
+            safe_action(invalid_spine)
 
-    def test_spine_ready_latches_through_drift_and_revokes_safely(
+    def test_policy_publication_adds_only_spine_and_forbids_base(
+        self,
+    ) -> None:
+        topics = {
+            "bridge": {
+                "joint_groups": {
+                    "left_arm": {"command": "/left_arm"},
+                    "right_arm": {"command": "/right_arm"},
+                    "left_gripper": {"command": "/left_gripper"},
+                    "right_gripper": {"command": "/right_gripper"},
+                }
+            },
+            "teleop": {"spine_target": "/spine"},
+        }
+        command_topics = policy_command_topics(topics)
+        self.assertEqual(
+            set(command_topics),
+            {
+                "left_arm",
+                "right_arm",
+                "left_gripper",
+                "right_gripper",
+                "spine",
+            },
+        )
+        self.assertEqual(command_topics["spine"], "/spine")
+        self.assertNotIn("base", command_topics)
+
+    def test_initial_low_spine_latches_then_policy_motion_is_allowed(
         self,
     ) -> None:
         gate = BaseReadinessGate(
@@ -238,13 +276,13 @@ class LiveSafetyTest(unittest.TestCase):
         )
         gate.reset()
         self.assertFalse(
-            gate.update(0.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.0)
+            gate.update(0.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.02)
         )
         self.assertFalse(
-            gate.update(0.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.4857)
+            gate.update(0.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.0)
         )
         self.assertTrue(
-            gate.update(1.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.4857)
+            gate.update(1.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.0)
         )
         self.assertEqual(gate.phase, RunnerPhase.MANIPULATION_READY)
         gate.arm()
@@ -254,16 +292,16 @@ class LiveSafetyTest(unittest.TestCase):
         self.assertEqual(gate.phase, RunnerPhase.PI05_MANIPULATION)
         gate.reset()
         self.assertEqual(gate.phase, RunnerPhase.BASE_PREPOSITION)
-        gate.update(3.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.4857)
-        gate.update(4.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.4857)
+        gate.update(3.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.0)
+        gate.update(4.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.0)
         gate.arm()
         self.assertFalse(
             gate.update(5.0, (1.2, 2.0, 0.0), (0.0, 0.0, 0.0), 0.486)
         )
         self.assertEqual(gate.phase, RunnerPhase.STOPPED)
         gate.reset()
-        gate.update(6.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.4857)
-        gate.update(7.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.4857)
+        gate.update(6.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.0)
+        gate.update(7.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.0)
         gate.arm()
         gate.note_base_input()
         self.assertEqual(gate.phase, RunnerPhase.STOPPED)
