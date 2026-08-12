@@ -44,13 +44,19 @@ def align_action_chunk(
     capture_at: float,
     ready_at: float,
     action_rate_hz: float,
+    execution_started: bool = True,
 ) -> tuple[int, list[TimedAction]]:
-    """Discard elapsed chunk actions and timestamp the remaining future."""
+    """Align a chunk to action progress, preserving index 0 while idle."""
 
     if action_rate_hz <= 0.0:
         raise ValueError("action_rate_hz must be positive")
     if ready_at < capture_at:
         raise ValueError("ready_at must not precede capture_at")
+    if not execution_started:
+        return 0, [
+            (action, ready_at + index / action_rate_hz, index)
+            for index, action in enumerate(actions)
+        ]
     elapsed_steps = (ready_at - capture_at) * action_rate_hz
     discarded = min(len(actions), math.ceil(max(0.0, elapsed_steps - 1e-9)))
     aligned = [

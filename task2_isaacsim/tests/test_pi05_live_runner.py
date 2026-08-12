@@ -147,6 +147,21 @@ class LiveSafetyTest(unittest.TestCase):
                     )
                 )
 
+    def test_first_chunk_starts_at_zero_when_robot_was_idle(self) -> None:
+        effective_actions = [safe_action(valid_action())[1] for _ in range(50)]
+        discarded, aligned = align_action_chunk(
+            effective_actions,
+            capture_at=100.0,
+            ready_at=100.65,
+            action_rate_hz=30.0,
+            execution_started=False,
+        )
+
+        self.assertEqual(discarded, 0)
+        self.assertEqual([item[2] for item in aligned], list(range(50)))
+        self.assertAlmostEqual(aligned[0][1], 100.65)
+        self.assertAlmostEqual(aligned[1][1], 100.65 + 1.0 / 30.0)
+
     def test_policy_reset_clears_action_queue_seed_index(self) -> None:
         class FakePolicy:
             reset_called = False

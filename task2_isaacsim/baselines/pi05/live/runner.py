@@ -474,6 +474,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                         capture_at=future_context["capture_at"],
                         ready_at=created_at,
                         action_rate_hz=args.action_rate_hz,
+                        execution_started=published_actions > 0,
                     )
                     discarded_prefix_actions += discarded
                 except (RuntimeError, ValueError) as error:
