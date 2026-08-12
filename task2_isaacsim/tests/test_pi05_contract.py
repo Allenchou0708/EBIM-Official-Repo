@@ -712,6 +712,9 @@ class Pi05ContractTest(unittest.TestCase):
 
     def test_container_is_pinned_and_excludes_runtime_artifacts(self) -> None:
         repository_root = Path(__file__).resolve().parents[2]
+        submission_dockerfile = (repository_root / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
         dockerfile = (
             repository_root
             / "task2_isaacsim"
@@ -739,6 +742,13 @@ class Pi05ContractTest(unittest.TestCase):
             / "entrypoint.sh"
         ).read_text(encoding="utf-8")
         self.assertIn("30da8e687a6dfc617fcd94afc367ac7071c376ce", dockerfile)
+        self.assertIn(
+            "e69f329e94be38bc1b1431c35ee556c846c9ff4dbd2bb1036f1971961bd5e1a3",
+            submission_dockerfile,
+        )
+        self.assertIn(
+            'ENTRYPOINT ["/submission-entrypoint.sh"]', submission_dockerfile
+        )
         self.assertIn("lerobot-v0.6.0-task2-relative-map.patch", dockerfile)
         self.assertNotIn("HF_TOKEN=", dockerfile)
         self.assertIn("**/dataset/*", dockerignore)

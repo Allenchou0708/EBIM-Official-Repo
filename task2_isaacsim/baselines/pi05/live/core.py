@@ -22,6 +22,8 @@ from task2_isaacsim.common.state_contract import finite_state
 ROBOT_CAMERA_KEYS = ("head", "wrist_left", "wrist_right")
 SPINE_POLICY_MIN_M = 0.0
 SPINE_POLICY_MAX_M = 0.6
+TimedAction = tuple[tuple[float, ...], float, int]
+QueuedAction = tuple[tuple[float, ...], float, float, int, int]
 
 
 def policy_command_topics(topics: dict[str, Any]) -> dict[str, str]:
@@ -36,18 +38,51 @@ def policy_command_topics(topics: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def replace_action_queue(
-    queue: deque[tuple[tuple[float, ...], float, int]],
+def align_action_chunk(
     actions: list[tuple[float, ...]],
+    *,
+    capture_at: float,
+    ready_at: float,
+    action_rate_hz: float,
+) -> tuple[int, list[TimedAction]]:
+    """Discard elapsed chunk actions and timestamp the remaining future."""
+
+    if action_rate_hz <= 0.0:
+        raise ValueError("action_rate_hz must be positive")
+    if ready_at < capture_at:
+        raise ValueError("ready_at must not precede capture_at")
+    elapsed_steps = (ready_at - capture_at) * action_rate_hz
+    discarded = min(len(actions), math.ceil(max(0.0, elapsed_steps - 1e-9)))
+    aligned = [
+        (action, capture_at + index / action_rate_hz, index)
+        for index, action in enumerate(actions)
+        if index >= discarded
+    ]
+    if any(target_at < ready_at - 1e-9 for _, target_at, _ in aligned):
+        raise ValueError("aligned action target precedes inference completion")
+    if any(
+        right[1] <= left[1]
+        for left, right in zip(aligned, aligned[1:], strict=False)
+    ):
+        raise ValueError("aligned action targets must increase monotonically")
+    return discarded, aligned
+
+
+def replace_action_queue(
+    queue: deque[QueuedAction],
+    actions: list[TimedAction],
     *,
     completed_at: float,
     event_index: int,
 ) -> int:
-    """Replace an obsolete residual with one newly completed action chunk."""
+    """Replace an obsolete residual with one aligned future action chunk."""
 
     residual_actions = len(queue)
     queue.clear()
-    queue.extend((action, completed_at, event_index) for action in actions)
+    queue.extend(
+        (action, target_at, completed_at, event_index, chunk_index)
+        for action, target_at, chunk_index in actions
+    )
     return residual_actions
 
 

@@ -8,12 +8,16 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import time
 from pathlib import Path
 
 import numpy as np
 
 from task2_isaacsim.baselines.pi05.contract import PI05_CONTRACT
-from task2_isaacsim.baselines.pi05.live.core import safe_action
+from task2_isaacsim.baselines.pi05.live.core import (
+    align_action_chunk,
+    safe_action,
+)
 from task2_isaacsim.baselines.pi05.live.policy import LivePi05Policy
 
 
@@ -49,7 +53,9 @@ def main() -> int:
         instruction=PI05_CONTRACT.task_instruction,
         seed=1000,
     )
+    capture_at = time.monotonic()
     chunk, latency = policy.predict_chunk(images=images, state=state)
+    ready_at = time.monotonic()
     validated = []
     invalid = []
     for index, action in enumerate(chunk):
@@ -57,8 +63,15 @@ def main() -> int:
             validated.append(safe_action(action))
         except ValueError as error:
             invalid.append({"action_index": index, "error": str(error)})
+    discarded, aligned = align_action_chunk(
+        [effective for _, effective in validated],
+        capture_at=capture_at,
+        ready_at=ready_at,
+        action_rate_hz=30.0,
+    )
+    aligned_target_times = [target_at for _, target_at, _ in aligned]
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "episode": args.episode,
         "dataset_frame": len(dataset) // 2,
         "chunk_actions": len(chunk),
@@ -88,8 +101,30 @@ def main() -> int:
             effective[19] for _, effective in validated
         ],
         "inference_latency_s": latency,
+        "capture_to_ready_latency_s": ready_at - capture_at,
+        "discarded_prefix_actions": discarded,
+        "aligned_actions": len(aligned),
+        "first_aligned_chunk_index": aligned[0][2] if aligned else None,
+        "last_aligned_chunk_index": aligned[-1][2] if aligned else None,
+        "aligned_target_times_monotonic": all(
+            right > left
+            for left, right in zip(
+                aligned_target_times,
+                aligned_target_times[1:],
+                strict=False,
+            )
+        ),
+        "immediate_queue_underflow": not aligned,
         "raw_actions": chunk,
         "effective_actions": [effective for _, effective in validated],
+        "aligned_effective_actions": [
+            {
+                "chunk_index": chunk_index,
+                "target_offset_s": target_at - capture_at,
+                "action": effective,
+            }
+            for effective, target_at, chunk_index in aligned
+        ],
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
@@ -105,6 +140,13 @@ def main() -> int:
                     "spine_policy_controlled",
                     "spine_targets_in_range",
                     "spine_not_held_at_observation",
+                    "capture_to_ready_latency_s",
+                    "discarded_prefix_actions",
+                    "aligned_actions",
+                    "first_aligned_chunk_index",
+                    "last_aligned_chunk_index",
+                    "aligned_target_times_monotonic",
+                    "immediate_queue_underflow",
                     "invalid_actions",
                     "inference_latency_s",
                 )
@@ -119,6 +161,9 @@ def main() -> int:
         and report["spine_policy_controlled"]
         and report["spine_targets_in_range"]
         and report["spine_not_held_at_observation"]
+        and report["discarded_prefix_actions"] > 0
+        and report["aligned_target_times_monotonic"]
+        and not report["immediate_queue_underflow"]
     )
     return 0 if passed else 2
 

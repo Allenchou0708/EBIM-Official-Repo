@@ -2,6 +2,121 @@
 
 **Current capability status: see [STATUS.md](STATUS.md)** — this is a developer preview; check what's usable before you build.
 
+## Task 2 PI0.5 submission quick start
+
+The `submit` branch contains the complete official benchmark tree plus the
+team's code-only PI0.5 training and live runtime. It does not contain datasets,
+caches, logs, tokens, or model weights.
+
+### Requirements and image build
+
+- Linux with Docker Engine, the NVIDIA Container Toolkit, and an NVIDIA GPU.
+- A driver compatible with the pinned CUDA 12.8 training base image.
+- Isaac Sim 5.1.0 with this repository mounted at
+  `/workspace/EBiM_Challenge`, as described in
+  [`task2_isaacsim/README.md`](task2_isaacsim/README.md).
+
+From a clean clone of `submit`, including the official submodules:
+
+```bash
+git clone --branch submit --recurse-submodules \
+  git@github.com:Allenchou0708/EBIM-Official-Repo.git ebim-task2-submit
+cd ebim-task2-submit
+docker build -t ebim-task2-pi05-submit:local .
+docker run --rm ebim-task2-pi05-submit:local health
+```
+
+The root [`Dockerfile`](Dockerfile) pins its training base by digest and builds
+the ROS 2 Jazzy PI0.5 submission runtime. Its formal evaluation command is the
+single `run-task` entry point; `run_pi05.sh` performs the required reset,
+fixed-base and initial-spine staging, and camera preflight before invoking it.
+
+### Checkpoint and environment
+
+Obtain the team's 30k checkpoint out of band and keep it outside this clone.
+The checkpoint directory must contain the LeRobot PI0.5 pretrained-model files,
+including `model.safetensors`, and the matching `relative_dataset` must be
+available locally. There is currently **no public, no-login checkpoint URL**;
+publishing a model ID is a submission blocker that requires the team's explicit
+hosting decision. The repository never downloads or embeds a token.
+
+```bash
+cd task2_isaacsim/baselines/pi05
+cp .env.pi05.example .env.pi05
+```
+
+Edit `.env.pi05` with absolute host paths:
+
+```dotenv
+TASK2_PI05_ROOT=/absolute/path/to/task2-pi05-runtime
+PI05_LIVE_IMAGE=ebim-task2-pi05-submit:local
+PI05_CHECKPOINT=/absolute/path/to/checkpoints/030000/pretrained_model
+PI05_RELATIVE_DATASET=/absolute/path/to/relative_dataset
+ROS_DOMAIN_ID=0
+ISAACSIM_CONTAINER=isaac-sim-5-1-0-workshop
+```
+
+`TASK2_PI05_ROOT` is the configurable cache/output/evidence root. A future
+public model may be recorded as `PI05_MODEL_ID`, but the present runner uses the
+local `PI05_CHECKPOINT` mount.
+
+### Three-terminal evaluation
+
+Run all commands from `task2_isaacsim/baselines/pi05`:
+
+```bash
+# Terminal 1: launch the Task 2 GUI scene and ROS bridge
+./run_pi05.sh sim-up --gui
+
+# Terminal 2: reset, stage, validate health, and publish at most 600 actions
+./run_pi05.sh run-task --max-actions 600
+
+# Terminal 3, after Terminal 2 completes: capture the official local metric
+./run_pi05.sh evaluate
+```
+
+The runner keeps the base isolated, lets PI0.5 control both arms, grippers and
+spine, and aligns each action chunk to its observation-capture time on the host
+monotonic clock. Use `Ctrl-C` in Terminal 2 for the operator stop. To inspect
+the image contract without ROS control, run the documented checkpoint shadow
+command in [`task2_isaacsim/baselines/pi05/README.md`](task2_isaacsim/baselines/pi05/README.md).
+Container health can be checked at any time with:
+
+```bash
+docker run --rm ebim-task2-pi05-submit:local health
+```
+
+Stop and remove the evaluator/helper services with:
+
+```bash
+./run_pi05.sh down
+```
+
+### Training reproduction
+
+With a pinned training image in `.env.pi05`, the code-only reproduction path is:
+
+```bash
+./run_pi05.sh doctor
+./run_pi05.sh dataset --config configs/task2_fixpos_200_expert.yaml
+./run_pi05.sh train --config configs/task2_fixpos_200_expert.yaml \
+  --run task2_200_30k_v1
+```
+
+The config pins the dataset and base-policy revisions, 180/20 episode split,
+expert-only frozen-vision profile, and 30,000 steps. Training data and outputs
+remain below `TASK2_PI05_ROOT`, outside Git and the runtime image.
+
+### Validated status and known limits
+
+The final authorized GUI run completed 600/600 actions with 24/24 valid policy
+decisions, 0 invalid actions, and no queue underflow. Capture-to-ready latency
+was 0.562–0.672 s; the runner discarded 17–21 expired actions per chunk and
+kept effective base output zero. The local official evaluator still returned
+**Pick 0 / Orientation 1 / IoU 0.0000**. This is a validated runtime baseline,
+not a task-success claim. No retraining or further cadence/rollout sweep was
+performed after that result.
+
 ## Competition tasks
 
 | Task | Engines | Where in this repo | Status |

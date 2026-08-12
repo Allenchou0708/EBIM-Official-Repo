@@ -5,5 +5,8 @@ set -eo pipefail
 
 source /opt/ros/jazzy/setup.bash
 set -u
+if [[ "${1:-}" == "run-task" ]]; then
+  shift
+fi
 exec /opt/lerobot/.venv/bin/python \
   -m task2_isaacsim.baselines.pi05.live.runner "$@"

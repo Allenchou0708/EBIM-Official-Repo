@@ -14,7 +14,9 @@ fi
 
 TASK2_PI05_ROOT="${TASK2_PI05_ROOT:-/scratch1/2026_ebim/allen_task2_pi05}"
 PI05_TRAIN_IMAGE="${PI05_TRAIN_IMAGE:-ebim-task2-pi05:200-submit-20260812}"
-PI05_LIVE_IMAGE="${PI05_LIVE_IMAGE:-ebim-task2-pi05-live:spine-policy-20260812}"
+PI05_LIVE_IMAGE="${PI05_LIVE_IMAGE:-ebim-task2-pi05-submit:local}"
+PI05_CHECKPOINT="${PI05_CHECKPOINT:-}"
+PI05_RELATIVE_DATASET="${PI05_RELATIVE_DATASET:-}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export ROS_DOMAIN_ID
 ISAACSIM_CONTAINER="${ISAACSIM_CONTAINER:-isaac-sim-5-1-0-workshop}"
@@ -27,7 +29,7 @@ Usage:
   ./run_pi05.sh dataset [--config PATH]
   ./run_pi05.sh train [--config PATH] [--run NAME]
   ./run_pi05.sh sim-up [--gui]
-  ./run_pi05.sh run-task --checkpoint PATH [--max-actions N]
+  ./run_pi05.sh run-task [--checkpoint PATH] [--dataset-root PATH] [--max-actions N]
   ./run_pi05.sh evaluate
   ./run_pi05.sh down
 EOF
@@ -146,15 +148,19 @@ command_sim_up() {
 }
 
 command_run_task() {
-  local checkpoint="" max_actions=600 max_decisions
+  local checkpoint="${PI05_CHECKPOINT}" dataset="${PI05_RELATIVE_DATASET}"
+  local max_actions=600 max_decisions
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --checkpoint) checkpoint="$(realpath "$2")"; shift 2 ;;
+      --dataset-root) dataset="$(realpath "$2")"; shift 2 ;;
       --max-actions) max_actions="$2"; shift 2 ;;
       *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
   done
   [[ -n "${checkpoint}" ]] || { echo "--checkpoint is required" >&2; exit 2; }
+  checkpoint="$(realpath "${checkpoint}")"
+  [[ -d "${checkpoint}" ]] || { echo "Checkpoint directory not found" >&2; exit 2; }
   [[ "${max_actions}" =~ ^[1-9][0-9]*$ ]] || {
     echo "--max-actions must be a positive integer" >&2
     exit 2
@@ -163,9 +169,13 @@ command_run_task() {
   if (( max_decisions < 40 )); then
     max_decisions=40
   fi
-  local run_root dataset output
-  run_root="$(realpath "${checkpoint}/../../../..")"
-  dataset="${run_root}/relative_dataset"
+  local run_root output
+  if [[ -z "${dataset}" ]]; then
+    run_root="$(realpath "${checkpoint}/../../../..")"
+    dataset="${run_root}/relative_dataset"
+  fi
+  dataset="$(realpath "${dataset}")"
+  [[ -d "${dataset}" ]] || { echo "Relative dataset directory not found" >&2; exit 2; }
   output="${TASK2_PI05_ROOT}/outputs/live_submit_$(date +%Y%m%d_%H%M%S)"
   mkdir -p "${output}" "${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/launcher"
   live_shell "ros2 topic pub --once /isaac/task2/scene_reset_request std_msgs/msg/String '{data: reset}'"
@@ -182,7 +192,7 @@ command_run_task() {
     -v "${TASK2_PI05_ROOT}/cache:/cache" \
     -v "${checkpoint}:/data/checkpoint:ro" \
     -v "${dataset}:/data/dataset:ro" -v "${output}:/data/output" \
-    "${PI05_LIVE_IMAGE}" --checkpoint /data/checkpoint \
+    "${PI05_LIVE_IMAGE}" run-task --checkpoint /data/checkpoint \
     --dataset-root /data/dataset --dataset-repo-id hermanprawiro/task2_fixpos_200 \
     --output-dir /data/output --base-target 2.10 3.05 -1.571 \
     --base-coordinate-frame dataset_odom_world_verified_against_room_scene \

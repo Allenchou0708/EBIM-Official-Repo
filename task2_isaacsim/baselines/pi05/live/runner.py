@@ -29,8 +29,10 @@ from task2_isaacsim.baselines.pi05.live.core import (
     BaseReadinessGate,
     FreshnessConfig,
     FreshnessError,
+    QueuedAction,
     ReadinessConfig,
     RunnerPhase,
+    align_action_chunk,
     freshness_metrics,
     policy_command_topics,
     replace_action_queue,
@@ -373,12 +375,14 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     reset_recoveries = 0
     queue_replacements = 0
     replaced_residual_actions = 0
-    queue: deque[tuple[tuple[float, ...], float, int]] = deque()
+    queue: deque[QueuedAction] = deque()
     future: Future | None = None
     future_context: dict | None = None
     published_actions = 0
-    next_publish_at = time.monotonic()
     publish_blocked: str | None = None
+    queue_underflow = False
+    capture_to_ready_latencies: list[float] = []
+    discarded_prefix_actions = 0
     manipulation_latched = False
     last_freshness_rejection: dict | None = None
     initial_spine_position_m: float | None = None
@@ -458,9 +462,20 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     chunk, latency = future.result()
                     latencies.append(latency)
                     created_at = time.monotonic()
+                    capture_to_ready_latency = (
+                        created_at - future_context["capture_at"]
+                    )
+                    capture_to_ready_latencies.append(capture_to_ready_latency)
                     validated = []
                     for validation_index, action in enumerate(chunk):
                         validated.append(safe_action(action))
+                    discarded, aligned = align_action_chunk(
+                        [effective for _, effective in validated],
+                        capture_at=future_context["capture_at"],
+                        ready_at=created_at,
+                        action_rate_hz=args.action_rate_hz,
+                    )
+                    discarded_prefix_actions += discarded
                 except (RuntimeError, ValueError) as error:
                     invalid_actions += 1
                     events.append(
@@ -492,6 +507,18 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     "readiness": future_context["readiness"],
                     "freshness": future_context["freshness"],
                     "inference_latency_s": latency,
+                    "capture_to_ready_latency_s": capture_to_ready_latency,
+                    "discarded_prefix_actions": discarded,
+                    "aligned_actions": len(aligned),
+                    "first_aligned_chunk_index": (
+                        aligned[0][2] if aligned else None
+                    ),
+                    "last_aligned_chunk_index": (
+                        aligned[-1][2] if aligned else None
+                    ),
+                    "first_executed_chunk_index": None,
+                    "last_executed_chunk_index": None,
+                    "queue_underflow": False,
                     "queue_refill_window_s": refill_window_s,
                     "latency_within_refill_window": latency <= refill_window_s,
                     "raw_actions": [list(raw) for raw, _ in validated],
@@ -501,12 +528,19 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     "published_actions": 0,
                 }
                 events.append(event)
-                first_raw, first_effective = validated[0]
+                first_raw, first_effective = validated[discarded]
                 print(
                     json.dumps(
                         {
                             "decision": event_index,
                             "latency_s": latency,
+                            "capture_to_ready_latency_s": (
+                                capture_to_ready_latency
+                            ),
+                            "discarded_prefix_actions": discarded,
+                            "first_aligned_chunk_index": (
+                                aligned[0][2] if aligned else None
+                            ),
                             "raw_gripper": first_raw[17:19],
                             "effective_gripper": first_effective[17:19],
                             "raw_spine_target_m": first_raw[19],
@@ -517,9 +551,16 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     flush=True,
                 )
                 if args.arm_simulator:
+                    if not aligned:
+                        publish_blocked = "entire_action_chunk_expired"
+                        gate.stop(publish_blocked)
+                        queue.clear()
+                        future = None
+                        future_context = None
+                        break
                     residual_actions = replace_action_queue(
                         queue,
-                        [effective for _, effective in validated],
+                        aligned,
                         completed_at=created_at,
                         event_index=event_index,
                     )
@@ -530,7 +571,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 future = None
                 future_context = None
 
-            if args.arm_simulator and queue and now >= next_publish_at:
+            if args.arm_simulator and queue and now >= queue[0][1]:
                 if not ready:
                     gate.stop("readiness_revoked_before_publish")
                     publish_blocked = "readiness_revoked_before_publish"
@@ -539,7 +580,13 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 if gate.phase == RunnerPhase.MANIPULATION_READY:
                     gate.arm()
                     manipulation_latched = True
-                effective, created_at, event_index = queue.popleft()
+                (
+                    effective,
+                    _target_at,
+                    created_at,
+                    event_index,
+                    chunk_index,
+                ) = queue.popleft()
                 if now - created_at > freshness.action_queue_max_age_s:
                     publish_blocked = "action_queue_watchdog"
                 elif publish_blocked is None:
@@ -549,7 +596,11 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     else:
                         node.publish_action(effective)
                         published_actions += 1
-                        events[event_index]["published_actions"] += 1
+                        event = events[event_index]
+                        event["published_actions"] += 1
+                        if event["first_executed_chunk_index"] is None:
+                            event["first_executed_chunk_index"] = chunk_index
+                        event["last_executed_chunk_index"] = chunk_index
                         spine_trajectory.append(
                             {
                                 "published_action": published_actions,
@@ -557,7 +608,6 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                                 "target_m": effective[19],
                             }
                         )
-                        next_publish_at = now + 1.0 / args.action_rate_hz
                 if publish_blocked:
                     queue.clear()
                     break
@@ -565,7 +615,9 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     queue.clear()
                     break
                 if not queue:
-                    publish_blocked = "action_queue_exhausted"
+                    queue_underflow = True
+                    events[event_index]["queue_underflow"] = True
+                    publish_blocked = "action_queue_underflow"
                     gate.stop(publish_blocked)
                     break
 
@@ -581,10 +633,11 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             )
             if needs_inference:
                 try:
+                    capture_at = time.monotonic()
                     images, state = node.snapshot()
                     validate_live_state(state)
                     metrics = freshness_metrics(
-                        now=now,
+                        now=capture_at,
                         camera_times=node.image_times,
                         camera_sequences=node.image_sequences,
                         state_time=node.state_time,
@@ -622,6 +675,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     last_sequences = dict(node.image_sequences)
                     future_context = {
                         "state": state,
+                        "capture_at": capture_at,
                         "readiness": dict(gate.last_evidence),
                         "freshness": metrics,
                     }
@@ -651,7 +705,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         value <= refill_window_s for value in latencies
     )
     summary = {
-        "schema_version": 2,
+        "schema_version": 3,
         "mode": mode,
         "fixed_base_staging": True,
         "manipulation_only": True,
@@ -678,6 +732,44 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         "reset_recoveries": reset_recoveries,
         "queue_replacements": queue_replacements,
         "replaced_residual_actions": replaced_residual_actions,
+        "time_alignment": {
+            "clock": "host_monotonic",
+            "capture_to_ready_latency_s": {
+                "p50": (
+                    statistics.median(capture_to_ready_latencies)
+                    if capture_to_ready_latencies
+                    else None
+                ),
+                "p95": (
+                    _percentile(capture_to_ready_latencies, 0.95)
+                    if capture_to_ready_latencies
+                    else None
+                ),
+                "max": (
+                    max(capture_to_ready_latencies)
+                    if capture_to_ready_latencies
+                    else None
+                ),
+            },
+            "discarded_prefix_actions": discarded_prefix_actions,
+            "first_executed_chunk_index": min(
+                (
+                    event["first_executed_chunk_index"]
+                    for event in events
+                    if event.get("first_executed_chunk_index") is not None
+                ),
+                default=None,
+            ),
+            "last_executed_chunk_index": max(
+                (
+                    event["last_executed_chunk_index"]
+                    for event in events
+                    if event.get("last_executed_chunk_index") is not None
+                ),
+                default=None,
+            ),
+            "queue_underflow": queue_underflow,
+        },
         "command_publications": node.publish_count,
         "published_actions": published_actions,
         "publish_blocked": publish_blocked,

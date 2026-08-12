@@ -6,12 +6,15 @@ host path configured by `TASK2_PI05_ROOT` and are never added to Git.
 
 ## Setup and model inputs
 
-Copy `.env.pi05.example` to `.env.pi05` and set the two local image names:
+Copy `.env.pi05.example` to `.env.pi05` and set the local paths and images.
+The file is ignored by Git. Do not put a Hugging Face token in it:
 
 ```bash
-TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+TASK2_PI05_ROOT=/absolute/path/to/task2-pi05-runtime
 PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
-PI05_LIVE_IMAGE=ebim-task2-pi05-live:spine-policy-20260812
+PI05_LIVE_IMAGE=ebim-task2-pi05-submit:local
+PI05_CHECKPOINT=/absolute/path/to/checkpoints/030000/pretrained_model
+PI05_RELATIVE_DATASET=/absolute/path/to/relative_dataset
 ```
 
 The formal config pins:
@@ -51,6 +54,22 @@ Relative action statistics use only the 180 training episodes. Task 2 keeps
 base velocity and grippers absolute; arm joints and spine use the explicit
 20-D action-to-37-D state mapping in `contract.py`.
 
+Before a GUI run, one checkpoint shadow can exercise the real observation,
+postprocessing, action-bound, base-isolation, spine, and time-alignment
+contracts without publishing ROS commands:
+
+```bash
+docker run --rm --gpus all --ipc=host \
+  --entrypoint python \
+  -v "${PI05_CHECKPOINT}:/data/checkpoint:ro" \
+  -v "${PI05_RELATIVE_DATASET}:/data/dataset:ro" \
+  -v "${TASK2_PI05_ROOT}/evidence:/data/evidence" \
+  "${PI05_LIVE_IMAGE}" \
+  -m task2_isaacsim.baselines.pi05.live.policy_smoke \
+  --checkpoint /data/checkpoint --dataset-root /data/dataset \
+  --output /data/evidence/policy_shadow.json
+```
+
 ## Simulator and evaluator terminals
 
 Use three terminals for a GUI run:
@@ -76,9 +95,12 @@ clamped to the demonstrated `0.0–0.6 m` range and published to the existing
 `/isaac/spine_target` bridge interface, so PI0.5 controls the spine together
 with both arms and grippers. The runner creates no base publisher.
 
-Background inference starts with 24 actions remaining. Each completed 50-step
-chunk replaces the old residual and receives its completion timestamp. Queue
-exhaustion stops safely; the two-second action-queue watchdog is unchanged.
+Observation capture and the 30 Hz publisher use the same host-monotonic clock.
+After inference, the runner discards the elapsed prefix of each 50-step chunk
+and enqueues only actions whose original control times remain in the future.
+Each replacement records capture-to-ready latency, discarded prefix length,
+first/last executed chunk index, and queue underflow status. Queue exhaustion
+stops safely; the two-second action-queue watchdog is unchanged.
 Reset, freshness, action bounds, command contention, and operator interrupt
 also stop publication.
 

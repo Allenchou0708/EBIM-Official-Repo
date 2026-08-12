@@ -10,3 +10,5 @@ max_actions: 600
 queue_refill_actions: 24
 action_queue_max_age_s: 2.0
 action_rate_hz: 30.0
+time_alignment_clock: host_monotonic
+discard_elapsed_action_prefix: true

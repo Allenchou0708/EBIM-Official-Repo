@@ -17,6 +17,7 @@ from task2_isaacsim.baselines.pi05.live.core import (
     FreshnessError,
     ReadinessConfig,
     RunnerPhase,
+    align_action_chunk,
     freshness_metrics,
     policy_command_topics,
     replace_action_queue,
@@ -91,8 +92,13 @@ class StateContractTest(unittest.TestCase):
 
 class LiveSafetyTest(unittest.TestCase):
     def test_refill_replaces_residual_with_fresh_complete_chunk(self) -> None:
-        queue = deque(((float(index),), 10.0, 0) for index in range(24))
-        fresh_chunk = [(100.0 + index,) for index in range(50)]
+        queue = deque(
+            ((float(index),), 9.0, 8.5, 0, index) for index in range(24)
+        )
+        fresh_chunk = [
+            ((100.0 + index,), 12.5 + index / 30.0, index)
+            for index in range(18, 50)
+        ]
 
         residual = replace_action_queue(
             queue,
@@ -102,11 +108,44 @@ class LiveSafetyTest(unittest.TestCase):
         )
 
         self.assertEqual(residual, 24)
-        self.assertEqual(len(queue), 50)
+        self.assertEqual(len(queue), 32)
         self.assertEqual(
             list(queue),
-            [(action, 12.5, 1) for action in fresh_chunk],
+            [
+                (action, target_at, 12.5, 1, chunk_index)
+                for action, target_at, chunk_index in fresh_chunk
+            ],
         )
+
+    def test_time_alignment_discards_elapsed_prefix_in_monotonic_time(
+        self,
+    ) -> None:
+        effective_actions = [safe_action(valid_action())[1] for _ in range(50)]
+        for latency_s, expected_discard in ((0.5, 15), (0.65, 20)):
+            with self.subTest(latency_s=latency_s):
+                discarded, aligned = align_action_chunk(
+                    effective_actions,
+                    capture_at=100.0,
+                    ready_at=100.0 + latency_s,
+                    action_rate_hz=30.0,
+                )
+                self.assertEqual(discarded, expected_discard)
+                self.assertEqual(aligned[0][2], expected_discard)
+                self.assertEqual(aligned[-1][2], 49)
+                self.assertTrue(
+                    all(
+                        right[1] > left[1]
+                        for left, right in zip(
+                            aligned, aligned[1:], strict=False
+                        )
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        action[:3] == (0.0, 0.0, 0.0)
+                        for action, _, _ in aligned
+                    )
+                )
 
     def test_policy_reset_clears_action_queue_seed_index(self) -> None:
         class FakePolicy:
