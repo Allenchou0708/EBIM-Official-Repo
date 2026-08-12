@@ -146,7 +146,7 @@ command_sim_up() {
 }
 
 command_run_task() {
-  local checkpoint="" max_actions=600
+  local checkpoint="" max_actions=600 max_decisions
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --checkpoint) checkpoint="$(realpath "$2")"; shift 2 ;;
@@ -155,6 +155,14 @@ command_run_task() {
     esac
   done
   [[ -n "${checkpoint}" ]] || { echo "--checkpoint is required" >&2; exit 2; }
+  [[ "${max_actions}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "--max-actions must be a positive integer" >&2
+    exit 2
+  }
+  max_decisions=$(( (max_actions + 23) / 24 + 2 ))
+  if (( max_decisions < 40 )); then
+    max_decisions=40
+  fi
   local run_root dataset output
   run_root="$(realpath "${checkpoint}/../../../..")"
   dataset="${run_root}/relative_dataset"
@@ -164,10 +172,11 @@ command_run_task() {
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_base.py --target 2.10 3.05 -1.571 --position-tolerance-m 0.015 --yaw-tolerance-rad 0.04 --output /data/evidence/task2_200_submit_20260812/launcher/fixed_base.json"
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_spine.py --target-m 0.50 --output /data/evidence/task2_200_submit_20260812/launcher/fixed_spine.json"
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/eval_camera_preflight.py --output /data/evidence/task2_200_submit_20260812/launcher/eval_preflight.json"
-  exec docker run --rm --gpus all --ipc=host --network host \
+  exec docker run --rm --gpus all --network host --ipc=host \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp/ebim-live-home -e USER=ebim -e LOGNAME=ebim \
     -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
+    -e FASTDDS_BUILTIN_TRANSPORTS=DEFAULT \
     -e HF_HOME=/cache/huggingface -e HF_HUB_OFFLINE=1 \
     -e TRANSFORMERS_OFFLINE=1 \
     -v "${TASK2_PI05_ROOT}/cache:/cache" \
@@ -177,7 +186,8 @@ command_run_task() {
     --dataset-root /data/dataset --dataset-repo-id hermanprawiro/task2_fixpos_200 \
     --output-dir /data/output --base-target 2.10 3.05 -1.571 \
     --base-coordinate-frame dataset_odom_world_verified_against_room_scene \
-    --confirm-fixed-staging --arm-simulator --max-decisions 40 \
+    --confirm-fixed-staging --arm-simulator \
+    --max-decisions "${max_decisions}" \
     --max-publish-actions "${max_actions}"
 }
 

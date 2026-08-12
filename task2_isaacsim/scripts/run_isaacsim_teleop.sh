@@ -304,7 +304,7 @@ DOCKER_EXEC_ENV+=(
   "-e" "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}"
   "-e" "ROS_DISTRO=jazzy"
   "-e" "RMW_IMPLEMENTATION=rmw_fastrtps_cpp"
-  "-e" "FASTDDS_BUILTIN_TRANSPORTS=UDPv4"
+  "-e" "FASTDDS_BUILTIN_TRANSPORTS=DEFAULT"
   "-e" "LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib"
   "-e" "ROS_HOME=/tmp/isaac_ros_home"
 )
