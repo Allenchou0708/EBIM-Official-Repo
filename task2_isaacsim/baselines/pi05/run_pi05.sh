@@ -16,6 +16,7 @@ TASK2_PI05_ROOT="${TASK2_PI05_ROOT:-/scratch1/2026_ebim/allen_task2_pi05}"
 PI05_TRAIN_IMAGE="${PI05_TRAIN_IMAGE:-ebim-task2-pi05:200-submit-20260812}"
 PI05_LIVE_IMAGE="${PI05_LIVE_IMAGE:-ebim-task2-pi05-live:queue-replace-20260812}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+export ROS_DOMAIN_ID
 ISAACSIM_CONTAINER="${ISAACSIM_CONTAINER:-isaac-sim-5-1-0-workshop}"
 DEFAULT_CONFIG="${SCRIPT_DIR}/configs/task2_fixpos_200_expert.yaml"
 
@@ -140,7 +141,7 @@ live_shell() {
 command_sim_up() {
   [[ "${1:-}" = "--gui" ]] || { echo "sim-up requires --gui" >&2; exit 2; }
   exec "${REPO_ROOT}/task2_isaacsim/scripts/run_isaacsim_teleop.sh" \
-    --scene room --no-browser --no-republisher -- \
+    --scene room --controller-mode none --no-browser --no-republisher -- \
     --disable-browser-command-topics --record
 }
 
@@ -165,10 +166,11 @@ command_run_task() {
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/eval_camera_preflight.py --output /data/evidence/task2_200_submit_20260812/launcher/eval_preflight.json"
   exec docker run --rm --gpus all --ipc=host --network host \
     --user "$(id -u):$(id -g)" \
-    -e HOME=/tmp/ebim-live-home -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
+    -e HOME=/tmp/ebim-live-home -e USER=ebim -e LOGNAME=ebim \
+    -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
     -e HF_HOME=/cache/huggingface -e HF_HUB_OFFLINE=1 \
     -e TRANSFORMERS_OFFLINE=1 \
-    -v "${TASK2_PI05_ROOT}/cache:/cache:ro" \
+    -v "${TASK2_PI05_ROOT}/cache:/cache" \
     -v "${checkpoint}:/data/checkpoint:ro" \
     -v "${dataset}:/data/dataset:ro" -v "${output}:/data/output" \
     "${PI05_LIVE_IMAGE}" --checkpoint /data/checkpoint \

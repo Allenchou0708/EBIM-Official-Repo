@@ -301,6 +301,7 @@ DOCKER_EXEC_ENV+=("-e" "QT_X11_NO_MITSHM=1")
 # (the container has no system ROS 2). LD_LIBRARY_PATH must be set before the
 # process starts or rclpy node creation fails.
 DOCKER_EXEC_ENV+=(
+  "-e" "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}"
   "-e" "ROS_DISTRO=jazzy"
   "-e" "RMW_IMPLEMENTATION=rmw_fastrtps_cpp"
   "-e" "FASTDDS_BUILTIN_TRANSPORTS=UDPv4"

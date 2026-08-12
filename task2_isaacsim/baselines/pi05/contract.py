@@ -331,6 +331,18 @@ def validate_absolute_action_bounds(
     return tuple(vector)
 
 
+def project_arm_action_bounds(action: Sequence[float]) -> tuple[float, ...]:
+    """Project finite policy arm targets to the exact FR3 actuator limits."""
+
+    vector = _finite_vector(action, ACTION_SIZE, "Task 2 action")
+    for arm_offset in (3, 10):
+        for joint_index, (lower, upper) in enumerate(FR3_JOINT_LIMITS):
+            index = arm_offset + joint_index
+            vector[index] = min(upper, max(lower, vector[index]))
+    validate_absolute_action_bounds(vector)
+    return tuple(vector)
+
+
 def _validate_feature(
     features: dict[str, Any],
     key: str,

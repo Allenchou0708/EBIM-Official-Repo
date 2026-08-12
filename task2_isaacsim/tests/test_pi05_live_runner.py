@@ -90,9 +90,7 @@ class StateContractTest(unittest.TestCase):
 
 class LiveSafetyTest(unittest.TestCase):
     def test_refill_replaces_residual_with_fresh_complete_chunk(self) -> None:
-        queue = deque(
-            ((float(index),), 10.0, 0) for index in range(24)
-        )
+        queue = deque(((float(index),), 10.0, 0) for index in range(24))
         fresh_chunk = [(100.0 + index,) for index in range(50)]
 
         residual = replace_action_queue(
@@ -215,15 +213,26 @@ class LiveSafetyTest(unittest.TestCase):
         raw, effective = safe_action(projected, spine_hold=0.44)
         self.assertEqual(raw[17:19], (-0.1, 1.0131))
         self.assertEqual(effective[17:19], (0.0, 1.0))
+        projected = valid_action()
+        projected[13] = -3.08662
+        raw, effective = safe_action(projected, spine_hold=0.44)
+        self.assertEqual(raw[13], -3.08662)
+        self.assertEqual(effective[13], -3.0770200167)
+        projected[13] = -3.14735
+        raw, effective = safe_action(projected, spine_hold=0.44)
+        self.assertEqual(raw[13], -3.14735)
+        self.assertEqual(effective[13], -3.0770200167)
         projected[17] = float("nan")
         with self.assertRaisesRegex(ValueError, "finite"):
             safe_action(projected, spine_hold=0.44)
         invalid_arm = valid_action()
-        invalid_arm[3] = 4.0
-        with self.assertRaisesRegex(ValueError, "outside"):
+        invalid_arm[3] = float("nan")
+        with self.assertRaisesRegex(ValueError, "finite"):
             safe_action(invalid_arm, spine_hold=0.44)
 
-    def test_spine_ready_latches_through_drift_and_revokes_safely(self) -> None:
+    def test_spine_ready_latches_through_drift_and_revokes_safely(
+        self,
+    ) -> None:
         gate = BaseReadinessGate(
             ReadinessConfig(1.0, 2.0, 0.0, settle_duration_s=1.0)
         )

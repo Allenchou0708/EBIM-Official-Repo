@@ -35,6 +35,7 @@ services:
     network_mode: host
     working_dir: /workspace
     environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
       # Disable FastDDS shared-memory transport; force UDP so frames cross the
       # Isaac<->eval container boundary (private /dev/shm). See header note.
       FASTDDS_BUILTIN_TRANSPORTS: UDPv4

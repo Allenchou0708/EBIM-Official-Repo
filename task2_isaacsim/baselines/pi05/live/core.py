@@ -14,6 +14,7 @@ from task2_isaacsim.baselines.pi05.contract import (
     ACTION_SIZE,
     EXPECTED_CAMERA_SHAPES,
     apply_fixed_mobile_axes,
+    project_arm_action_bounds,
     validate_absolute_action_bounds,
 )
 from task2_isaacsim.common.state_contract import finite_state
@@ -32,9 +33,7 @@ def replace_action_queue(
 
     residual_actions = len(queue)
     queue.clear()
-    queue.extend(
-        (action, completed_at, event_index) for action in actions
-    )
+    queue.extend((action, completed_at, event_index) for action in actions)
     return residual_actions
 
 
@@ -127,9 +126,7 @@ class BaseReadinessGate:
         )
         spine_within = spine_error <= cfg.spine_tolerance_m
         within = (
-            pose_within
-            and spine_within
-            and speed <= cfg.velocity_threshold
+            pose_within and spine_within and speed <= cfg.velocity_threshold
         )
         if self.phase == RunnerPhase.PI05_MANIPULATION:
             if pose_within and spine_within:
@@ -138,7 +135,11 @@ class BaseReadinessGate:
                     "phase": self.phase.value,
                     "latched": True,
                     "actual_pose": list(pose),
-                    "target_pose": [cfg.target_x, cfg.target_y, cfg.target_yaw],
+                    "target_pose": [
+                        cfg.target_x,
+                        cfg.target_y,
+                        cfg.target_yaw,
+                    ],
                     "position_error_m": position_error,
                     "yaw_error_rad": yaw_error,
                     "speed": speed,
@@ -243,7 +244,8 @@ def freshness_metrics(
     }
     offending = list(stale_sequences)
     offending.extend(
-        key for key, age in ages.items()
+        key
+        for key, age in ages.items()
         if age > config.camera_max_age_s and key not in offending
     )
     if skew > config.camera_max_skew_s:
@@ -266,11 +268,11 @@ def freshness_metrics(
 def safe_action(
     raw_action: Any, *, spine_hold: float
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
-    """Project grippers for simulation, fix base, and hold current spine.
+    """Project actuator targets for simulation, fix base, and hold the spine.
 
     Gripper outputs remain absolute policy dimensions.  The simulator adapter
-    clips their finite raw values to the actuator range while arm targets stay
-    subject to the exact FR3 joint limits.
+    clips their finite raw values to exact actuator ranges. Non-finite values
+    are rejected before anything can be published.
     """
 
     raw = tuple(float(value) for value in raw_action)
@@ -281,6 +283,7 @@ def safe_action(
     effective = list(apply_fixed_mobile_axes(raw, spine_height=spine_hold))
     effective[17] = min(1.0, max(0.0, effective[17]))
     effective[18] = min(1.0, max(0.0, effective[18]))
+    effective = list(project_arm_action_bounds(effective))
     validate_absolute_action_bounds(effective)
     return raw, tuple(effective)
 

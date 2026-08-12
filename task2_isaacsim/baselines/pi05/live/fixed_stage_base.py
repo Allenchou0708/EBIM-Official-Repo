@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--velocity-threshold", type=float, default=0.02)
     parser.add_argument("--settle-duration-s", type=float, default=1.0)
     parser.add_argument("--stop-duration-s", type=float, default=0.5)
-    parser.add_argument("--max-duration-s", type=float, default=60.0)
+    parser.add_argument("--max-duration-s", type=float, default=90.0)
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -160,6 +160,8 @@ def main() -> int:
                     and yaw_error <= args.yaw_tolerance_rad
                 ):
                     enter("SETTLE")
+                elif position_error <= 0.5:
+                    enter("ODOMETRY_CORRECTION")
                 else:
                     enter("BACK")
             elif phase == "BACK":
@@ -210,7 +212,11 @@ def main() -> int:
                         if within_pose
                         else correction_token(node.pose, target)
                     )
-                    pulse_s = 0.25
+                    pulse_s = (
+                        0.5
+                        if not within_pose and active_token in ("FWD", "BACK")
+                        else 0.25
+                    )
                     command_until = now + pulse_s
                     next_correction_at = command_until + args.stop_duration_s
                     node.publish(active_token)

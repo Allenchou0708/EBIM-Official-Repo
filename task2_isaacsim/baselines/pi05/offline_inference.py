@@ -17,6 +17,8 @@ from .contract import (
     ACTION_SIZE,
     POLICY_CAMERA_RENAME_MAP,
     RELATIVE_ACTION_STATE_INDICES,
+    apply_fixed_mobile_axes,
+    project_arm_action_bounds,
     validate_absolute_action_bounds,
 )
 
@@ -123,9 +125,6 @@ def run_offline_inference(
     )
 
     constraints = dict(rollout_constraints or {})
-    base_clamp = constraints.get("base_action_variance") is not None and (
-        constraints.get("base_vx_vy_wz_clamp_to_zero") is True
-    )
     spine_hold = constraints.get("spine_hold_dataset_median")
     if spine_hold is not None:
         spine_hold = float(spine_hold)
@@ -170,19 +169,26 @@ def run_offline_inference(
                 "checkpoint reload/replay is not deterministic: "
                 f"max error={maximum_replay_error}"
             )
-        validate_absolute_action_bounds(values)
-        effective = list(values)
-        if base_clamp:
-            effective[:3] = [0.0, 0.0, 0.0]
-        if spine_hold is not None:
-            effective[19] = spine_hold
+        raw = tuple(values)
+        effective = list(
+            apply_fixed_mobile_axes(
+                raw,
+                spine_height=values[19] if spine_hold is None else spine_hold,
+            )
+        )
+        effective[17] = min(1.0, max(0.0, effective[17]))
+        effective[18] = min(1.0, max(0.0, effective[18]))
+        effective = list(project_arm_action_bounds(effective))
         validate_absolute_action_bounds(effective)
         records.append(
             {
                 "episode_index": episode,
                 "dataset_index": dataset_index,
-                "model_absolute_action": values,
-                "effective_absolute_action": effective,
+                "model_absolute_action": list(raw),
+                "effective_absolute_action": list(effective),
+                "arm_projection_applied": raw[3:17] != tuple(effective[3:17]),
+                "gripper_projection_applied": raw[17:19]
+                != tuple(effective[17:19]),
                 "maximum_replay_error": maximum_replay_error,
                 "reproducible": True,
                 "base_nonzero": any(abs(value) > 1e-6 for value in values[:3]),

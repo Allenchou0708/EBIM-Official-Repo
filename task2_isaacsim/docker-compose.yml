@@ -26,6 +26,7 @@ services:
       bash -lc "source /opt/ros/jazzy/setup.bash &&
       python3 /workspace/scripts/controllers/ros_joint_republisher.py --bridge-prefix ${REPUBLISHER_BRIDGE_PREFIX:-/bridge} --isaac-prefix ${REPUBLISHER_ISAAC_PREFIX:-/isaac} --gripper-open-position ${REPUBLISHER_GRIPPER_OPEN_POSITION:-0.0} --gripper-closed-position ${REPUBLISHER_GRIPPER_CLOSED_POSITION:-0.8} $([ \"${REPUBLISHER_GRIPPER_INVERT:-false}\" = \"true\" ] && echo '--gripper-invert') $([ \"${REPUBLISHER_DISABLE_BROWSER_COMMAND_TOPICS:-false}\" = \"true\" ] && echo '--disable-browser-command-topics')"
     environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
       - ROS_DISTRO=jazzy
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
@@ -47,6 +48,7 @@ services:
       bash -lc "source /opt/ros/jazzy/setup.bash &&
       python3 /workspace/scripts/controllers/joint_position_controller.py"
     environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
       - ROS_DISTRO=jazzy
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
@@ -70,6 +72,7 @@ services:
     working_dir: /workspace
     command: bash /workspace/services/teleop_adapters/start_teleop_adapters.sh
     environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
       - ROS_DISTRO=jazzy
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
@@ -97,6 +100,7 @@ services:
       bash -lc "source /opt/ros/jazzy/setup.bash &&
       python3 /workspace/services/browser_controller/app.py --host 0.0.0.0 --port 8090 --publish-rate 60.0"
     environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
       - ROS_DISTRO=jazzy
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
@@ -142,6 +146,7 @@ services:
       --config ${RECORDER_CONFIG:-services/recording/recording.yaml}
       ${RECORDER_ARGS:-}"
     environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
       - ROS_DISTRO=jazzy
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4

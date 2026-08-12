@@ -169,7 +169,11 @@ def checkpoint_sweep(
     rollout_constraints: dict[str, Any],
 ) -> dict[str, Any]:
     checkpoints = sorted(
-        checkpoints_root.glob("*/pretrained_model"),
+        (
+            checkpoint
+            for checkpoint in checkpoints_root.glob("*/pretrained_model")
+            if checkpoint.parent.name.isdigit()
+        ),
         key=_checkpoint_step,
     )
     if not checkpoints:
@@ -189,21 +193,36 @@ def checkpoint_sweep(
             max_frames=max_frames,
         )
         shadow_path = report_directory / f"step_{step:06d}_shadow.json"
-        shadow = run_offline_inference(
-            checkpoint=checkpoint,
-            dataset_root=dataset_root,
-            dataset_repo_id=dataset_repo_id,
-            episodes=episodes,
-            output=shadow_path,
-            samples_per_episode=1,
-            seed=seed,
-            rollout_constraints=rollout_constraints,
-        )
+        try:
+            shadow = run_offline_inference(
+                checkpoint=checkpoint,
+                dataset_root=dataset_root,
+                dataset_repo_id=dataset_repo_id,
+                episodes=episodes,
+                output=shadow_path,
+                samples_per_episode=1,
+                seed=seed,
+                rollout_constraints=rollout_constraints,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            results.append(
+                {
+                    "step": step,
+                    **loss_report,
+                    "offline_shadow_report": None,
+                    "offline_shadow_error": str(error),
+                    "finite_20d_outputs": False,
+                    "joint_and_gripper_bounds_valid": False,
+                    "checkpoint_replay_reproducible": False,
+                }
+            )
+            continue
         results.append(
             {
                 "step": step,
                 **loss_report,
                 "offline_shadow_report": str(shadow_path),
+                "offline_shadow_error": None,
                 "finite_20d_outputs": shadow["finite_20d_outputs"],
                 "joint_and_gripper_bounds_valid": shadow[
                     "joint_and_gripper_bounds_valid"
@@ -213,7 +232,18 @@ def checkpoint_sweep(
                 ],
             }
         )
-    valid = [result for result in results if result["finite"]]
+    valid = [
+        result
+        for result in results
+        if result["finite"]
+        and result["finite_20d_outputs"]
+        and result["joint_and_gripper_bounds_valid"]
+        and result["checkpoint_replay_reproducible"]
+    ]
+    if not valid:
+        raise ValueError(
+            "no checkpoint passed held-out and offline replay gates"
+        )
     ranked = sorted(valid, key=lambda result: result["mean_loss"])
     candidates = [
         {

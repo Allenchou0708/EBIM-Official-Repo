@@ -610,6 +610,7 @@ class Pi05ContractTest(unittest.TestCase):
                 (checkpoints / f"{step:06d}" / "pretrained_model").mkdir(
                     parents=True
                 )
+            (checkpoints / "last" / "pretrained_model").mkdir(parents=True)
             losses = {5000: 0.4, 10000: 0.2, 15000: 0.3}
 
             def heldout(**kwargs: object) -> dict[str, object]:
@@ -626,6 +627,13 @@ class Pi05ContractTest(unittest.TestCase):
                 "joint_and_gripper_bounds_valid": True,
                 "checkpoint_replay_reproducible": True,
             }
+
+            def replay(**kwargs: object) -> dict[str, object]:
+                output = Path(str(kwargs["output"]))
+                if "005000" in output.name:
+                    raise ValueError("right gripper command is outside [0, 1]")
+                return shadow
+
             with (
                 patch(
                     "task2_isaacsim.baselines.pi05.heldout_evaluation."
@@ -635,7 +643,7 @@ class Pi05ContractTest(unittest.TestCase):
                 patch(
                     "task2_isaacsim.baselines.pi05.heldout_evaluation."
                     "run_offline_inference",
-                    return_value=shadow,
+                    side_effect=replay,
                 ),
             ):
                 report = checkpoint_sweep(
@@ -652,6 +660,9 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertEqual(
             [item["step"] for item in report["selected_candidates"]],
             [10000, 15000],
+        )
+        self.assertFalse(
+            report["results"][0]["joint_and_gripper_bounds_valid"]
         )
 
     def test_overfit_loss_windows_must_improve(self) -> None:
