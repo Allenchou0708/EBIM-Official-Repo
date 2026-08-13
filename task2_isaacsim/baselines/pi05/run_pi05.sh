@@ -151,6 +151,7 @@ command_sim_up() {
 
 command_run_task() {
   local checkpoint="${PI05_CHECKPOINT}" dataset="${PI05_RELATIVE_DATASET}"
+  local base_target="2.100026845932007 3.0529046058654785 -1.5706931352615356"
   local max_actions=600 max_duration_s=300 max_decisions shadow=false
   local -a runner_mode=(--arm-simulator)
   while [[ $# -gt 0 ]]; do
@@ -192,7 +193,7 @@ command_run_task() {
   output="${TASK2_PI05_ROOT}/outputs/live_submit_$(date +%Y%m%d_%H%M%S)"
   mkdir -p "${output}" "${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/launcher"
   live_shell "ros2 topic pub --once /isaac/task2/scene_reset_request std_msgs/msg/String '{data: reset}'"
-  live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_base.py --target 2.10 3.05 -1.571 --position-tolerance-m 0.015 --yaw-tolerance-rad 0.04 --output /data/evidence/task2_200_submit_20260812/launcher/fixed_base.json"
+  live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_base.py --target ${base_target} --position-tolerance-m 0.015 --yaw-tolerance-rad 0.04 --output /data/evidence/task2_200_submit_20260812/launcher/fixed_base.json"
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_spine.py --target-m 0.0 --measured-target-m 0.0 --output /data/evidence/task2_200_submit_20260812/launcher/initial_spine.json"
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/eval_camera_preflight.py --output /data/evidence/task2_200_submit_20260812/launcher/eval_preflight.json"
   exec docker run --rm --gpus all --network host --ipc=host \
@@ -209,9 +210,10 @@ command_run_task() {
     -v "${dataset}:/data/dataset:ro" -v "${output}:/data/output" \
     "${PI05_LIVE_IMAGE}" run-task --checkpoint /data/checkpoint \
     --dataset-root /data/dataset --dataset-repo-id hermanprawiro/task2_fixpos_200 \
-    --output-dir /data/output --base-target 2.10 3.05 -1.571 \
+    --output-dir /data/output --base-target ${base_target} \
     --base-coordinate-frame dataset_odom_world_verified_against_room_scene \
     --confirm-fixed-base-staging \
+    --position-tolerance-m 0.02 --yaw-tolerance-rad 0.04 \
     "${runner_mode[@]}" \
     --max-decisions "${max_decisions}" \
     --max-publish-actions "${max_actions}" \

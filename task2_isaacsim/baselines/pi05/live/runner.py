@@ -457,6 +457,8 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     published_actions = 0
     publish_blocked: str | None = None
     queue_underflow = False
+    queue_pause_count = 0
+    waiting_for_fresh_observation = False
     capture_to_ready_latencies: list[float] = []
     discarded_prefix_actions = 0
     manipulation_latched = False
@@ -693,10 +695,8 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     break
                 if not queue:
                     queue_underflow = True
+                    queue_pause_count += 1
                     events[event_index]["queue_underflow"] = True
-                    publish_blocked = "action_queue_underflow"
-                    gate.stop(publish_blocked)
-                    break
 
             decisions_started = len(events) + int(future is not None)
             needs_inference = (
@@ -732,23 +732,30 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                         args.arm_simulator
                         and published_actions > 0
                         and not queue
+                        and not waiting_for_fresh_observation
                     ):
-                        gate.stop("live_stream_stale")
-                        publish_blocked = "live_stream_stale"
+                        waiting_for_fresh_observation = True
                         print(
                             json.dumps(
                                 {
-                                    "stop": publish_blocked,
+                                    "pause": "waiting_for_fresh_observation",
                                     **last_freshness_rejection,
                                 },
                                 sort_keys=True,
                             ),
                             flush=True,
                         )
-                        break
                 except ValueError:
                     stale_observations += 1
                 else:
+                    if waiting_for_fresh_observation:
+                        waiting_for_fresh_observation = False
+                        print(
+                            json.dumps(
+                                {"resume": "fresh_observation_received"}
+                            ),
+                            flush=True,
+                        )
                     last_sequences = dict(node.image_sequences)
                     future_context = {
                         "state": state,
@@ -851,6 +858,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 default=None,
             ),
             "queue_underflow": queue_underflow,
+            "queue_pause_count": queue_pause_count,
         },
         "command_publications": node.publish_count,
         "published_actions": published_actions,
