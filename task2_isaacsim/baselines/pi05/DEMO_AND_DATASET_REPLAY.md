@@ -23,7 +23,7 @@ export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
 export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
 export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
 export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
-export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:hard5-20260813
+export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:final-20260813
 export ROS_DOMAIN_ID=62
 ```
 
@@ -222,6 +222,35 @@ correctly. It does not prove grasp success. The next useful experiment is to
 reproduce the organizer recording controller/drive gains and gripper dynamics,
 then repeat this same raw sim-time gate. Do not smooth or resample the raw
 episode merely to pass the metric.
+
+## Controller and scene parity stop decision
+
+The organizer keyboard path and the ROS replay path do not apply an equivalent
+arm controller input. At every 60 Hz render tick, the organizer's RMPflow path
+applies both `joint_positions` and `joint_velocities`. The recorder publishes
+only `get_applied_action().joint_positions`, and the 30 Hz dataset action stores
+only arm position targets. The RMPflow velocity targets and the intervening
+60 Hz target sequence therefore cannot be recovered from episode 9, the
+dataset metadata, or repository history. The current ROS command subscriber
+applies position targets only. Gripper commands are position-only in both
+paths, but the dataset also contains no drive/gain provenance that explains the
+52-frame right-gripper response offset.
+
+No controller patch was made: deriving velocities from adjacent 30 Hz samples
+would be a new guessed controller, not organizer parity, and an open-ended
+drive/gain sweep is outside this deadline path. The unchanged simulator-clock
+baseline remains controller Gate NO-GO because right-arm mean L2 is 0.2122 rad
+and right-gripper close offset is +52 frames. Consequently no additional raw
+replay or evaluator was run for the controller-parity handoff.
+
+After a clean room reset, all six published rigid-object poses match episode 9
+frame 0 to floating-point precision. The 14 arm joints, 0 m spine, and open
+grippers also match their recorded ready state within normal simulation
+settling. The room reset base is intentionally near
+`(4.400, 2.621, -1.571)`, while episode 9 starts near
+`(2.100, 3.051, -1.571)`; the documented `fixed_stage_base.py` odometry route
+closes that known staging difference before either replay or VLA inference.
+No object-pose injection was added.
 
 ## Why nominally equal-rate cameras become skewed
 
