@@ -17,7 +17,12 @@ from task2_isaacsim.baselines.pi05.contract import (
     project_arm_action_bounds,
     validate_absolute_action_bounds,
 )
-from task2_isaacsim.common.state_contract import finite_state
+from task2_isaacsim.common.state_contract import (
+    LEFT_JOINTS,
+    RIGHT_JOINTS,
+    SPINE_JOINT,
+    finite_state,
+)
 
 ROBOT_CAMERA_KEYS = ("head", "wrist_left", "wrist_right")
 SPINE_POLICY_MIN_M = 0.0
@@ -351,3 +356,45 @@ class ActionWatchdog:
 
 def validate_live_state(state: Any) -> tuple[float, ...]:
     return finite_state(state)
+
+
+def startup_inventory(
+    *,
+    camera_sequences: dict[str, int],
+    joint_names: set[str],
+    ee_available: dict[str, bool],
+    odom_available: bool,
+    state: Any,
+) -> dict[str, Any]:
+    """Describe whether every input required for one inference is present."""
+
+    cameras = {
+        key: camera_sequences.get(key, 0) > 0 for key in ROBOT_CAMERA_KEYS
+    }
+    required_joints = set((*LEFT_JOINTS, *RIGHT_JOINTS, SPINE_JOINT))
+    missing_joints = sorted(required_joints - joint_names)
+    vector = tuple(float(value) for value in state)
+    invalid_state_indices = [
+        index for index, value in enumerate(vector) if not math.isfinite(value)
+    ]
+    missing_inputs = [key for key, available in cameras.items() if not available]
+    missing_inputs.extend(
+        f"{side}_ee_pose"
+        for side in ("left", "right")
+        if not ee_available.get(side, False)
+    )
+    if not odom_available:
+        missing_inputs.append("odom")
+    if missing_joints:
+        missing_inputs.append("joint_states")
+    if invalid_state_indices:
+        missing_inputs.append("finite_37d_state")
+    return {
+        "all_required_samples": not missing_inputs,
+        "missing_inputs": missing_inputs,
+        "camera_samples": cameras,
+        "ee_pose_samples": dict(ee_available),
+        "odom_sample": odom_available,
+        "missing_joints": missing_joints,
+        "invalid_state_indices": invalid_state_indices,
+    }

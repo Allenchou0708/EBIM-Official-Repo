@@ -22,6 +22,7 @@ from task2_isaacsim.baselines.pi05.live.core import (
     policy_command_topics,
     replace_action_queue,
     safe_action,
+    startup_inventory,
     validate_rgb_frame,
 )
 from task2_isaacsim.baselines.pi05.live.policy import LivePi05Policy
@@ -91,6 +92,30 @@ class StateContractTest(unittest.TestCase):
 
 
 class LiveSafetyTest(unittest.TestCase):
+    def test_startup_inventory_names_missing_real_inputs(self) -> None:
+        state = [0.0] * 37
+        state[7] = math.nan
+        status = startup_inventory(
+            camera_sequences={"head": 1, "wrist_left": 1},
+            joint_names={*LEFT_JOINTS, *RIGHT_JOINTS},
+            ee_available={"left": True, "right": False},
+            odom_available=False,
+            state=state,
+        )
+        self.assertFalse(status["all_required_samples"])
+        self.assertEqual(
+            status["missing_inputs"],
+            [
+                "wrist_right",
+                "right_ee_pose",
+                "odom",
+                "joint_states",
+                "finite_37d_state",
+            ],
+        )
+        self.assertEqual(status["missing_joints"], [SPINE_JOINT])
+        self.assertEqual(status["invalid_state_indices"], [7])
+
     def test_refill_replaces_residual_with_fresh_complete_chunk(self) -> None:
         queue = deque(
             ((float(index),), 9.0, 8.5, 0, index) for index in range(24)

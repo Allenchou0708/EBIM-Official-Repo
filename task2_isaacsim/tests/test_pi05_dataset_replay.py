@@ -31,6 +31,7 @@ class DatasetReplayLoaderTest(unittest.TestCase):
                     "index": 100 + frame,
                     "episode_index": 7,
                     "frame_index": frame,
+                    "timestamp": frame / 30.0,
                     "action": action,
                     "observation.state": frame_state,
                 }
@@ -46,8 +47,20 @@ class DatasetReplayLoaderTest(unittest.TestCase):
         self.assertEqual(summary["spine_first_0_30_frame"], 3)
         self.assertEqual(summary["recorded_spine_first_0_10_frame"], 1)
         self.assertEqual(summary["recorded_spine_first_0_30_frame"], 3)
+        self.assertAlmostEqual(summary["timestamp_step_s"], 1.0 / 30.0)
+        self.assertEqual(
+            summary["arm_velocity_limit_analysis"]["violation_count"], 0
+        )
         self.assertTrue(summary["raw_actions"])
         self.assertFalse(summary["mapped_relative_actions"])
+
+        changed_action = list(loaded[1]["action"])
+        changed_action[10] = 0.1
+        loaded[1]["action"] = tuple(changed_action)
+        analysis = summarize_trajectory(loaded)["arm_velocity_limit_analysis"]
+        self.assertEqual(analysis["first_violation"]["frame"], 1)
+        self.assertEqual(analysis["first_violation"]["side"], "right")
+        self.assertGreater(analysis["first_violation"]["required_rad_s"], 2.62)
 
 
 if __name__ == "__main__":

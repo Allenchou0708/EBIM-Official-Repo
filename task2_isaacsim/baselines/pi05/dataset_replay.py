@@ -35,6 +35,9 @@ READY_ARMS = (
     1.5708,
     0.7854,
 ) * 2
+# FR3 limits documented by the embodiment URDF.  These are used only to
+# diagnose raw target steps; replay continues to publish the unmodified data.
+ARM_VELOCITY_LIMITS_RAD_S = (2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26) * 2
 
 
 def _finite_vector(values: Sequence[float], width: int, name: str) -> tuple[float, ...]:
@@ -58,7 +61,14 @@ def _parquet_rows(dataset_root: Path) -> list[dict[str, Any]]:
     if not paths:
         raise ValueError(f"no parquet files below {dataset_root / 'data'}")
     rows: list[dict[str, Any]] = []
-    columns = ["index", "episode_index", "frame_index", "action", "observation.state"]
+    columns = [
+        "index",
+        "episode_index",
+        "frame_index",
+        "timestamp",
+        "action",
+        "observation.state",
+    ]
     for path in paths:
         rows.extend(parquet.read_table(path, columns=columns).to_pylist())
     return rows
@@ -78,6 +88,14 @@ def load_episode(
         raise ValueError(f"episode {episode} is absent from {dataset_root}")
     if [int(row["frame_index"]) for row in chosen] != list(range(len(chosen))):
         raise ValueError(f"episode {episode} frame indices are not contiguous")
+    timestamps = [
+        float(row.get("timestamp", index / FPS))
+        for index, row in enumerate(chosen)
+    ]
+    if not all(math.isfinite(value) for value in timestamps):
+        raise ValueError(f"episode {episode} timestamps contain non-finite values")
+    if any(right <= left for left, right in zip(timestamps, timestamps[1:])):
+        raise ValueError(f"episode {episode} timestamps are not strictly increasing")
 
     normalized: list[dict[str, Any]] = []
     for row in chosen:
@@ -94,6 +112,7 @@ def load_episode(
                 "index": int(row["index"]),
                 "episode_index": episode,
                 "frame_index": int(row["frame_index"]),
+                "timestamp": timestamps[int(row["frame_index"])],
                 "action": action,
                 "state": state,
             }
@@ -139,6 +158,37 @@ def _first_at_least(values: Sequence[float], threshold: float) -> int | None:
     )
 
 
+def arm_velocity_limit_analysis(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compare recorded target deltas with the documented FR3 rate limits."""
+
+    maxima = [0.0] * 14
+    violations: list[dict[str, Any]] = []
+    for previous, current in zip(rows, rows[1:], strict=False):
+        elapsed = current["timestamp"] - previous["timestamp"]
+        for joint in range(14):
+            required = abs(
+                current["action"][3 + joint] - previous["action"][3 + joint]
+            ) / elapsed
+            maxima[joint] = max(maxima[joint], required)
+            limit = ARM_VELOCITY_LIMITS_RAD_S[joint]
+            if required > limit:
+                violations.append(
+                    {
+                        "frame": current["frame_index"],
+                        "side": "left" if joint < 7 else "right",
+                        "joint": joint % 7 + 1,
+                        "required_rad_s": required,
+                        "limit_rad_s": limit,
+                    }
+                )
+    return {
+        "limits_rad_s": list(ARM_VELOCITY_LIMITS_RAD_S),
+        "maximum_required_rad_s": maxima,
+        "violation_count": len(violations),
+        "first_violation": violations[0] if violations else None,
+    }
+
+
 def summarize_trajectory(rows: list[dict[str, Any]]) -> dict[str, Any]:
     actions = [row["action"] for row in rows]
     states = [row["state"] for row in rows]
@@ -148,7 +198,13 @@ def summarize_trajectory(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "episode": int(rows[0]["episode_index"]),
         "frames": len(rows),
         "fps": FPS,
-        "duration_s": len(rows) / FPS,
+        "timestamp_start_s": rows[0]["timestamp"],
+        "timestamp_end_s": rows[-1]["timestamp"],
+        "duration_s": rows[-1]["timestamp"] - rows[0]["timestamp"] + 1.0 / FPS,
+        "timestamp_step_s": statistics.median(
+            right["timestamp"] - left["timestamp"]
+            for left, right in zip(rows, rows[1:], strict=False)
+        ),
         "frame0_state": list(states[0]),
         "frame0_base_pose": list(states[0][31:34]),
         "frame0_arm_positions": list(states[0][14:28]),
@@ -180,6 +236,7 @@ def summarize_trajectory(rows: list[dict[str, Any]]) -> dict[str, Any]:
         ],
         "raw_actions": True,
         "mapped_relative_actions": False,
+        "arm_velocity_limit_analysis": arm_velocity_limit_analysis(rows),
         "extras_path": extras_path,
     }
 
@@ -227,6 +284,7 @@ def run_ros_replay(
     from geometry_msgs.msg import PoseStamped
     from nav_msgs.msg import Odometry
     from rclpy.node import Node
+    from rosgraph_msgs.msg import Clock
     from sensor_msgs.msg import JointState
     from std_msgs.msg import Float64
 
@@ -251,6 +309,8 @@ def run_ros_replay(
             self.joints: dict[str, float] = {}
             self.odom: tuple[float, ...] | None = None
             self.ee = {"left": None, "right": None}
+            self.sim_time: float | None = None
+            self.clock_messages = 0
             self.stop_requested = False
             self.create_subscription(
                 JointState,
@@ -261,6 +321,7 @@ def run_ros_replay(
             self.create_subscription(
                 Odometry, topics["recording"]["odom"], self._on_odom, 10
             )
+            self.create_subscription(Clock, topics["clock"], self._on_clock, 10)
             for side, topic in topics["recording"]["ee_pose"].items():
                 self.create_subscription(
                     PoseStamped,
@@ -293,6 +354,10 @@ def run_ros_replay(
                 str(name): float(value)
                 for name, value in zip(message.name, message.position, strict=False)
             }
+
+        def _on_clock(self, message: Clock) -> None:
+            self.sim_time = message.clock.sec + message.clock.nanosec * 1e-9
+            self.clock_messages += 1
 
         def _on_odom(self, message: Odometry) -> None:
             pose, twist = message.pose.pose, message.twist.twist
@@ -425,22 +490,55 @@ def run_ros_replay(
         rclpy.shutdown()
         return {"alignment": alignment, "replay_started": False, "align_only": True}
 
+    clock_started = time.monotonic()
+    while (
+        node.sim_time is None
+        and not node.stop_requested
+        and time.monotonic() - clock_started < alignment_timeout_s
+    ):
+        rclpy.spin_once(node, timeout_sec=0.1)
+    if node.sim_time is None:
+        node.destroy_node()
+        rclpy.shutdown()
+        return {
+            "alignment": alignment,
+            "replay_started": False,
+            "clock": {"topic": topics["clock"], "available": False},
+        }
+
     limit = len(rows) if max_frames is None else min(len(rows), max_frames)
     records: list[dict[str, Any]] = []
-    started = time.monotonic()
+    wall_started = time.monotonic()
+    sim_started = node.sim_time
+    dataset_started = rows[0]["timestamp"]
+    previous_sim_time = sim_started
     for frame, row in enumerate(rows[:limit]):
         if node.stop_requested:
             break
-        target_at = started + frame / FPS
-        while time.monotonic() < target_at and not node.stop_requested:
-            rclpy.spin_once(node, timeout_sec=min(0.005, target_at - time.monotonic()))
+        target_sim_time = sim_started + row["timestamp"] - dataset_started
+        while (
+            node.sim_time is not None
+            and node.sim_time + 1e-9 < target_sim_time
+            and not node.stop_requested
+        ):
+            rclpy.spin_once(node, timeout_sec=0.01)
+            if (
+                node.sim_time is not None
+                and node.sim_time + 1e-9 < previous_sim_time
+            ):
+                raise RuntimeError("simulation clock moved backwards during replay")
+            if node.sim_time is not None:
+                previous_sim_time = node.sim_time
         node.publish_target(row["action"])
         rclpy.spin_once(node, timeout_sec=0.0)
         live = node.state()
         records.append(
             {
                 "frame": frame,
-                "wall_time_s": time.monotonic() - started,
+                "dataset_time_s": row["timestamp"] - dataset_started,
+                "target_sim_time_s": target_sim_time,
+                "live_sim_time_s": node.sim_time,
+                "wall_time_s": time.monotonic() - wall_started,
                 "reference_state": list(row["state"]),
                 "live_state": list(live) if live is not None else None,
             }
@@ -518,13 +616,28 @@ def run_ros_replay(
             "maximum": max(values),
         }
 
+    wall_elapsed = time.monotonic() - wall_started
+    simulation_elapsed = (
+        0.0 if node.sim_time is None else node.sim_time - sim_started
+    )
     result = {
         "alignment": alignment,
         "replay_started": True,
         "requested_frames": limit,
         "published_frames": len(records),
         "interrupted": node.stop_requested,
-        "elapsed_s": time.monotonic() - started,
+        "elapsed_s": wall_elapsed,
+        "clock": {
+            "topic": topics["clock"],
+            "schedule": "dataset_timestamp_released_by_simulation_time",
+            "dataset_elapsed_s": rows[limit - 1]["timestamp"] - dataset_started,
+            "simulation_elapsed_s": simulation_elapsed,
+            "wall_elapsed_s": wall_elapsed,
+            "real_time_factor": (
+                None if wall_elapsed <= 0.0 else simulation_elapsed / wall_elapsed
+            ),
+            "messages": node.clock_messages,
+        },
         "command_publications": len(records) * 5,
         "base_command_publications": 0,
         "live_state_records": len(valid),

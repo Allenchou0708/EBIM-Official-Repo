@@ -37,6 +37,7 @@ from task2_isaacsim.baselines.pi05.live.core import (
     policy_command_topics,
     replace_action_queue,
     safe_action,
+    startup_inventory,
     validate_live_state,
     validate_rgb_frame,
 )
@@ -219,8 +220,25 @@ class LiveObservationNode(Node):
         )
         return {key: value.copy() for key, value in self.images.items()}, state
 
+    def startup_status(self) -> dict[str, object]:
+        _images, state = self.snapshot()
+        return startup_inventory(
+            camera_sequences=self.image_sequences,
+            joint_names=set(self.joints),
+            ee_available={
+                side: pose is not None for side, pose in self.ee_poses.items()
+            },
+            odom_available=self.odom is not None,
+            state=state,
+        )
+
     def update_readiness(self, now: float) -> bool:
         if self.odom is None or SPINE_JOINT not in self.joints:
+            self.gate.last_evidence = {
+                "ready": False,
+                "reason": "startup_inputs_missing",
+                **self.startup_status(),
+            }
             return False
         x, y, _, qx, qy, qz, qw, vx, vy, _, wz = self.odom
         yaw = math.atan2(
@@ -293,6 +311,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-publish-actions", type=int, default=50)
     parser.add_argument("--queue-refill-actions", type=int, default=24)
     parser.add_argument("--max-duration-s", type=float, default=300.0)
+    parser.add_argument("--startup-timeout-s", type=float, default=10.0)
+    parser.add_argument("--startup-retries", type=int, default=1)
     parser.add_argument("--position-tolerance-m", type=float, default=0.05)
     parser.add_argument("--yaw-tolerance-rad", type=float, default=0.10)
     parser.add_argument("--velocity-threshold", type=float, default=0.02)
@@ -317,6 +337,9 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         return 2
     if not 0 < args.queue_refill_actions <= PI05_CONTRACT.chunk_size:
         print("FAIL: --queue-refill-actions must be within the policy chunk")
+        return 2
+    if args.startup_timeout_s <= 0.0 or args.startup_retries < 0:
+        print("FAIL: startup timeout must be positive and retries non-negative")
         return 2
     readiness = ReadinessConfig(
         *args.base_target,
@@ -357,6 +380,59 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             else "<none>"
         )
     )
+    startup_attempts: list[dict[str, object]] = []
+    startup_status = node.startup_status()
+    for attempt in range(args.startup_retries + 1):
+        attempt_started = time.monotonic()
+        while (
+            time.monotonic() - attempt_started < args.startup_timeout_s
+            and not node.stop_requested
+        ):
+            rclpy.spin_once(node, timeout_sec=0.05)
+            node.update_readiness(time.monotonic())
+            startup_status = node.startup_status()
+            if startup_status["all_required_samples"]:
+                break
+        attempt_result = {
+            "attempt": attempt + 1,
+            "elapsed_s": time.monotonic() - attempt_started,
+            **startup_status,
+        }
+        startup_attempts.append(attempt_result)
+        print(json.dumps({"startup": attempt_result}, sort_keys=True), flush=True)
+        if startup_status["all_required_samples"] or node.stop_requested:
+            break
+        if attempt < args.startup_retries:
+            node.destroy_node()
+            rclpy.shutdown()
+            time.sleep(0.5)
+            gate.reset("dds_participant_retry")
+            rclpy.init()
+            node = LiveObservationNode(publish=args.arm_simulator, gate=gate)
+
+    if not startup_status["all_required_samples"]:
+        failure = {
+            "schema_version": 4,
+            "mode": mode,
+            "completed": False,
+            "decisions": 0,
+            "valid_decisions": 0,
+            "command_publications": 0,
+            "published_actions": 0,
+            "publish_blocked": "startup_inputs_missing",
+            "startup": {
+                "reason": "startup_inputs_missing",
+                "attempts": startup_attempts,
+                "final": startup_status,
+            },
+            "final_readiness": dict(gate.last_evidence),
+        }
+        _write_json(args.output_dir / "live_runner_manifest.json", failure)
+        node.destroy_node()
+        rclpy.shutdown()
+        print(json.dumps(failure["startup"], sort_keys=True), flush=True)
+        return 2
+
     policy = LivePi05Policy(
         checkpoint=args.checkpoint,
         dataset_root=args.dataset_root,
@@ -706,7 +782,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         value <= refill_window_s for value in latencies
     )
     summary = {
-        "schema_version": 3,
+        "schema_version": 4,
         "mode": mode,
         "fixed_base_staging": True,
         "manipulation_only": True,
@@ -724,6 +800,11 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         "base_coordinate_frame": args.base_coordinate_frame,
         "readiness_config": readiness.__dict__,
         "freshness_config": freshness.__dict__,
+        "startup": {
+            "reason": "all_required_samples_received",
+            "attempts": startup_attempts,
+            "final": startup_status,
+        },
         "final_readiness": gate.last_evidence,
         "decisions": len(events),
         "valid_decisions": sum(event.get("valid", False) for event in events),

@@ -29,8 +29,9 @@ Usage:
   ./run_pi05.sh dataset [--config PATH]
   ./run_pi05.sh train [--config PATH] [--run NAME]
   ./run_pi05.sh sim-up [--gui]
-  ./run_pi05.sh run-task [--checkpoint PATH] [--dataset-root PATH] [--max-actions N] [--max-duration-s S]
+  ./run_pi05.sh run-task [--checkpoint PATH] [--dataset-root PATH] [--shadow] [--max-actions N] [--max-duration-s S]
   ./run_pi05.sh replay-dataset [--dataset-root PATH] [--episode auto|N] [--summary-only|--align-only|--max-frames N]
+  ./run_pi05.sh audit-initial-states [--dataset-root PATH] [--output-dir PATH]
   ./run_pi05.sh evaluate
   ./run_pi05.sh down
 EOF
@@ -150,11 +151,13 @@ command_sim_up() {
 
 command_run_task() {
   local checkpoint="${PI05_CHECKPOINT}" dataset="${PI05_RELATIVE_DATASET}"
-  local max_actions=600 max_duration_s=300 max_decisions
+  local max_actions=600 max_duration_s=300 max_decisions shadow=false
+  local -a runner_mode=(--arm-simulator)
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --checkpoint) checkpoint="$(realpath "$2")"; shift 2 ;;
       --dataset-root) dataset="$(realpath "$2")"; shift 2 ;;
+      --shadow) shadow=true; shift ;;
       --max-actions) max_actions="$2"; shift 2 ;;
       --max-duration-s) max_duration_s="$2"; shift 2 ;;
       *) echo "Unknown argument: $1" >&2; exit 2 ;;
@@ -175,6 +178,10 @@ command_run_task() {
   if (( max_decisions < 40 )); then
     max_decisions=40
   fi
+  if ${shadow}; then
+    max_decisions=1
+    runner_mode=()
+  fi
   local run_root output
   if [[ -z "${dataset}" ]]; then
     run_root="$(realpath "${checkpoint}/../../../..")"
@@ -192,17 +199,20 @@ command_run_task() {
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp/ebim-live-home -e USER=ebim -e LOGNAME=ebim \
     -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
-    -e FASTDDS_BUILTIN_TRANSPORTS=DEFAULT \
+    -e PYTHONPATH=/workspace/EBiM_Challenge \
+    -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
     -e HF_HOME=/cache/huggingface -e HF_HUB_OFFLINE=1 \
     -e TRANSFORMERS_OFFLINE=1 \
     -v "${TASK2_PI05_ROOT}/cache:/cache" \
+    -v "${REPO_ROOT}:/workspace/EBiM_Challenge:ro" \
     -v "${checkpoint}:/data/checkpoint:ro" \
     -v "${dataset}:/data/dataset:ro" -v "${output}:/data/output" \
     "${PI05_LIVE_IMAGE}" run-task --checkpoint /data/checkpoint \
     --dataset-root /data/dataset --dataset-repo-id hermanprawiro/task2_fixpos_200 \
     --output-dir /data/output --base-target 2.10 3.05 -1.571 \
     --base-coordinate-frame dataset_odom_world_verified_against_room_scene \
-    --confirm-fixed-base-staging --arm-simulator \
+    --confirm-fixed-base-staging \
+    "${runner_mode[@]}" \
     --max-decisions "${max_decisions}" \
     --max-publish-actions "${max_actions}" \
     --max-duration-s "${max_duration_s}"
@@ -263,6 +273,27 @@ command_replay_dataset() {
     -v "${output}:/data/output" "${PI05_LIVE_IMAGE}" -lc "${module_command}"
 }
 
+command_audit_initial_states() {
+  local dataset="${TASK2_PI05_ROOT}/datasets/task2_fixpos_200_46ab41f"
+  local output="${TASK2_PI05_ROOT}/evidence/task2_pi05_sim_clock_startup_20260813"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dataset-root) dataset="$(realpath "$2")"; shift 2 ;;
+      --output-dir) output="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  dataset="$(realpath "${dataset}")"
+  mkdir -p "${output}"
+  output="$(realpath "${output}")"
+  docker run --rm --entrypoint bash \
+    -e PYTHONPATH=/workspace/EBiM_Challenge \
+    -v "${REPO_ROOT}:/workspace/EBiM_Challenge:ro" \
+    -v "${dataset}:/data/dataset:ro" -v "${output}:/data/output" \
+    "${PI05_LIVE_IMAGE}" -lc \
+    "/opt/lerobot/.venv/bin/python -m task2_isaacsim.baselines.pi05.initial_state_audit --dataset-root /data/dataset --output-dir /data/output"
+}
+
 command_evaluate() {
   "${REPO_ROOT}/scripts/evaluation/task2/run.sh" up
   "${REPO_ROOT}/scripts/evaluation/task2/run.sh" evaluate
@@ -281,6 +312,7 @@ case "${1:-}" in
   sim-up) shift; command_sim_up "$@" ;;
   run-task) shift; command_run_task "$@" ;;
   replay-dataset) shift; command_replay_dataset "$@" ;;
+  audit-initial-states) shift; command_audit_initial_states "$@" ;;
   evaluate) shift; command_evaluate "$@" ;;
   down) shift; command_down "$@" ;;
   *) usage; exit 2 ;;
