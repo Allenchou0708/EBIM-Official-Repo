@@ -29,7 +29,8 @@ Usage:
   ./run_pi05.sh dataset [--config PATH]
   ./run_pi05.sh train [--config PATH] [--run NAME]
   ./run_pi05.sh sim-up [--gui]
-  ./run_pi05.sh run-task [--checkpoint PATH] [--dataset-root PATH] [--max-actions N]
+  ./run_pi05.sh run-task [--checkpoint PATH] [--dataset-root PATH] [--max-actions N] [--max-duration-s S]
+  ./run_pi05.sh replay-dataset [--dataset-root PATH] [--episode auto|N] [--summary-only|--align-only|--max-frames N]
   ./run_pi05.sh evaluate
   ./run_pi05.sh down
 EOF
@@ -149,12 +150,13 @@ command_sim_up() {
 
 command_run_task() {
   local checkpoint="${PI05_CHECKPOINT}" dataset="${PI05_RELATIVE_DATASET}"
-  local max_actions=600 max_decisions
+  local max_actions=600 max_duration_s=300 max_decisions
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --checkpoint) checkpoint="$(realpath "$2")"; shift 2 ;;
       --dataset-root) dataset="$(realpath "$2")"; shift 2 ;;
       --max-actions) max_actions="$2"; shift 2 ;;
+      --max-duration-s) max_duration_s="$2"; shift 2 ;;
       *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
   done
@@ -163,6 +165,10 @@ command_run_task() {
   [[ -d "${checkpoint}" ]] || { echo "Checkpoint directory not found" >&2; exit 2; }
   [[ "${max_actions}" =~ ^[1-9][0-9]*$ ]] || {
     echo "--max-actions must be a positive integer" >&2
+    exit 2
+  }
+  [[ "${max_duration_s}" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
+    echo "--max-duration-s must be a non-negative number" >&2
     exit 2
   }
   max_decisions=$(( (max_actions + 23) / 24 + 2 ))
@@ -198,7 +204,63 @@ command_run_task() {
     --base-coordinate-frame dataset_odom_world_verified_against_room_scene \
     --confirm-fixed-base-staging --arm-simulator \
     --max-decisions "${max_decisions}" \
-    --max-publish-actions "${max_actions}"
+    --max-publish-actions "${max_actions}" \
+    --max-duration-s "${max_duration_s}"
+}
+
+command_replay_dataset() {
+  local dataset="${TASK2_PI05_ROOT}/datasets/task2_fixpos_200_46ab41f"
+  local audit="${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/task2_fixpos_200_audit.json"
+  local episode="auto" mode="" max_frames="" output
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dataset-root) dataset="$(realpath "$2")"; shift 2 ;;
+      --episode) episode="$2"; shift 2 ;;
+      --summary-only) mode="--summary-only"; shift ;;
+      --align-only) mode="--align-only"; shift ;;
+      --max-frames) max_frames="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  [[ -d "${dataset}" ]] || { echo "Raw dataset directory not found" >&2; exit 2; }
+  [[ -f "${audit}" ]] || { echo "Train/held-out audit report not found" >&2; exit 2; }
+  [[ "${episode}" = "auto" || "${episode}" =~ ^[0-9]+$ ]] || {
+    echo "--episode must be auto or a non-negative integer" >&2
+    exit 2
+  }
+  [[ -z "${max_frames}" || "${max_frames}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "--max-frames must be a positive integer" >&2
+    exit 2
+  }
+  output="${TASK2_PI05_ROOT}/outputs/dataset_replay_$(date +%Y%m%d_%H%M%S)"
+  mkdir -p "${output}"
+  local module_command
+  module_command="source /opt/ros/jazzy/setup.bash && exec /opt/lerobot/.venv/bin/python -m task2_isaacsim.baselines.pi05.dataset_replay --dataset-root /data/dataset --episode ${episode} --audit-report /data/audit.json --output-dir /data/output"
+  [[ -n "${mode}" ]] && module_command+=" ${mode}"
+  [[ -n "${max_frames}" ]] && module_command+=" --max-frames ${max_frames}"
+  if [[ "${mode}" != "--summary-only" ]]; then
+    local selected target
+    docker run --rm --entrypoint bash \
+      -e PYTHONPATH=/workspace/EBiM_Challenge \
+      -v "${REPO_ROOT}:/workspace/EBiM_Challenge:ro" \
+      -v "${dataset}:/data/dataset:ro" -v "${audit}:/data/audit.json:ro" \
+      -v "${output}:/data/output" "${PI05_LIVE_IMAGE}" -lc \
+      "source /opt/ros/jazzy/setup.bash && /opt/lerobot/.venv/bin/python -m task2_isaacsim.baselines.pi05.dataset_replay --dataset-root /data/dataset --episode ${episode} --audit-report /data/audit.json --output-dir /data/output --summary-only"
+    selected="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["episode"])' "${output}/trajectory_summary.json")"
+    target="$(python3 -c 'import json,sys; print(" ".join(map(str,json.load(open(sys.argv[1]))["frame0_base_pose"])))' "${output}/trajectory_summary.json")"
+    episode="${selected}"
+    module_command="source /opt/ros/jazzy/setup.bash && exec /opt/lerobot/.venv/bin/python -m task2_isaacsim.baselines.pi05.dataset_replay --dataset-root /data/dataset --episode ${episode} --audit-report /data/audit.json --output-dir /data/output"
+    [[ -n "${mode}" ]] && module_command+=" ${mode}"
+    [[ -n "${max_frames}" ]] && module_command+=" --max-frames ${max_frames}"
+    live_shell "ros2 topic pub --once /isaac/task2/scene_reset_request std_msgs/msg/String '{data: reset}'"
+    # shellcheck disable=SC2086
+    live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_base.py --target ${target} --position-tolerance-m 0.015 --yaw-tolerance-rad 0.04 --output /data/evidence/task2_200_submit_20260812/launcher/replay_base.json"
+  fi
+  exec docker run --rm --network host --ipc=host --entrypoint bash \
+    -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" -e PYTHONPATH=/workspace/EBiM_Challenge \
+    -v "${REPO_ROOT}:/workspace/EBiM_Challenge:ro" \
+    -v "${dataset}:/data/dataset:ro" -v "${audit}:/data/audit.json:ro" \
+    -v "${output}:/data/output" "${PI05_LIVE_IMAGE}" -lc "${module_command}"
 }
 
 command_evaluate() {
@@ -218,6 +280,7 @@ case "${1:-}" in
   train) shift; command_train "$@" ;;
   sim-up) shift; command_sim_up "$@" ;;
   run-task) shift; command_run_task "$@" ;;
+  replay-dataset) shift; command_replay_dataset "$@" ;;
   evaluate) shift; command_evaluate "$@" ;;
   down) shift; command_down "$@" ;;
   *) usage; exit 2 ;;
