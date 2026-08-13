@@ -110,6 +110,13 @@ LULA_ASSETS_DIR = (
 )
 LULA_URDF_PATH = LULA_ASSETS_DIR / "mobile_fr3_duo_v0_2_lula.urdf"
 RMPFLOW_MAX_SUBSTEP_SIZE = 0.0034
+
+# rclpy.spin_once() executes at most one ready callback.  A policy/replay
+# frame publishes five independent targets (two arms, two grippers, spine),
+# while this bridge previously spun only once before every simulation step.
+# Drain a bounded batch so all actuator groups can consume their newest
+# target before the step without allowing ROS traffic to starve simulation.
+ROS_CALLBACK_BUDGET_PER_TICK = 8
 # Per-axis half-extents (m) of the keyboard teleop target box around each
 # arm's ready-pose TCP position (robot-root frame). FR3 reach is ~0.855 m,
 # so held keys cannot wind the RMPflow target far outside the workspace.
@@ -717,7 +724,7 @@ class SpineKeyboardController:
     def bind(self, node: Node) -> None:
         """Add scripted staging to the existing target-hold controller."""
         self._ros_subscription = node.create_subscription(
-            Float64, SPINE_TARGET_TOPIC, self._on_ros_target, 10
+            Float64, SPINE_TARGET_TOPIC, self._on_ros_target, 1
         )
         node.get_logger().info(
             f"Spine target command: {SPINE_TARGET_TOPIC}"
@@ -1212,14 +1219,14 @@ class IsaacSimRosBridge(Node):
                     lambda msg, label=group.label: self._on_joint_command(
                         label, msg
                     ),
-                    10,
+                    1,
                 )
                 self._command_subscriptions.append(sub)
         self._pedal_sub = self.create_subscription(
             String,
             PEDAL_STATE_TOPIC,
             self._on_pedal_state,
-            10,
+            1,
         )
         # Log the loaded contract once; the command topics are duplicated in
         # the task1 helper services, so this is the quickest drift check.
@@ -1709,7 +1716,8 @@ def run_teleop_loop(
 
     try:
         while simulation_app.is_running() and rclpy.ok():
-            rclpy.spin_once(node, timeout_sec=0.0)
+            for _ in range(ROS_CALLBACK_BUDGET_PER_TICK):
+                rclpy.spin_once(node, timeout_sec=0.0)
             arm_teleop_active = (
                 arm_keyboard_teleop is not None
                 and arm_keyboard_teleop.available
