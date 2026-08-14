@@ -665,7 +665,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         or stage_result.get("feedback", {}).get("within_tolerance") is not True
     ):
         failure = {
-            "schema_version": 7,
+            "schema_version": 8,
             "mode": mode,
             "completed": False,
             "decisions": 0,
@@ -714,7 +714,8 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     queue_underflow = False
     queue_pause_count = 0
     waiting_for_fresh_observation = False
-    capture_to_ready_latencies: list[float] = []
+    capture_to_ready_host_latencies: list[float] = []
+    capture_to_ready_sim_latencies: list[float] = []
     discarded_prefix_actions = 0
     manipulation_latched = False
     last_freshness_rejection: dict | None = None
@@ -823,7 +824,12 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                         0.0,
                         ready_sim_at - future_context["capture_sim_at"],
                     )
-                    capture_to_ready_latencies.append(capture_to_ready_latency)
+                    capture_to_ready_host_latencies.append(
+                        capture_to_ready_latency
+                    )
+                    capture_to_ready_sim_latencies.append(
+                        capture_to_ready_sim_s
+                    )
                     validated = []
                     for validation_index, action in enumerate(chunk):
                         validated.append(safe_action(action))
@@ -859,7 +865,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                             "valid": False,
                             "error": str(error),
                             "invalid_action_index": validation_index,
-                            "inference_latency_s": latency,
+                            "policy_compute_host_s": latency,
                         }
                     )
                     publish_blocked = "invalid_policy_action"
@@ -883,8 +889,10 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     "readiness": future_context["readiness"],
                     "freshness": future_context["freshness"],
                     "observation_state": list(state),
-                    "inference_latency_s": latency,
-                    "capture_to_ready_latency_s": capture_to_ready_latency,
+                    "inference_latency_s": capture_to_ready_sim_s,
+                    "inference_latency_clock": "simulator",
+                    "policy_compute_host_s": latency,
+                    "capture_to_ready_host_s": capture_to_ready_latency,
                     "capture_to_ready_sim_s": capture_to_ready_sim_s,
                     "discarded_prefix_actions": discarded,
                     "aligned_actions": len(aligned),
@@ -917,10 +925,11 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     json.dumps(
                         {
                             "decision": event_index,
-                            "latency_s": latency,
-                            "capture_to_ready_latency_s": (
+                            "policy_compute_host_s": latency,
+                            "capture_to_ready_host_s": (
                                 capture_to_ready_latency
                             ),
+                            "capture_to_ready_sim_s": capture_to_ready_sim_s,
                             "discarded_prefix_actions": discarded,
                             "first_aligned_chunk_index": (
                                 aligned[0][2] if aligned else None
@@ -1166,11 +1175,11 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
 
     elapsed = time.monotonic() - started
     refill_window_s = args.queue_refill_actions / args.action_rate_hz
-    latency_contract_pass = bool(latencies) and all(
-        value <= refill_window_s for value in latencies
+    latency_contract_pass = bool(capture_to_ready_sim_latencies) and all(
+        value <= refill_window_s for value in capture_to_ready_sim_latencies
     )
     summary = {
-        "schema_version": 7,
+        "schema_version": 8,
         "mode": mode,
         "runtime_mode": args.runtime_mode,
         "execution_horizon": 5 if hard5 else "asynchronous_refill",
@@ -1188,7 +1197,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         "chunk_size": PI05_CONTRACT.chunk_size,
         "n_action_steps": PI05_CONTRACT.n_action_steps,
         "warmup_decisions": args.warmup_decisions,
-        "warmup_latency_s": warmup_latencies,
+        "warmup_policy_compute_host_s": warmup_latencies,
         "seed": args.seed,
         "base_coordinate_frame": args.base_coordinate_frame,
         "readiness_config": readiness.__dict__,
@@ -1247,20 +1256,37 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 and last_published_sim_time is not None
                 else None
             ),
-            "capture_to_ready_latency_s": {
+            "capture_to_ready_sim_latency_s": {
                 "p50": (
-                    statistics.median(capture_to_ready_latencies)
-                    if capture_to_ready_latencies
+                    statistics.median(capture_to_ready_sim_latencies)
+                    if capture_to_ready_sim_latencies
                     else None
                 ),
                 "p95": (
-                    _percentile(capture_to_ready_latencies, 0.95)
-                    if capture_to_ready_latencies
+                    _percentile(capture_to_ready_sim_latencies, 0.95)
+                    if capture_to_ready_sim_latencies
                     else None
                 ),
                 "max": (
-                    max(capture_to_ready_latencies)
-                    if capture_to_ready_latencies
+                    max(capture_to_ready_sim_latencies)
+                    if capture_to_ready_sim_latencies
+                    else None
+                ),
+            },
+            "capture_to_ready_host_latency_s": {
+                "p50": (
+                    statistics.median(capture_to_ready_host_latencies)
+                    if capture_to_ready_host_latencies
+                    else None
+                ),
+                "p95": (
+                    _percentile(capture_to_ready_host_latencies, 0.95)
+                    if capture_to_ready_host_latencies
+                    else None
+                ),
+                "max": (
+                    max(capture_to_ready_host_latencies)
+                    if capture_to_ready_host_latencies
                     else None
                 ),
             },
@@ -1330,7 +1356,25 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             "trajectory": spine_trajectory,
         },
         "elapsed_s": elapsed,
+        "inference_latency_clock": "simulator",
         "inference_latency_s": {
+            "p50": (
+                statistics.median(capture_to_ready_sim_latencies)
+                if capture_to_ready_sim_latencies
+                else None
+            ),
+            "p95": (
+                _percentile(capture_to_ready_sim_latencies, 0.95)
+                if capture_to_ready_sim_latencies
+                else None
+            ),
+            "max": (
+                max(capture_to_ready_sim_latencies)
+                if capture_to_ready_sim_latencies
+                else None
+            ),
+        },
+        "policy_compute_host_s": {
             "p50": statistics.median(latencies) if latencies else None,
             "p95": _percentile(latencies, 0.95) if latencies else None,
             "max": max(latencies) if latencies else None,

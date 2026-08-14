@@ -10,27 +10,35 @@ import json
 import math
 from pathlib import Path
 
+from task2_isaacsim.baselines.pi05.contract import (
+    RELATIVE_ACTION_STATE_INDICES,
+    V2_RELATIVE_ACTION_STATE_INDICES,
+)
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run-dir", type=Path, required=True)
-    args = parser.parse_args()
-    manifest_path = args.run_dir / "live_runner_manifest.json"
+
+def verify_shadow_run(run_dir: Path, *, contract: str) -> dict[str, object]:
+    expected_mapping = list(
+        RELATIVE_ACTION_STATE_INDICES
+        if contract == "v1"
+        else V2_RELATIVE_ACTION_STATE_INDICES
+    )
+    args_run_dir = run_dir.resolve()
+    manifest_path = args_run_dir / "live_runner_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     events = manifest.get("events", [])
     event = events[0] if events else {}
     staging = manifest.get("staging", {})
     stage_result = staging.get("result", {})
-    wrist_path = args.run_dir / "settled_fresh_wrist_right.ppm"
+    wrist_path = args_run_dir / "settled_fresh_wrist_right.ppm"
     mapping = manifest.get("checkpoint_relative_action_state_indices", [])
     stage_groups = stage_result.get("feedback", {}).get("groups", {})
     capture_skew = event.get("freshness", {}).get(
         "observation_capture_skew_s", float("inf")
     )
     capture_to_ready = event.get("capture_to_ready_sim_s", float("inf"))
-    capture_skew_valid = isinstance(capture_skew, (int, float)) and math.isfinite(
-        capture_skew
-    )
+    capture_skew_valid = isinstance(
+        capture_skew, (int, float)
+    ) and math.isfinite(capture_skew)
     capture_to_ready_valid = isinstance(
         capture_to_ready, (int, float)
     ) and math.isfinite(capture_to_ready)
@@ -54,7 +62,11 @@ def main() -> int:
             manifest.get("command_publications") == 0
             and manifest.get("ros_publication") is False
         ),
-        "absolute_spine_mapping": len(mapping) == 20 and mapping[19] is None,
+        "checkpoint_mapping_matches_contract": mapping == expected_mapping,
+        "spine_mapping_matches_contract": (
+            len(mapping) == 20
+            and mapping[19] == (28 if contract == "v1" else None)
+        ),
         "staging_all_within_tolerance": (
             stage_result.get("feedback", {}).get("within_tolerance") is True
             and set(stage_groups) == required_stage_groups
@@ -71,8 +83,9 @@ def main() -> int:
             wrist_path.is_file() and wrist_path.stat().st_size > 16
         ),
     }
-    report = {
+    return {
         "valid": all(checks.values()),
+        "contract": contract,
         "manifest": str(manifest_path.resolve()),
         "checkpoint": manifest.get("checkpoint"),
         "checks": checks,
@@ -81,6 +94,14 @@ def main() -> int:
         "capture_to_ready_sim_s": event.get("capture_to_ready_sim_s"),
         "right_wrist_image": str(wrist_path.resolve()),
     }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--contract", choices=("v1", "v2"), default="v2")
+    args = parser.parse_args()
+    report = verify_shadow_run(args.run_dir, contract=args.contract)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["valid"] else 2
 

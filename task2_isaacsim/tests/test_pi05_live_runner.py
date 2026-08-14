@@ -4,13 +4,20 @@
 
 from __future__ import annotations
 
+import json
 import math
+import tempfile
 import unittest
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 
-from task2_isaacsim.baselines.pi05.contract import STATE_NAMES
+from task2_isaacsim.baselines.pi05.contract import (
+    RELATIVE_ACTION_STATE_INDICES,
+    STATE_NAMES,
+    V2_RELATIVE_ACTION_STATE_INDICES,
+)
 from task2_isaacsim.baselines.pi05.live.core import (
     BaseReadinessGate,
     FreshnessConfig,
@@ -34,6 +41,7 @@ from task2_isaacsim.baselines.pi05.live.staging import (
     staging_feedback,
     validate_staging_audit,
 )
+from task2_isaacsim.baselines.pi05.verify_shadow_run import verify_shadow_run
 from task2_isaacsim.common.state_contract import (
     LEFT_GRIPPER_DRIVER,
     LEFT_JOINTS,
@@ -236,6 +244,66 @@ class LiveSafetyTest(unittest.TestCase):
                     queue=queue,
                 )
             )
+
+    def test_shadow_gate_distinguishes_v1_and_v2_spine_contracts(self) -> None:
+        groups = {
+            name: True
+            for name in (
+                "left_arm",
+                "right_arm",
+                "spine",
+                "left_gripper",
+                "right_gripper",
+                "left_ee_height",
+                "right_pregrasp_position",
+                "right_pregrasp_orientation",
+            )
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "settled_fresh_wrist_right.ppm").write_bytes(
+                b"P6\n2 2\n255\n" + b"\0" * 24
+            )
+            manifest = {
+                "completed": True,
+                "valid_decisions": 1,
+                "command_publications": 0,
+                "ros_publication": False,
+                "staging": {
+                    "result": {
+                        "feedback": {
+                            "within_tolerance": True,
+                            "groups": groups,
+                        }
+                    }
+                },
+                "events": [
+                    {
+                        "valid": True,
+                        "policy_indices": [0, 1, 2, 3, 4],
+                        "capture_to_ready_sim_s": 0.5,
+                        "freshness": {"observation_capture_skew_s": 0.02},
+                    }
+                ],
+            }
+            for contract, mapping in (
+                ("v1", RELATIVE_ACTION_STATE_INDICES),
+                ("v2", V2_RELATIVE_ACTION_STATE_INDICES),
+            ):
+                with self.subTest(contract=contract):
+                    manifest[
+                        "checkpoint_relative_action_state_indices"
+                    ] = list(mapping)
+                    (root / "live_runner_manifest.json").write_text(
+                        json.dumps(manifest), encoding="utf-8"
+                    )
+                    self.assertTrue(
+                        verify_shadow_run(root, contract=contract)["valid"]
+                    )
+                    wrong = "v2" if contract == "v1" else "v1"
+                    self.assertFalse(
+                        verify_shadow_run(root, contract=wrong)["valid"]
+                    )
 
     def test_startup_inventory_names_missing_real_inputs(self) -> None:
         state = [0.0] * 37

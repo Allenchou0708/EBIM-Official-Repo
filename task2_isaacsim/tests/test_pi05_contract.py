@@ -1184,6 +1184,33 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn('"clock": "simulator"', runner)
         self.assertIn('"freshness_clock": "host_monotonic"', runner)
         self.assertIn('"observation_state": list(state)', runner)
+        self.assertIn('"inference_latency_clock": "simulator"', runner)
+        self.assertIn('"capture_to_ready_sim_latency_s": {', runner)
+        self.assertIn('"capture_to_ready_host_latency_s": {', runner)
+        self.assertIn(
+            "value <= refill_window_s for value in "
+            "capture_to_ready_sim_latencies",
+            runner,
+        )
+        manipulation_stager = (
+            repository_root
+            / "task2_isaacsim"
+            / "baselines"
+            / "pi05"
+            / "live"
+            / "fixed_stage_manipulation.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("last_sim_time = node.sim_time", manipulation_stager)
+        self.assertIn(
+            "node.sim_time - stable_since >= dwell_s", manipulation_stager
+        )
+        self.assertIn(
+            '"host_clock_use": "process_watchdog_only"',
+            manipulation_stager,
+        )
+        self.assertIn(
+            '"command_header_clock": "simulator"', manipulation_stager
+        )
 
     def test_task_staging_runs_after_policy_load_with_shared_tolerance(
         self,

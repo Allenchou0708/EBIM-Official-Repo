@@ -35,7 +35,10 @@ Usage:
   ./run_pi05.sh train [--config PATH] [--run NAME] [--dry-run] [--one-step-smoke] [--vram-smoke-run NAME]
   ./run_pi05.sh verify-training [--run NAME] [--mode v2_expert_30k|v2_full_30k]
   ./run_pi05.sh verify-smoke [--run NAME]
-  ./run_pi05.sh verify-shadow --run-dir PATH
+  ./run_pi05.sh verify-models-30k
+  ./run_pi05.sh verify-shadow --run-dir PATH [--contract v1|v2]
+  ./run_pi05.sh offline-models-30k [--samples-per-episode N]
+  ./run_pi05.sh heldout-models-30k [--max-frames N]
   ./run_pi05.sh offline-gate [--run NAME] [--max-frames N]
   ./run_pi05.sh train-v4 [--run NAME]
   ./run_pi05.sh gate-v4 [--checkpoint PATH] [--maximum-episodes N]
@@ -262,17 +265,124 @@ command_verify_smoke() {
 }
 
 command_verify_shadow() {
-  local run_dir=""
+  local run_dir="" contract="v2"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --run-dir) run_dir="$(realpath "$2")"; shift 2 ;;
+      --contract) contract="$2"; shift 2 ;;
       *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
   done
   [[ -n "${run_dir}" ]] || { echo "--run-dir is required" >&2; exit 2; }
+  [[ "${contract}" = "v1" || "${contract}" = "v2" ]] || {
+    echo "--contract must be v1 or v2" >&2
+    exit 2
+  }
   PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
     python3 -m task2_isaacsim.baselines.pi05.verify_shadow_run \
-    --run-dir "${run_dir}"
+    --run-dir "${run_dir}" --contract "${contract}"
+}
+
+command_verify_models_30k() {
+  local v1 v2 output
+  v1="${TASK2_PI05_ROOT}/outputs/task2_200_30k_v1/training/checkpoints/030000"
+  v2="${TASK2_PI05_ROOT}/outputs/task2_pi05_v2_expert_30k/training/checkpoints/030000"
+  output="${TASK2_PI05_ROOT}/evidence/task2_pi05_v1_v2_30k/model_verification.json"
+  PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
+    python3 -m task2_isaacsim.baselines.pi05.verify_v1_v2_30k \
+    --v1-checkpoint "${v1}" --v2-checkpoint "${v2}" --output "${output}"
+}
+
+command_offline_models_30k() {
+  local samples=3
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --samples-per-episode) samples="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  [[ "${samples}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "--samples-per-episode must be a positive integer" >&2
+    exit 2
+  }
+  local v1 v2 dataset audit output episodes
+  v1="${TASK2_PI05_ROOT}/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+  v2="${TASK2_PI05_ROOT}/outputs/task2_pi05_v2_expert_30k/training/checkpoints/030000/pretrained_model"
+  dataset="${TASK2_PI05_ROOT}/datasets/task2_fixpos_200_46ab41f"
+  audit="${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/task2_fixpos_200_audit.json"
+  output="${TASK2_PI05_ROOT}/evidence/task2_pi05_v1_v2_30k"
+  [[ -d "${v1}" ]] || { echo "V1 030000 checkpoint not found" >&2; exit 2; }
+  [[ -d "${v2}" ]] || { echo "V2 030000 checkpoint not found" >&2; exit 2; }
+  [[ -d "${dataset}" ]] || { echo "Raw dataset not found" >&2; exit 2; }
+  [[ -f "${audit}" ]] || { echo "Dataset audit not found" >&2; exit 2; }
+  mkdir -p "${output}"
+  episodes="$(python3 -c 'import json,sys; print(",".join(map(str,json.load(open(sys.argv[1]))["split"]["held_out"])))' "${audit}")"
+  training_base_args
+  local contract checkpoint report
+  for contract in v1 v2; do
+    if [[ "${contract}" = "v1" ]]; then checkpoint="${v1}"; else checkpoint="${v2}"; fi
+    report="${output}/${contract}_030000_offline.json"
+    docker run "${TRAINING_ARGS[@]}" \
+      -v "${checkpoint}:/data/checkpoint:ro" \
+      -v "${dataset}:/data/dataset:ro" \
+      -v "${audit}:/data/dataset_audit.json:ro" \
+      -v "${output}:/data/output" \
+      "${PI05_TRAIN_IMAGE}" offline-inference \
+      --checkpoint /data/checkpoint \
+      --dataset-root /data/dataset \
+      --dataset-repo-id hermanprawiro/task2_fixpos_200 \
+      --episodes "${episodes}" \
+      --audit-report /data/dataset_audit.json \
+      --samples-per-episode "${samples}" --seed 1000 \
+      --output "/data/output/$(basename "${report}")"
+  done
+}
+
+command_heldout_models_30k() {
+  local max_frames=128
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --max-frames) max_frames="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  [[ "${max_frames}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "--max-frames must be a positive integer" >&2
+    exit 2
+  }
+  local v1 v2 dataset audit output contract checkpoint report report_dir
+  v1="${TASK2_PI05_ROOT}/outputs/task2_200_30k_v1/training/checkpoints/030000"
+  v2="${TASK2_PI05_ROOT}/outputs/task2_pi05_v2_expert_30k/training/checkpoints/030000"
+  dataset="${TASK2_PI05_ROOT}/datasets/task2_fixpos_200_46ab41f"
+  audit="${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/task2_fixpos_200_audit.json"
+  output="${TASK2_PI05_ROOT}/evidence/task2_pi05_v1_v2_30k"
+  [[ -d "${v1}/pretrained_model" ]] || { echo "V1 030000 checkpoint not found" >&2; exit 2; }
+  [[ -d "${v2}/pretrained_model" ]] || { echo "V2 030000 checkpoint not found" >&2; exit 2; }
+  [[ -d "${dataset}" ]] || { echo "Raw dataset not found" >&2; exit 2; }
+  [[ -f "${audit}" ]] || { echo "Dataset audit not found" >&2; exit 2; }
+  mkdir -p "${output}"
+  training_base_args
+  for contract in v1 v2; do
+    if [[ "${contract}" = "v1" ]]; then checkpoint="${v1}"; else checkpoint="${v2}"; fi
+    report="${output}/${contract}_030000_heldout_gate.json"
+    report_dir="${output}/${contract}_030000_heldout_gate_checkpoint_reports"
+    [[ ! -e "${report}" && ! -e "${report_dir}" ]] || {
+      echo "Held-out output already exists for ${contract}: ${report}" >&2
+      exit 2
+    }
+    docker run "${TRAINING_ARGS[@]}" \
+      -v "${checkpoint}:/data/checkpoints/030000:ro" \
+      -v "${dataset}:/data/dataset:ro" \
+      -v "${audit}:/data/dataset_audit.json:ro" \
+      -v "${output}:/data/output" \
+      "${PI05_TRAIN_IMAGE}" checkpoint-sweep \
+      --checkpoints-root /data/checkpoints \
+      --dataset-root /data/dataset \
+      --dataset-repo-id hermanprawiro/task2_fixpos_200 \
+      --audit-report /data/dataset_audit.json \
+      --output "/data/output/$(basename "${report}")" \
+      --max-frames "${max_frames}" --seed 1000
+  done
 }
 
 command_offline_gate() {
@@ -592,7 +702,10 @@ case "${1:-}" in
   audit-staging) shift; command_audit_staging "$@" ;;
   verify-training) shift; command_verify_training "$@" ;;
   verify-smoke) shift; command_verify_smoke "$@" ;;
+  verify-models-30k) shift; command_verify_models_30k "$@" ;;
   verify-shadow) shift; command_verify_shadow "$@" ;;
+  offline-models-30k) shift; command_offline_models_30k "$@" ;;
+  heldout-models-30k) shift; command_heldout_models_30k "$@" ;;
   offline-gate) shift; command_offline_gate "$@" ;;
   train) shift; command_train "$@" ;;
   train-v4) shift; command_train_v4 "$@" ;;
