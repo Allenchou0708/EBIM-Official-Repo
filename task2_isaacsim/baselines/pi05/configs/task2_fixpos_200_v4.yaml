@@ -1,0 +1,24 @@
+# Copyright (c) 2026 The EBiM Benchmark Contributors
+# SPDX-License-Identifier: Apache-2.0
+dataset:
+  repo_id: hermanprawiro/task2_fixpos_200
+  revision: 46ab41f16fe836ee8ca791c7afaade44783eefe6
+  expected_episodes: 200
+  expected_frames: 174719
+  phase_conditioned_run: task2_pi05_v4_pregrasp
+training:
+  profile: expert_v4.yaml
+  run: task2_pi05_v4_from_v2_3k
+  init_checkpoint: task2_pi05_v2_12k/training_12k/checkpoints/006000
+policy:
+  train_expert_only: true
+  freeze_vision_encoder: true
+  use_relative_actions: true
+  relative_spine: false
+  chunk_size: 50
+  n_action_steps: 5
+  optimizer_lr: 5.0e-6
+steps: 3000
+batch_size: 1
+save_freq: 3000
+seed: 1000

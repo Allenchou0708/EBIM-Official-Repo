@@ -83,6 +83,24 @@ and thermal-pad motion. Held-out episodes are excluded from every sampler
 group. The selected relative-action mapping is serialized in the checkpoint;
 the live and offline processors retain V1 decoding for older checkpoints.
 
+V4 is a bounded continuation from the V2 6k checkpoint using the audited
+seven-prompt dataset view. It keeps the V2 action contract and stores one final
+3k checkpoint:
+
+```bash
+./run_pi05.sh train-v4 --run task2_pi05_v4_from_v2_3k
+./run_pi05.sh gate-v4
+```
+
+`train-v4` validates the immutable split, seven prompt strings, V2 checkpoint
+mapping, and dataset metadata before training. The V4-only collate resolves
+dataset task indices to prompt strings before PI0.5 tokenization. `gate-v4`
+runs all seven prompts at seven landmarks for every held-out episode, scores
+only hard5 actions 0--4, writes no ROS command, and exits `3` for a measured
+NO-GO. The 2026-08-14 V4 checkpoint failed orient-to-pregrasp direction and
+correct-prompt discriminability, so it must not be run in GUI; see
+`TASK2_PI05_V4_SEVEN_PROMPT_OFFLINE_GATE_LAB_RESULT_2026-08-14.md`.
+
 Before a GUI run, one checkpoint shadow can exercise the real observation,
 postprocessing, action-bound, base-isolation, spine, and time-alignment
 contracts without publishing ROS commands:

@@ -16,6 +16,8 @@ TASK2_PI05_ROOT="${TASK2_PI05_ROOT:-/scratch1/2026_ebim/allen_task2_pi05}"
 PI05_TRAIN_IMAGE="${PI05_TRAIN_IMAGE:-ebim-task2-pi05:200-submit-20260812}"
 PI05_LIVE_IMAGE="${PI05_LIVE_IMAGE:-ebim-task2-pi05-submit:local}"
 PI05_V3_INIT_CHECKPOINT="${PI05_V3_INIT_CHECKPOINT:-${TASK2_PI05_ROOT}/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model}"
+PI05_V4_INIT_CHECKPOINT="${PI05_V4_INIT_CHECKPOINT:-${TASK2_PI05_ROOT}/outputs/task2_pi05_v2_12k/training_12k/checkpoints/006000/pretrained_model}"
+PI05_V4_DATASET="${PI05_V4_DATASET:-${TASK2_PI05_ROOT}/outputs/task2_pi05_v4_pregrasp/phase_conditioned_dataset}"
 PI05_CHECKPOINT="${PI05_CHECKPOINT:-}"
 PI05_RELATIVE_DATASET="${PI05_RELATIVE_DATASET:-}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
@@ -29,6 +31,8 @@ Usage:
   ./run_pi05.sh doctor
   ./run_pi05.sh dataset [--config PATH]
   ./run_pi05.sh train [--config PATH] [--run NAME]
+  ./run_pi05.sh train-v4 [--run NAME]
+  ./run_pi05.sh gate-v4 [--checkpoint PATH] [--maximum-episodes N]
   ./run_pi05.sh sim-up [--gui]
   ./run_pi05.sh run-task [--runtime-mode hard5|legacy] [--checkpoint PATH] [--dataset-root PATH] [--shadow] [--max-actions N] [--max-duration-s S]
   ./run_pi05.sh replay-dataset [--dataset-root PATH] [--episode auto|N] [--summary-only|--align-only|--max-frames N]
@@ -141,6 +145,69 @@ command_train() {
     --audit-report /data/evidence/$(basename "${audit}") \
     --output-dir "/data/outputs/${RUN_NAME}" \
     --episodes "${episodes}" --execute
+}
+
+command_train_v4() {
+  local run_name="task2_pi05_v4_from_v2_3k"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --run) run_name="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  local output pose_audit
+  output="${TASK2_PI05_ROOT}/outputs/${run_name}"
+  pose_audit="${TASK2_PI05_ROOT}/evidence/task2_pi05_pregrasp_20260814/pregrasp_pose_audit.json"
+  [[ -d "${PI05_V4_INIT_CHECKPOINT}" ]] || { echo "V2 init checkpoint not found" >&2; exit 2; }
+  [[ -d "${PI05_V4_DATASET}" ]] || { echo "V4 phase dataset not found" >&2; exit 2; }
+  [[ -f "${pose_audit}" ]] || { echo "V4 pose audit not found" >&2; exit 2; }
+  mkdir -p "${output}"
+  training_base_args
+  docker run "${TRAINING_ARGS[@]}" \
+    -e EBIM_PI05_IMAGE="${PI05_TRAIN_IMAGE}" \
+    -e HF_DATASETS_CACHE=/data/output/hf_datasets_cache \
+    -v "${PI05_V4_INIT_CHECKPOINT}:/data/v2-checkpoint:ro" \
+    -v "${PI05_V4_DATASET}:/data/dataset:ro" \
+    -v "${pose_audit}:/data/pregrasp_pose_audit.json:ro" \
+    -v "${output}:/data/output" \
+    "${PI05_TRAIN_IMAGE}" v4-train \
+    --checkpoint /data/v2-checkpoint \
+    --dataset-root /data/dataset \
+    --pose-audit /data/pregrasp_pose_audit.json \
+    --output-dir /data/output --execute
+}
+
+command_gate_v4() {
+  local checkpoint="${TASK2_PI05_ROOT}/outputs/task2_pi05_v4_from_v2_3k/training/checkpoints/003000/pretrained_model"
+  local maximum_episodes="" pose_audit output
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --checkpoint) checkpoint="$(realpath "$2")"; shift 2 ;;
+      --maximum-episodes) maximum_episodes="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  [[ -d "${checkpoint}" ]] || { echo "V4 checkpoint not found" >&2; exit 2; }
+  [[ -z "${maximum_episodes}" || "${maximum_episodes}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "--maximum-episodes must be a positive integer" >&2
+    exit 2
+  }
+  pose_audit="${TASK2_PI05_ROOT}/evidence/task2_pi05_pregrasp_20260814/pregrasp_pose_audit.json"
+  output="$(realpath "${checkpoint}/../../../..")/offline_gate"
+  mkdir -p "${output}"
+  training_base_args
+  local -a episode_arg=()
+  [[ -n "${maximum_episodes}" ]] && episode_arg=(--maximum-episodes "${maximum_episodes}")
+  docker run "${TRAINING_ARGS[@]}" \
+    -e HF_DATASETS_CACHE=/data/output/hf_datasets_cache \
+    -v "${checkpoint}:/data/checkpoint:ro" \
+    -v "${PI05_V4_DATASET}:/data/dataset:ro" \
+    -v "${pose_audit}:/data/pregrasp_pose_audit.json:ro" \
+    -v "${output}:/data/output" \
+    "${PI05_TRAIN_IMAGE}" v4-offline-gate \
+    --checkpoint /data/checkpoint --dataset-root /data/dataset \
+    --pose-audit /data/pregrasp_pose_audit.json \
+    --output /data/output/v4_offline_gate.json "${episode_arg[@]}"
 }
 
 live_shell() {
@@ -339,6 +406,8 @@ case "${1:-}" in
   doctor) shift; command_doctor "$@" ;;
   dataset) shift; command_dataset "$@" ;;
   train) shift; command_train "$@" ;;
+  train-v4) shift; command_train_v4 "$@" ;;
+  gate-v4) shift; command_gate_v4 "$@" ;;
   sim-up) shift; command_sim_up "$@" ;;
   run-task) shift; command_run_task "$@" ;;
   replay-dataset) shift; command_replay_dataset "$@" ;;

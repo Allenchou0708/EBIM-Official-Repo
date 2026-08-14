@@ -223,6 +223,7 @@ def materialize_phase_conditioned_view(
             "destination_root": str(destination),
             "pose_audit": str(pose_audit.resolve()),
             "phase_prompts": PHASE_PROMPTS,
+            "task_indices": task_indices,
             "sampling_ratios_percent": PHASE_RATIOS,
             "train_episodes": sorted(train_episodes),
             "held_out_episodes": sorted(held_out_episodes),

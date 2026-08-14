@@ -129,6 +129,8 @@ def _profile_path(name_or_path: str) -> Path:
         "expert_v2": "expert_v2.yaml",
         "v3": "expert_v3.yaml",
         "expert_v3": "expert_v3.yaml",
+        "v4": "expert_v4.yaml",
+        "expert_v4": "expert_v4.yaml",
         "full": "full_finetune.yaml",
     }
     path = PROFILE_DIRECTORY / names.get(name_or_path, name_or_path)
@@ -178,12 +180,20 @@ def validate_profile(path: Path) -> dict[str, Any]:
             True,
             True,
         ),
+        "expert_v4.yaml": (
+            "expert_v4_v2_seven_prompt",
+            True,
+            True,
+            True,
+            True,
+        ),
         "full_finetune.yaml": ("full_finetune", True, False, False, False),
     }
     if path.name not in expected_modes:
         raise ValueError(
             "profile filename must be smoke_expert.yaml, "
             "expert_finetune.yaml, expert_v2.yaml, expert_v3.yaml, "
+            "expert_v4.yaml, "
             "or full_finetune.yaml"
         )
     mode, formal, train_expert_only, freeze_vision_encoder, phase_balanced = (
@@ -450,6 +460,7 @@ def _verify_parameter_mode(
             "expert_finetune",
             "expert_v2_phase_absolute_spine",
             "expert_v3_v1_calibrated_absolute_spine",
+            "expert_v4_v2_seven_prompt",
         }
         and not 500_000_000 <= trainable <= 1_000_000_000
     ):
@@ -921,6 +932,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train_parser.add_argument("--execute", action="store_true")
 
+    v4_parser = subparsers.add_parser("v4-train")
+    v4_parser.add_argument("--checkpoint", type=Path, required=True)
+    v4_parser.add_argument("--dataset-root", type=Path, required=True)
+    v4_parser.add_argument("--pose-audit", type=Path, required=True)
+    v4_parser.add_argument("--output-dir", type=Path, required=True)
+    v4_parser.add_argument("--execute", action="store_true")
+
+    v4_gate_parser = subparsers.add_parser("v4-offline-gate")
+    v4_gate_parser.add_argument("--checkpoint", type=Path, required=True)
+    v4_gate_parser.add_argument("--dataset-root", type=Path, required=True)
+    v4_gate_parser.add_argument("--pose-audit", type=Path, required=True)
+    v4_gate_parser.add_argument("--output", type=Path, required=True)
+    v4_gate_parser.add_argument("--maximum-episodes", type=int)
+
     resume_parser = subparsers.add_parser("resume")
     resume_parser.add_argument("--checkpoint", type=Path, required=True)
     resume_parser.add_argument("--output-dir", type=Path, required=True)
@@ -1047,6 +1072,39 @@ def main() -> int:
         return 0
     if args.command == "train":
         return command_train(args)
+    if args.command == "v4-train":
+        from .v4_train import run_v4_training
+
+        try:
+            validate_profile(PROFILE_DIRECTORY / "expert_v4.yaml")
+            return run_v4_training(
+                checkpoint=args.checkpoint,
+                dataset_root=args.dataset_root,
+                pose_audit=args.pose_audit,
+                output_dir=args.output_dir,
+                profile=PROFILE_DIRECTORY / "expert_v4.yaml",
+                execute=args.execute,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"FAIL: V4 training: {error}")
+            return 2
+    if args.command == "v4-offline-gate":
+        from .phase_offline_gate import run_phase_offline_gate
+
+        try:
+            report = run_phase_offline_gate(
+                checkpoint=args.checkpoint,
+                dataset_root=args.dataset_root,
+                dataset_repo_id="local/task2_pi05_v4",
+                pose_audit=args.pose_audit,
+                output=args.output,
+                maximum_episodes=args.maximum_episodes,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"FAIL: V4 offline gate: {error}")
+            return 2
+        print(json.dumps({"go": report["go"], "checks": report["checks"]}, indent=2))
+        return 0 if report["go"] else 3
     if args.command == "resume":
         return command_resume(args)
     if args.command == "validate-shadow":

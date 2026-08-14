@@ -1,0 +1,47 @@
+# Copyright (c) 2026 The EBiM Benchmark Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+dataset:
+  repo_id: local/task2_fixpos_v4_phase_conditioned
+  root: /data/dataset
+policy:
+  path: /data/v2-checkpoint
+  pretrained_revision: 338b5c22c12dbdd0d2ab19046802de2eb7696a6b
+  device: cuda
+  dtype: bfloat16
+  max_state_dim: 37
+  max_action_dim: 32
+  chunk_size: 50
+  n_action_steps: 5
+  gradient_checkpointing: true
+  train_expert_only: true
+  freeze_vision_encoder: true
+  use_relative_actions: true
+  optimizer_lr: 5.0e-6
+  scheduler_warmup_steps: 100
+  scheduler_decay_steps: 3000
+  scheduler_decay_lr: 1.0e-6
+  compile_model: false
+  push_to_hub: false
+task2_relative_action_state_indices:
+  [null, null, null, 14, 15, 16, 17, 18, 19, 20,
+   21, 22, 23, 24, 25, 26, 27, null, null, null]
+rename_map:
+  observation.images.head: observation.images.base_0_rgb
+  observation.images.wrist_left: observation.images.left_wrist_0_rgb
+  observation.images.wrist_right: observation.images.right_wrist_0_rgb
+output_dir: /data/output/training
+job_name: task2_pi05_v4_v2_seven_prompt
+steps: 3000
+batch_size: 1
+num_workers: 4
+persistent_workers: true
+env_eval_freq: 0
+eval_steps: 0
+log_freq: 10
+save_checkpoint: true
+save_freq: 3000
+save_checkpoint_to_hub: false
+seed: 1000
+wandb:
+  enable: false
