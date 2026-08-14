@@ -1,0 +1,35 @@
+# Copyright (c) 2026 The EBiM Benchmark Contributors
+# SPDX-License-Identifier: Apache-2.0
+dataset:
+  repo_id: hermanprawiro/task2_fixpos_200
+  revision: 46ab41f16fe836ee8ca791c7afaade44783eefe6b
+  expected_episodes: 200
+  expected_frames: 174719
+  local_dir: task2_fixpos_200_46ab41f
+split:
+  seed: 20260812
+  train_episodes: 180
+  held_out_episodes: 20
+training:
+  profile: v2_expert_30k.yaml
+  run: task2_pi05_v2_expert_30k
+policy:
+  path: lerobot/pi05_base
+  pretrained_revision: 338b5c22c12dbdd0d2ab19046802de2eb7696a6b
+  train_expert_only: true
+  freeze_vision_encoder: true
+  gradient_checkpointing: true
+  dtype: bfloat16
+  use_relative_actions: true
+  relative_spine: false
+  chunk_size: 50
+  n_action_steps: 5
+  optimizer_lr: 2.5e-5
+  scheduler_warmup_steps: 500
+  scheduler_decay_steps: 12000
+  scheduler_decay_lr: 2.5e-6
+steps: 30000
+batch_size: 1
+num_workers: 4
+save_freq: 15000
+seed: 1000

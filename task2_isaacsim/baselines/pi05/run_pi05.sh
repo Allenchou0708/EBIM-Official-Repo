@@ -33,7 +33,7 @@ Usage:
   ./run_pi05.sh dataset [--config PATH]
   ./run_pi05.sh audit-staging [--dataset-root PATH] [--output-dir PATH]
   ./run_pi05.sh train [--config PATH] [--run NAME] [--dry-run] [--one-step-smoke] [--vram-smoke-run NAME]
-  ./run_pi05.sh verify-training [--run NAME]
+  ./run_pi05.sh verify-training [--run NAME] [--mode v2_expert_30k|v2_full_30k]
   ./run_pi05.sh verify-smoke [--run NAME]
   ./run_pi05.sh verify-shadow --run-dir PATH
   ./run_pi05.sh offline-gate [--run NAME] [--max-frames N]
@@ -232,19 +232,20 @@ command_audit_staging() {
 }
 
 command_verify_training() {
-  local run_name="task2_pi05_v2_full_30k"
+  local run_name="task2_pi05_v2_expert_30k" mode="v2_expert_30k"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --run) run_name="$2"; shift 2 ;;
+      --mode) mode="$2"; shift 2 ;;
       *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
   done
   local run_root output
   run_root="${TASK2_PI05_ROOT}/outputs/${run_name}"
-  output="${TASK2_PI05_ROOT}/evidence/task2_pi05_v2_full_30k_preflight/training_verification.json"
+  output="${TASK2_PI05_ROOT}/evidence/${run_name}/training_verification.json"
   PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
     python3 -m task2_isaacsim.baselines.pi05.verify_v2_full_run \
-    --run-root "${run_root}" --output "${output}"
+    --run-root "${run_root}" --output "${output}" --mode "${mode}"
 }
 
 command_verify_smoke() {

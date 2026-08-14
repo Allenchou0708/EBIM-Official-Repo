@@ -568,6 +568,9 @@ class Pi05ContractTest(unittest.TestCase):
         v2_full = (profile_dir / "v2_full_30k.yaml").read_text(
             encoding="utf-8"
         )
+        v2_expert_30k = (profile_dir / "v2_expert_30k.yaml").read_text(
+            encoding="utf-8"
+        )
         self.assertNotIn("mode:", smoke)
         self.assertNotIn("formal:", expert)
         self.assertIn("train_expert_only: true", smoke)
@@ -601,6 +604,14 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn("save_freq: 15000", v2_full)
         self.assertIn(
             "21, 22, 23, 24, 25, 26, 27, null, null, null]", v2_full
+        )
+        self.assertIn("train_expert_only: true", v2_expert_30k)
+        self.assertIn("freeze_vision_encoder: true", v2_expert_30k)
+        self.assertIn("steps: 30000", v2_expert_30k)
+        self.assertIn("save_freq: 15000", v2_expert_30k)
+        self.assertIn(
+            "21, 22, 23, 24, 25, 26, 27, null, null, null]",
+            v2_expert_30k,
         )
 
     def test_portable_training_pins_task2_relative_mapping(self) -> None:
@@ -776,6 +787,31 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertFalse(parsed["policy"]["train_expert_only"])
         self.assertTrue(parsed["policy"]["freeze_vision_encoder"])
 
+    def test_v2_expert_30k_profile_is_phase_balanced_fallback(self) -> None:
+        profile = {
+            "task2_relative_action_state_indices": list(
+                V2_RELATIVE_ACTION_STATE_INDICES
+            ),
+            "policy": {
+                "dtype": "bfloat16",
+                "gradient_checkpointing": True,
+                "freeze_vision_encoder": True,
+                "use_relative_actions": True,
+                "max_state_dim": 37,
+                "max_action_dim": 32,
+                "push_to_hub": False,
+                "train_expert_only": True,
+            },
+        }
+        with patch(
+            "task2_isaacsim.baselines.pi05.portable._load_yaml",
+            return_value=profile,
+        ):
+            parsed = validate_profile(Path("v2_expert_30k.yaml"))
+        self.assertEqual(parsed["_ebim_mode"], "v2_expert_30k")
+        self.assertTrue(parsed["_ebim_phase_balanced"])
+        self.assertTrue(parsed["policy"]["train_expert_only"])
+
     def test_executable_run_requires_immutable_image_digest(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(ValueError, "immutable sha256 digest"):
@@ -867,6 +903,18 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertEqual(spec.expected_frames, 174719)
         self.assertEqual(spec.train_episodes, 180)
         self.assertEqual(spec.held_out_episodes, 20)
+
+    def test_v2_expert_30k_config_uses_new_run_and_two_checkpoints(self) -> None:
+        config = (
+            Path(__file__).resolve().parents[1]
+            / "baselines/pi05/configs/task2_fixpos_200_v2_expert_30k.yaml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("profile: v2_expert_30k.yaml", config)
+        self.assertIn("run: task2_pi05_v2_expert_30k", config)
+        self.assertIn("train_expert_only: true", config)
+        self.assertIn("relative_spine: false", config)
+        self.assertIn("steps: 30000", config)
+        self.assertIn("save_freq: 15000", config)
 
     def test_heldout_frame_sample_is_deterministic(self) -> None:
         self.assertEqual(deterministic_frame_indices(5, 3), [0, 2, 4])

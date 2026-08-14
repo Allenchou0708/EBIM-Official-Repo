@@ -142,6 +142,7 @@ def _profile_path(name_or_path: str) -> Path:
         "v4": "expert_v4.yaml",
         "expert_v4": "expert_v4.yaml",
         "v2_full_30k": "v2_full_30k.yaml",
+        "v2_expert_30k": "v2_expert_30k.yaml",
         "full": "full_finetune.yaml",
     }
     path = PROFILE_DIRECTORY / names.get(name_or_path, name_or_path)
@@ -205,13 +206,20 @@ def validate_profile(path: Path) -> dict[str, Any]:
             True,
             True,
         ),
+        "v2_expert_30k.yaml": (
+            "v2_expert_30k",
+            True,
+            True,
+            True,
+            True,
+        ),
         "full_finetune.yaml": ("full_finetune", True, False, False, False),
     }
     if path.name not in expected_modes:
         raise ValueError(
             "profile filename must be smoke_expert.yaml, "
             "expert_finetune.yaml, expert_v2.yaml, expert_v3.yaml, "
-            "expert_v4.yaml, v2_full_30k.yaml, "
+            "expert_v4.yaml, v2_full_30k.yaml, v2_expert_30k.yaml, "
             "or full_finetune.yaml"
         )
     mode, formal, train_expert_only, freeze_vision_encoder, phase_balanced = (
@@ -489,6 +497,7 @@ def _verify_parameter_mode(
             "expert_v2_phase_absolute_spine",
             "expert_v3_v1_calibrated_absolute_spine",
             "expert_v4_v2_seven_prompt",
+            "v2_expert_30k",
         }
         and not 500_000_000 <= trainable <= 1_000_000_000
     ):

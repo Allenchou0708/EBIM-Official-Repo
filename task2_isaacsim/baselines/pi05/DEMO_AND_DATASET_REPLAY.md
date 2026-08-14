@@ -1,8 +1,8 @@
-# Task 2 PI0.5 V2-full 30k operator runbook
+# Task 2 PI0.5 V2 expert-only 30k operator runbook
 
 This runbook covers one experiment only: a fresh 30k run from
 `lerobot/pi05_base` with the V2 data/action contract, phase-balanced sampling,
-`train_expert_only=false`, and the vision encoder still frozen. Arms are
+`train_expert_only=true`, and the vision encoder frozen. Arms are
 relative, action 19 (spine) is absolute, `n_action_steps=5`, and live execution
 uses `hard5` indices 0--4.
 
@@ -16,9 +16,8 @@ Run this block in every terminal:
 ```bash
 cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
 export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
-export PI05_CONFIG=configs/task2_fixpos_200_v2_full_30k.yaml
-export PI05_RUN=task2_pi05_v2_full_30k
-export PI05_SMOKE_RUN=task2_pi05_v2_full_30k_smoke_retry1
+export PI05_CONFIG=configs/task2_fixpos_200_v2_expert_30k.yaml
+export PI05_RUN=task2_pi05_v2_expert_30k
 export PI05_RUN_ROOT="$TASK2_PI05_ROOT/outputs/$PI05_RUN"
 export PI05_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
 export PI05_STAGING_AUDIT="$TASK2_PI05_ROOT/evidence/task2_pi05_v2_full_30k_preflight/startup_staging_audit.json"
@@ -74,7 +73,7 @@ Run the parser/config and focused source gates:
 
 ```bash
 bash task2_isaacsim/baselines/pi05/run_pi05.sh parser-gate \
-  --profile v2_full_30k
+  --profile v2_expert_30k
 
 docker run --rm --entrypoint bash \
   -e PYTHONPATH=/opt/ebim \
@@ -86,62 +85,40 @@ bash -n task2_isaacsim/baselines/pi05/run_pi05.sh
 git diff --check
 ```
 
-The parser output must show `train_expert_only=false`,
+The parser output must show `train_expert_only=true`,
 `freeze_vision_encoder=true`, and mapping index 19 as `null`. The GPU doctor is
 also intentional:
 
 ```bash
 bash task2_isaacsim/baselines/pi05/run_pi05.sh doctor \
-  --profile v2_full_30k
+  --profile v2_expert_30k
 ```
 
-On the current RTX 5090 it reports about `31.35 GiB` and exits NO-GO until a
-same-contract one-step smoke succeeds. Do not bypass this with expert-only,
-LoRA, smaller data, or an unfrozen vision encoder.
+On the current RTX 5090 it reports about `31.35 GiB` and passes the established
+expert-only memory gate. The prior V2 expert-only run used about `12.87 GiB`.
 
-## One-step VRAM gate and 30k training
+## Confirmed full-mode OOM and expert-only 30k training
 
-The first operator attempt named `task2_pi05_v2_full_30k_smoke_1step` was
-interrupted while copying the relative dataset view. It never created
-`run_manifest.json`, constructed the model, or ran an optimizer step; this was
-not an OOM result. Do not use that run as a smoke gate. The launcher now mounts
-the bulk root once, copies only the small data/metadata fallback, and uses
-relative symlinks for immutable videos when protected hardlinks are unavailable.
+The same-contract full-mode retry reached `optimizer.step()` with
+3,730,962,464 trainable parameters and OOMed with only 119.75 MiB free. Full
+mode is NO-GO on this GPU. This fallback keeps the V2 dataset/action/staging
+contract and changes only `train_expert_only` back to `true`. It starts fresh
+from `lerobot/pi05_base`; it is not a V2/V4 checkpoint continuation.
 
-The smoke uses the full train split and identical model/data contract, but
-runs one optimizer step, logs that step, and saves no checkpoint:
+First inspect the exact command without creating an output:
 
 ```bash
 bash task2_isaacsim/baselines/pi05/run_pi05.sh train \
-  --config "$PI05_CONFIG" \
-  --run "$PI05_SMOKE_RUN" \
-  --one-step-smoke --dry-run
-
-test ! -e "$TASK2_PI05_ROOT/outputs/$PI05_SMOKE_RUN"
-bash task2_isaacsim/baselines/pi05/run_pi05.sh train \
-  --config "$PI05_CONFIG" \
-  --run "$PI05_SMOKE_RUN" \
-  --one-step-smoke
+  --config "$PI05_CONFIG" --run "$PI05_RUN" --dry-run
 ```
 
-Verify its manifest before proceeding:
-
-```bash
-bash task2_isaacsim/baselines/pi05/run_pi05.sh verify-smoke \
-  --run "$PI05_SMOKE_RUN"
-```
-
-Any OOM, nonzero return code, trainable count below 3.5B, missing finite loss,
-or missing memory metric is NO-GO. If it passes, the operator starts the fresh
-30k run in the terminal. It initializes from `lerobot/pi05_base`; it is not a
-V2/V4 continuation:
+The operator then starts the foreground 30k training:
 
 ```bash
 test ! -e "$PI05_RUN_ROOT"
 bash task2_isaacsim/baselines/pi05/run_pi05.sh train \
   --config "$PI05_CONFIG" \
-  --run "$PI05_RUN" \
-  --vram-smoke-run "$PI05_SMOKE_RUN"
+  --run "$PI05_RUN"
 ```
 
 This foreground command writes `train.log` and `run_manifest.json`. It uses
@@ -155,12 +132,13 @@ After training exits zero, run the strict manifest/config/log/checkpoint check:
 
 ```bash
 bash task2_isaacsim/baselines/pi05/run_pi05.sh verify-training \
-  --run "$PI05_RUN"
+  --run "$PI05_RUN" --mode v2_expert_30k
 ```
 
 It verifies the exact two numbered checkpoints, model and optimizer state,
-training step, finite final loss, full-parameter mode, base-model revision,
-frozen vision, `n_action_steps=5`, 30k/15k cadence, and the V2 action mapping.
+training step, finite final loss, expert-only parameter mode, base-model
+revision, frozen vision, `n_action_steps=5`, 30k/15k cadence, and the V2 action
+mapping.
 Useful read-only size checks are:
 
 ```bash
@@ -314,8 +292,8 @@ find "$TASK2_PI05_ROOT/evidence/task2_pi05_v2_full_30k_preflight" \
 ## GO/NO-GO summary
 
 GUI policy publication is GO only when all of these pass: pushed clean source;
-parser mapping with absolute spine and `train_expert_only=false`; successful
-same-contract VRAM smoke; training verification; both-checkpoint offline gate;
+parser mapping with absolute spine and `train_expert_only=true`; successful
+expert-only training verification; both-checkpoint offline gate;
 focused tests; dataset audit; staging execution with every feedback group in
 tolerance; one valid shadow decision with zero policy command publications;
 fresh full observation skew at or below `0.10 s`; and visual confirmation that
@@ -323,6 +301,8 @@ the right-wrist frame sees the pad front. Any failure is NO-GO.
 
 Historical details are intentionally outside this operator path:
 
+- Full OOM and expert fallback:
+  `TASK2_PI05_V2_FULL_OOM_AND_EXPERT_30K_FALLBACK_2026-08-14.md`.
 - V2 action/phase result: `TASK2_PI05_V2_ABSOLUTE_SPINE_PHASE_BALANCED_LAB_RESULT_2026-08-14.md`.
 - Clock/load/GUI crash fixes: `TASK2_PI05_STAGE_CLOCK_AND_GUI_CRASH_FIX_2026-08-14.md`.
 - Pre-grasp evidence: `TASK2_PI05_PRELOAD_AND_PREGRASP_AUDIT_2026-08-14.md`.

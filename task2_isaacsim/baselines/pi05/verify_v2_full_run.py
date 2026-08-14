@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 The EBiM Benchmark Contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Verify the V2-full 30k manifest, log, configs, and two checkpoints."""
+"""Verify a V2 30k manifest, log, configs, and two checkpoints."""
 
 from __future__ import annotations
 
@@ -18,9 +18,14 @@ from task2_isaacsim.baselines.pi05.contract import (
 )
 
 EXPECTED_STEPS = (15000, 30000)
+EXPECTED_MODES = {
+    "v2_full_30k": False,
+    "v2_expert_30k": True,
+}
 
 
-def verify_run(run_root: Path) -> dict[str, Any]:
+def verify_run(run_root: Path, *, expected_mode: str) -> dict[str, Any]:
+    expected_expert_only = EXPECTED_MODES[expected_mode]
     root = run_root.resolve()
     errors: list[str] = []
     manifest_path = root / "run_manifest.json"
@@ -34,10 +39,10 @@ def verify_run(run_root: Path) -> dict[str, Any]:
     expected_mapping = list(V2_RELATIVE_ACTION_STATE_INDICES)
     checks = {
         "returncode_zero": manifest.get("returncode") == 0,
-        "mode_v2_full_30k": profile.get("mode") == "v2_full_30k",
+        "expected_v2_mode": profile.get("mode") == expected_mode,
         "phase_balanced": profile.get("_ebim_phase_balanced") is True,
-        "train_expert_only_false": (
-            policy_profile.get("train_expert_only") is False
+        "expected_parameter_mode": (
+            policy_profile.get("train_expert_only") is expected_expert_only
         ),
         "vision_encoder_frozen": (
             policy_profile.get("freeze_vision_encoder") is True
@@ -84,8 +89,8 @@ def verify_run(run_root: Path) -> dict[str, Any]:
                 "base_model_revision": (
                     policy.get("pretrained_revision") == PI05_MODEL_REVISION
                 ),
-                "train_expert_only_false": (
-                    policy.get("train_expert_only") is False
+                "expected_parameter_mode": (
+                    policy.get("train_expert_only") is expected_expert_only
                 ),
                 "vision_encoder_frozen": (
                     policy.get("freeze_vision_encoder") is True
@@ -122,9 +127,14 @@ def verify_run(run_root: Path) -> dict[str, Any]:
                 re.search(r"\bstep:30000\b|30000/30000", log)
             ),
         }
-        checks["full_parameter_mode"] = bool(
-            log_report["trainable_parameters"]
-            and log_report["trainable_parameters"] >= 3_500_000_000
+        trainable = log_report["trainable_parameters"]
+        checks["expected_trainable_parameters"] = bool(
+            trainable
+            and (
+                500_000_000 <= trainable <= 1_000_000_000
+                if expected_expert_only
+                else trainable >= 3_500_000_000
+            )
         )
         checks["finite_training_loss"] = log_report["finite_final_loss"]
         checks["step_30000_reported"] = log_report["step_30000_reported"]
@@ -134,6 +144,7 @@ def verify_run(run_root: Path) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "valid": not errors,
+        "expected_mode": expected_mode,
         "run_root": str(root),
         "manifest": str(manifest_path),
         "log": str(log_path),
@@ -149,8 +160,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--mode", choices=tuple(EXPECTED_MODES), default="v2_expert_30k"
+    )
     args = parser.parse_args()
-    report = verify_run(args.run_root)
+    report = verify_run(args.run_root, expected_mode=args.mode)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",

@@ -1,5 +1,10 @@
 # Task 2 PI0.5 V2-full 30k pre-training gate — 2026-08-14
 
+> Superseded: the corrected one-step retry reached `optimizer.step()` and
+> confirmed CUDA OOM. See
+> `TASK2_PI05_V2_FULL_OOM_AND_EXPERT_30K_FALLBACK_2026-08-14.md`; do not start
+> the full 30k command from this historical gate.
+
 ## Outcome
 
 **READY to retry the operator-run one-step VRAM smoke; 30k remains NO-GO until
