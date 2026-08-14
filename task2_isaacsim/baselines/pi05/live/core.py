@@ -147,6 +147,7 @@ class FreshnessConfig:
     camera_max_age_s: float = 0.65
     camera_max_skew_s: float = 0.10
     state_max_age_s: float = 0.15
+    observation_max_skew_s: float = 0.10
     action_queue_max_age_s: float = 0.25
 
 
@@ -156,6 +157,9 @@ class FreshnessError(ValueError):
     def __init__(self, message: str, evidence: dict[str, Any]):
         super().__init__(message)
         self.evidence = evidence
+
+
+REQUIRED_STATE_STREAMS = ("joints", "odom", "ee_left", "ee_right")
 
 
 @dataclass(frozen=True)
@@ -309,8 +313,16 @@ def freshness_metrics(
     state_time: float,
     last_camera_sequences: dict[str, int],
     config: FreshnessConfig,
+    state_times: dict[str, float] | None = None,
+    state_capture_times: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    """Require one new, fresh frame from each robot camera and fresh state."""
+    """Require new cameras and a capture-aligned, fresh robot state.
+
+    Arrival ages use host monotonic time because ROS transport latency is a
+    wall-clock property. Capture alignment uses message-header simulation time.
+    The legacy scalar ``state_time`` path remains for dependency-light callers;
+    the live runner supplies per-stream state times and capture stamps.
+    """
 
     missing = [key for key in ROBOT_CAMERA_KEYS if key not in camera_times]
     if missing:
@@ -340,7 +352,50 @@ def freshness_metrics(
         )
     arrival_skew = max(camera_times.values()) - min(camera_times.values())
     skew = max(capture_times.values()) - min(capture_times.values())
-    state_age = max(0.0, now - state_time)
+    state_ages = (
+        {
+            key: max(0.0, now - received_at)
+            for key, received_at in state_times.items()
+        }
+        if state_times is not None
+        else {"state": max(0.0, now - state_time)}
+    )
+    missing_state_times = (
+        [key for key in REQUIRED_STATE_STREAMS if key not in state_times]
+        if state_times is not None
+        else []
+    )
+    missing_state_capture_times = (
+        [
+            key
+            for key in REQUIRED_STATE_STREAMS
+            if key not in state_capture_times
+        ]
+        if state_capture_times is not None
+        else []
+    )
+    state_age = max(state_ages.values(), default=math.inf)
+    state_capture_skew = None
+    observation_capture_skew = None
+    if state_capture_times is not None:
+        state_capture_skew = (
+            max(state_capture_times.values())
+            - min(state_capture_times.values())
+            if state_capture_times
+            else math.inf
+        )
+        all_capture_times = {
+            **{f"camera.{key}": value for key, value in capture_times.items()},
+            **{
+                f"state.{key}": value
+                for key, value in state_capture_times.items()
+            },
+        }
+        observation_capture_skew = (
+            max(all_capture_times.values()) - min(all_capture_times.values())
+            if all_capture_times
+            else math.inf
+        )
     metrics = {
         "frame_age_s": ages,
         "inter_camera_skew_s": skew,
@@ -350,6 +405,12 @@ def freshness_metrics(
             key: capture_times[key] for key in ROBOT_CAMERA_KEYS
         },
         "state_age_s": state_age,
+        "state_age_by_stream_s": state_ages,
+        "state_capture_times_s": dict(state_capture_times or {}),
+        "missing_state_times": missing_state_times,
+        "missing_state_capture_times": missing_state_capture_times,
+        "inter_state_capture_skew_s": state_capture_skew,
+        "observation_capture_skew_s": observation_capture_skew,
         "camera_sequences": dict(camera_sequences),
     }
     offending = list(stale_sequences)
@@ -362,6 +423,13 @@ def freshness_metrics(
         offending.append("camera_skew")
     if state_age > config.state_max_age_s:
         offending.append("state")
+    if missing_state_times or missing_state_capture_times:
+        offending.append("state_streams_missing")
+    if (
+        observation_capture_skew is not None
+        and observation_capture_skew > config.observation_max_skew_s
+    ):
+        offending.append("observation_skew")
     if offending:
         evidence = {
             **metrics,

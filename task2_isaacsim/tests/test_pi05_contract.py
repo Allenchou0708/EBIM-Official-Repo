@@ -52,6 +52,12 @@ from task2_isaacsim.baselines.pi05.phase_balance import (
     PHASE_RATIOS,
     balanced_epoch_indices,
 )
+from task2_isaacsim.baselines.pi05.phase_conditioned_dataset import (
+    PHASE_PROMPTS as CONDITIONED_PHASE_PROMPTS,
+)
+from task2_isaacsim.baselines.pi05.phase_conditioned_dataset import (
+    phase_for_frame,
+)
 from task2_isaacsim.baselines.pi05.portable import (
     SOURCE_ROOT,
     _build_train_command,
@@ -61,6 +67,10 @@ from task2_isaacsim.baselines.pi05.portable import (
     deterministic_split,
     inspect_video_runtime,
     validate_profile,
+)
+from task2_isaacsim.baselines.pi05.pregrasp_pose_audit import (
+    local_axis_world_z_abs,
+    quaternion_angle_deg,
 )
 from task2_isaacsim.baselines.pi05.relative_dataset import (
     compute_relative_action_stats,
@@ -122,6 +132,56 @@ def make_valid_stats() -> dict:
 
 
 class Pi05ContractTest(unittest.TestCase):
+    def test_pregrasp_orientation_is_a_distinct_training_phase(self) -> None:
+        events = {
+            "spine_high": 100,
+            "right_close": 300,
+            "pad_move": 320,
+            "target_arrival": 500,
+            "right_release": 600,
+            "end": 700,
+        }
+        expected = {
+            99: "startup_rise",
+            100: "approach",
+            199: "approach",
+            200: "orient_pregrasp",
+            299: "orient_pregrasp",
+            300: "grasp_acquisition",
+            320: "lift_transfer",
+            500: "lower_place",
+            600: "release_retreat",
+        }
+        self.assertIn(
+            "right wrist view",
+            CONDITIONED_PHASE_PROMPTS["orient_pregrasp"],
+        )
+        for frame, phase in expected.items():
+            with self.subTest(frame=frame):
+                self.assertEqual(
+                    phase_for_frame(
+                        frame, events=events, orientation_entry=200
+                    ),
+                    phase,
+                )
+
+    def test_pregrasp_quaternion_metrics_are_sign_invariant(self) -> None:
+        identity = [0.0, 0.0, 0.0, 1.0]
+        same_rotation = [0.0, 0.0, 0.0, -1.0]
+        quarter_turn_x = [math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5)]
+
+        self.assertAlmostEqual(
+            quaternion_angle_deg(identity, same_rotation), 0.0
+        )
+        self.assertAlmostEqual(
+            quaternion_angle_deg(identity, quarter_turn_x), 90.0
+        )
+        self.assertEqual(local_axis_world_z_abs(identity), (0.0, 0.0, 1.0))
+        vertical = local_axis_world_z_abs(quarter_turn_x)
+        self.assertAlmostEqual(vertical[0], 0.0)
+        self.assertAlmostEqual(vertical[1], 1.0)
+        self.assertAlmostEqual(vertical[2], 0.0)
+
     def test_valid_metadata_passes(self) -> None:
         self.assertEqual(validate_info(make_valid_info()), [])
 
@@ -998,10 +1058,11 @@ class Pi05ContractTest(unittest.TestCase):
             / "live"
             / "runner.py"
         ).read_text(encoding="utf-8")
-
         self.assertIn("from rosgraph_msgs.msg import Clock", runner)
         self.assertIn('Clock,\n            TOPICS["clock"]', runner)
         self.assertIn('capture_at=future_context["capture_sim_at"]', runner)
+        self.assertIn("from rclpy.time import Time", runner)
+        self.assertIn("command_stamp = Time(", runner)
         self.assertIn("completed_at=ready_sim_at", runner)
         self.assertIn("and node.sim_time >= queue[0][1]", runner)
         self.assertIn("node.sim_time - created_at", runner)
@@ -1009,7 +1070,9 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn('"freshness_clock": "host_monotonic"', runner)
         self.assertIn('"observation_state": list(state)', runner)
 
-    def test_task_staging_and_runner_share_position_tolerance(self) -> None:
+    def test_task_staging_runs_after_policy_load_with_shared_tolerance(
+        self,
+    ) -> None:
         repository_root = Path(__file__).resolve().parents[2]
         launcher = (
             repository_root
@@ -1018,14 +1081,75 @@ class Pi05ContractTest(unittest.TestCase):
             / "pi05"
             / "run_pi05.sh"
         ).read_text(encoding="utf-8")
+        runner = (
+            repository_root
+            / "task2_isaacsim"
+            / "baselines"
+            / "pi05"
+            / "live"
+            / "runner.py"
+        ).read_text(encoding="utf-8")
+        stager = (
+            repository_root
+            / "task2_isaacsim"
+            / "baselines"
+            / "pi05"
+            / "live"
+            / "fixed_stage_base.py"
+        ).read_text(encoding="utf-8")
         self.assertIn(
-            "fixed_stage_base.py --target ${base_target} "
-            "--position-tolerance-m 0.03 --yaw-tolerance-rad 0.04",
+            "--stage-base-after-policy-load",
             launcher,
         )
         self.assertIn(
             "--position-tolerance-m 0.03 --yaw-tolerance-rad 0.04",
             launcher,
+        )
+        self.assertIn(
+            '"task2_isaacsim.baselines.pi05.live.fixed_stage_base"', runner
+        )
+        self.assertIn(
+            '"--position-tolerance-m",\n'
+            "                str(args.position_tolerance_m)",
+            runner,
+        )
+        self.assertIn(
+            '"--yaw-tolerance-rad",\n'
+            "                str(args.yaw_tolerance_rad)",
+            runner,
+        )
+        self.assertLess(
+            runner.index("policy = LivePi05Policy("),
+            runner.index(
+                '"task2_isaacsim.baselines.pi05.live.fixed_stage_base"'
+            ),
+        )
+        self.assertIn("from rosgraph_msgs.msg import Clock", stager)
+        self.assertIn("now = node.sim_time", stager)
+        self.assertIn('"elapsed_sim_s":', stager)
+        self.assertIn('"clock": "simulator"', stager)
+
+    def test_gui_launcher_preserves_isaac_exit_log(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        launcher = (
+            repository_root
+            / "task2_isaacsim"
+            / "baselines"
+            / "pi05"
+            / "run_pi05.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('isaac_gui_$(date +%Y%m%d_%H%M%S).log', launcher)
+        self.assertIn('status="${PIPESTATUS[0]}"', launcher)
+        self.assertIn('isaac_gui_exit_code=${status}', launcher)
+        simulator_launcher = (
+            repository_root
+            / "task2_isaacsim"
+            / "scripts"
+            / "run_isaacsim_teleop.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '"-e" "FASTDDS_BUILTIN_TRANSPORTS=UDPv4"',
+            simulator_launcher,
         )
 
 

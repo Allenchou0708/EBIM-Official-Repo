@@ -349,6 +349,74 @@ class LiveSafetyTest(unittest.TestCase):
         )
         self.assertAlmostEqual(recovered["state_age_s"], 0.02)
 
+    def test_freshness_rejects_camera_state_capture_misalignment(self) -> None:
+        common = {
+            "now": 10.0,
+            "camera_times": {
+                "head": 9.95,
+                "wrist_left": 9.96,
+                "wrist_right": 9.97,
+            },
+            "camera_sequences": {
+                "head": 2,
+                "wrist_left": 2,
+                "wrist_right": 2,
+            },
+            "camera_capture_times": {
+                "head": 20.00,
+                "wrist_left": 20.02,
+                "wrist_right": 20.01,
+            },
+            "state_time": 9.98,
+            "state_times": {
+                "joints": 9.98,
+                "odom": 9.98,
+                "ee_left": 9.98,
+                "ee_right": 9.98,
+            },
+            "last_camera_sequences": {
+                "head": 1,
+                "wrist_left": 1,
+                "wrist_right": 1,
+            },
+            "config": FreshnessConfig(observation_max_skew_s=0.10),
+        }
+        aligned = freshness_metrics(
+            **common,
+            state_capture_times={
+                "joints": 20.02,
+                "odom": 20.02,
+                "ee_left": 20.02,
+                "ee_right": 20.02,
+            },
+        )
+        self.assertAlmostEqual(aligned["observation_capture_skew_s"], 0.02)
+        self.assertAlmostEqual(aligned["state_age_s"], 0.02)
+
+        with self.assertRaises(FreshnessError) as caught:
+            freshness_metrics(
+                **common,
+                state_capture_times={
+                    "joints": 20.20,
+                    "odom": 20.20,
+                    "ee_left": 20.20,
+                    "ee_right": 20.20,
+                },
+            )
+        self.assertIn(
+            "observation_skew", caught.exception.evidence["offending_streams"]
+        )
+
+        with self.assertRaises(FreshnessError) as caught:
+            freshness_metrics(
+                **{**common, "state_times": {"joints": 9.98}},
+                state_capture_times={"joints": 20.02},
+            )
+        self.assertIn(
+            "state_streams_missing",
+            caught.exception.evidence["offending_streams"],
+        )
+
     def test_policy_spine_is_preserved_bounded_and_base_stays_fixed(
         self,
     ) -> None:

@@ -15,6 +15,8 @@ from pathlib import Path
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from rosgraph_msgs.msg import Clock
 from std_msgs.msg import String
 
 
@@ -23,13 +25,19 @@ def angular_error(target: float, actual: float) -> float:
 
 
 class FixedBaseStager(Node):
-    def __init__(self, *, command_topic: str, odom_topic: str):
+    def __init__(
+        self, *, command_topic: str, odom_topic: str, clock_topic: str
+    ):
         super().__init__("pi05_fixed_base_stager")
         self.publisher = self.create_publisher(String, command_topic, 10)
         self.create_subscription(Odometry, odom_topic, self._on_odom, 10)
+        self.create_subscription(
+            Clock, clock_topic, self._on_clock, qos_profile_sensor_data
+        )
         self.pose: tuple[float, float, float] | None = None
         self.velocity = (0.0, 0.0, 0.0)
         self.speed = math.inf
+        self.sim_time: float | None = None
         self.stop_requested = False
 
     def _on_odom(self, message: Odometry) -> None:
@@ -58,6 +66,10 @@ class FixedBaseStager(Node):
             twist.linear.x**2 + twist.linear.y**2 + twist.angular.z**2
         )
 
+    def _on_clock(self, message: Clock) -> None:
+        stamp = message.clock
+        self.sim_time = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+
     def publish(self, token: str) -> None:
         self.publisher.publish(String(data=token))
 
@@ -73,12 +85,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target", nargs=3, type=float, required=True)
     parser.add_argument("--command-topic", default="/pedal/state")
     parser.add_argument("--odom-topic", default="/isaac/odom")
+    parser.add_argument("--clock-topic", default="/isaac/clock")
     parser.add_argument("--rate-hz", type=float, default=20.0)
     parser.add_argument("--position-tolerance-m", type=float, default=0.04)
     parser.add_argument("--yaw-tolerance-rad", type=float, default=0.08)
     parser.add_argument("--velocity-threshold", type=float, default=0.02)
     parser.add_argument("--settle-duration-s", type=float, default=1.0)
-    parser.add_argument("--stop-duration-s", type=float, default=0.5)
+    parser.add_argument("--stop-duration-s", type=float, default=0.10)
+    parser.add_argument("--correction-pulse-s", type=float, default=0.05)
+    parser.add_argument(
+        "--straight-correction-pulse-s", type=float, default=0.10
+    )
     parser.add_argument("--max-duration-s", type=float, default=90.0)
     parser.add_argument("--output", type=Path)
     return parser
@@ -115,7 +132,9 @@ def main() -> int:
     period_s = 1.0 / args.rate_hz
     rclpy.init()
     node = FixedBaseStager(
-        command_topic=args.command_topic, odom_topic=args.odom_topic
+        command_topic=args.command_topic,
+        odom_topic=args.odom_topic,
+        clock_topic=args.clock_topic,
     )
     signal.signal(
         signal.SIGTERM, lambda *_: setattr(node, "stop_requested", True)
@@ -124,29 +143,38 @@ def main() -> int:
         signal.SIGINT, lambda *_: setattr(node, "stop_requested", True)
     )
     phase = "WAIT_ODOM"
-    phase_since = time.monotonic()
-    started = phase_since
+    phase_since: float | None = None
+    wall_started = time.monotonic()
+    sim_started: float | None = None
     active_token = "NONE"
-    command_until = started
-    next_correction_at = started
+    command_until: float | None = None
+    next_correction_at: float | None = None
     route: list[dict[str, object]] = []
 
     def enter(next_phase: str) -> None:
         nonlocal phase, phase_since
+        assert node.sim_time is not None
         phase = next_phase
-        phase_since = time.monotonic()
-        route.append({"phase": phase, "pose": node.pose})
+        phase_since = node.sim_time
+        route.append(
+            {"phase": phase, "pose": node.pose, "sim_time": node.sim_time}
+        )
         print(f"base_stage phase={phase} pose={node.pose}", flush=True)
 
     try:
         while (
             not node.stop_requested
-            and time.monotonic() - started < args.max_duration_s
+            and time.monotonic() - wall_started < args.max_duration_s
         ):
             rclpy.spin_once(node, timeout_sec=period_s)
-            now = time.monotonic()
-            if node.pose is None:
+            now = node.sim_time
+            if node.pose is None or now is None:
                 continue
+            if sim_started is None:
+                sim_started = now
+                phase_since = now
+                command_until = now
+                next_correction_at = now
             if node.publisher.get_subscription_count() < 1:
                 continue
             if len(node.get_publishers_info_by_topic(args.command_topic)) > 1:
@@ -171,6 +199,7 @@ def main() -> int:
                     enter("STOP_AFTER_BACK")
             elif phase == "STOP_AFTER_BACK":
                 node.publish("NONE")
+                assert phase_since is not None
                 if now - phase_since >= args.stop_duration_s:
                     enter("STRAFE_RIGHT")
             elif phase == "STRAFE_RIGHT":
@@ -185,6 +214,7 @@ def main() -> int:
                     enter("STOP_AFTER_RIGHT")
             elif phase == "STOP_AFTER_RIGHT":
                 node.publish("NONE")
+                assert phase_since is not None
                 if now - phase_since >= args.stop_duration_s:
                     enter("ODOMETRY_CORRECTION")
             elif phase == "ODOMETRY_CORRECTION":
@@ -198,6 +228,8 @@ def main() -> int:
                     node.stop()
                     enter("SETTLE")
                     continue
+                assert command_until is not None
+                assert next_correction_at is not None
                 if now < command_until:
                     node.publish(active_token)
                 elif now < next_correction_at:
@@ -213,9 +245,9 @@ def main() -> int:
                         else correction_token(node.pose, target)
                     )
                     pulse_s = (
-                        0.5
+                        args.straight_correction_pulse_s
                         if not within_pose and active_token in ("FWD", "BACK")
-                        else 0.25
+                        else args.correction_pulse_s
                     )
                     command_until = now + pulse_s
                     next_correction_at = command_until + args.stop_duration_s
@@ -228,6 +260,7 @@ def main() -> int:
                     )
             elif phase == "SETTLE":
                 node.publish("NONE")
+                assert phase_since is not None
                 position_error = math.hypot(x - target[0], y - target[1])
                 yaw_error = abs(angular_error(target[2], yaw))
                 stable = (
@@ -250,7 +283,14 @@ def main() -> int:
             "target": target,
             "final_pose": final_pose,
             "final_speed": node.speed,
-            "elapsed_s": time.monotonic() - started,
+            "elapsed_s": time.monotonic() - wall_started,
+            "elapsed_sim_s": (
+                node.sim_time - sim_started
+                if node.sim_time is not None and sim_started is not None
+                else None
+            ),
+            "clock": "simulator",
+            "clock_topic": args.clock_topic,
             "route": route,
         }
         if args.output:

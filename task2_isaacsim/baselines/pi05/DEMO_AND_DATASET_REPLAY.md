@@ -1,31 +1,65 @@
-# PI0.5 deadline demo and organizer dataset replay
+# PI0.5 V1/V2 GUI comparison and organizer dataset replay
 
-This runbook provides two bounded GUI paths:
+This runbook provides two independent paths:
 
-- a partial 30k PI0.5 demo, which retains every freshness, finite-action,
-  bounds, emergency-stop, and publisher-contention gate;
+- an apples-to-apples GUI comparison of the V1 30k and V2 6k
+  checkpoints, using the same final `submit` runner, runtime image, hard5
+  horizon, scene staging, and action budget;
 - a model-free organizer trajectory replay, which publishes one raw 20-D
   training episode according to its recorded timestamps and `/isaac/clock` to
   arms, grippers, and spine while publishing no base command.
 
-Neither path by itself proves Task 2 success. The partial VLA remains a known
-Pick 0 / IoU 0 candidate. Dataset replay is a motion-contract test unless the
-episode's object poses are also reconstructed in the live scene.
+The V1/V2 comparison is an operator experiment, not a new training or tuning
+run. V2 already completed one verified 600-action GUI attempt without grasping
+the pad. Dataset replay is only a motion-contract test unless the episode's
+object poses are also reconstructed in the live scene. Neither path by itself
+proves Task 2 success.
+
+The commands below use the current pushed `submit` revision documented in
+`TASK2_PI05_STAGE_CLOCK_AND_GUI_CRASH_FIX_2026-08-14.md`. Its default `hard5`
+runner executes checkpoint action indices `0..4`, holds the last legal
+absolute target during inference, paces commands with
+`/isaac/clock`, and measures cross-camera capture skew from ROS image
+timestamps. It additionally requires joint, odom, and both EE header stamps to
+be within `0.10 s` of that camera tuple and stamps arm and gripper `JointState`
+commands with the current `/isaac/clock` sample.
 
 ## One-time environment
 
-Run this block in every terminal. Change the four paths when relocating bulk
-artifacts. ROS domain 62 was used for the verified 2026-08-13 recovery run.
+Run this block in every terminal. Change the paths when relocating bulk
+artifacts. ROS domain 62 was used for the verified V1 recovery and V2 GUI runs.
+If `task2_isaacsim/baselines/pi05/.env.pi05` exists, make sure it does not
+override these root, image, or ROS-domain values.
 
 ```bash
 cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
 export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
-export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
-export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+export PI05_V1_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+export PI05_V1_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+export PI05_V2_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_pi05_v2_12k/training_12k/checkpoints/006000/pretrained_model"
+export PI05_V2_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_pi05_v2_12k/relative_dataset"
 export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
-export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:final-20260813
+export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
 export ROS_DOMAIN_ID=62
 ```
+
+Before starting the simulator, verify that the comparison inputs exist and the
+runner is at the intended commit:
+
+```bash
+test "$(git branch --show-current)" = submit
+test "$(git rev-parse HEAD)" = "$(git rev-parse collab/submit)"
+git diff --quiet
+git diff --cached --quiet
+test -d "$PI05_V1_CHECKPOINT"
+test -d "$PI05_V1_RELATIVE_DATASET"
+test -d "$PI05_V2_CHECKPOINT"
+test -d "$PI05_V2_RELATIVE_DATASET"
+docker image inspect "$PI05_LIVE_IMAGE" --format '{{.Id}} {{.RepoTags}}'
+git status --short --branch
+```
+
+Do not proceed if the branch, remote-tracking, or clean-tree checks fail.
 
 Generated run summaries and traces are written below `$TASK2_PI05_ROOT/outputs/`;
 final lab reports and the 200-episode audit are below
@@ -38,55 +72,140 @@ bash task2_isaacsim/baselines/pi05/run_pi05.sh sim-up --gui
 ```
 
 Wait until the room, mobile dual-FR3 robot, thermal pad, RAM boards, and camera
-streams have initialized before starting another command path.
+streams have initialized before starting another command path. The launcher
+prints the persistent Isaac/Kit log path under
+`$TASK2_PI05_ROOT/evidence/task2_200_submit_20260812/launcher/`; its final line
+records `isaac_gui_exit_code`.
 
-## Terminal 2A: zero-publication shadow gate
+## Terminal 2A: V1 shadow and GUI
 
-Run this first after the simulator is ready. It loads the real checkpoint and
-forms one decision, but does not create command publishers:
-
-```bash
-bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task \
-  --checkpoint "$PI05_CHECKPOINT" \
-  --dataset-root "$PI05_RELATIVE_DATASET" \
-  --shadow --max-actions 25 --max-duration-s 30
-```
-
-## Terminal 2B: bounded partial PI0.5 demo
+Run the V1 shadow after the simulator is ready. It loads the real checkpoint
+and forms one decision, but creates no command publishers:
 
 ```bash
 bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task \
-  --checkpoint "$PI05_CHECKPOINT" \
-  --dataset-root "$PI05_RELATIVE_DATASET" \
-  --max-actions 25 \
-  --max-duration-s 60
+  --runtime-mode hard5 \
+  --checkpoint "$PI05_V1_CHECKPOINT" \
+  --dataset-root "$PI05_V1_RELATIVE_DATASET" \
+  --shadow --max-actions 5 --max-duration-s 60
 ```
 
-The launcher requests a scene reset, follows the fixed base route to
-approximately `(2.10, 3.05, -1.571)`, aligns spine to 0 m, runs the evaluator
-camera preflight, loads the 30k checkpoint, and permits at most 25 actions or
-60 seconds. During manipulation the base is fixed and action 19 controls the
-spine.
+Only after the shadow reports one valid decision, zero command publications,
+and no freshness, bounds, or contention failure, run the V1 GUI attempt:
 
-The earlier zero-decision run was caused by the final policy container uniquely
-overriding `FASTDDS_BUILTIN_TRANSPORTS=DEFAULT`; helper containers and the image
-used `UDPv4`. With the final runner restored to `UDPv4`, head, both wrists, both
-EE poses, odometry, and every joint required by the 37-D state arrived in
-1.48 seconds. The verified shadow produced one valid decision with zero command
-publications. The one bounded GUI run then produced one valid decision and 25
-action steps (125 topic publications), with no invalid action.
-
-Recovered manifests are:
-
-```text
-/scratch1/2026_ebim/allen_task2_pi05/outputs/live_submit_20260813_173553/live_runner_manifest.json
-/scratch1/2026_ebim/allen_task2_pi05/outputs/live_submit_20260813_174206/live_runner_manifest.json
+```bash
+bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task \
+  --runtime-mode hard5 \
+  --checkpoint "$PI05_V1_CHECKPOINT" \
+  --dataset-root "$PI05_V1_RELATIVE_DATASET" \
+  --max-actions 600 \
+  --max-duration-s 300
 ```
+
+Let the runner exit before starting V2. Press Ctrl-C immediately for unintended
+contact, unstable motion, or an operator safety concern.
+
+## Terminal 2B: V2 shadow and GUI
+
+The V2 shadow performs another clean scene reset and stages the same base and
+spine start state:
+
+```bash
+bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task \
+  --runtime-mode hard5 \
+  --checkpoint "$PI05_V2_CHECKPOINT" \
+  --dataset-root "$PI05_V2_RELATIVE_DATASET" \
+  --shadow --max-actions 5 --max-duration-s 60
+```
+
+Only after that shadow passes, run the V2 GUI attempt with the same bounds as
+V1:
+
+```bash
+bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task \
+  --runtime-mode hard5 \
+  --checkpoint "$PI05_V2_CHECKPOINT" \
+  --dataset-root "$PI05_V2_RELATIVE_DATASET" \
+  --max-actions 600 \
+  --max-duration-s 300
+```
+
+Every `run-task` invocation requests a scene reset, aligns the spine to 0 m,
+and runs the evaluator-camera preflight. The runner then loads the checkpoint
+before following the fixed base route to approximately
+`(2.10, 3.05, -1.571)`. It discards observations captured during staging and
+requires a fresh, settled tuple before inference. During manipulation the base
+is fixed and action 19 controls the spine. Use each checkpoint's matching
+relative-dataset view because V1 and V2 serialize different spine decoding
+contracts. Base command pulses, braking pauses, and settle duration use
+`/isaac/clock`; correction pulses are `0.05 s` (`0.10 s` forward/back), and
+the 90-second process watchdog remains host-monotonic.
+
+Do not use `--runtime-mode legacy`, the old
+`ebim-task2-pi05-submit:final-20260813` image, or dataset replay during this
+comparison. Those changes would confound checkpoint behavior with runner,
+image, or controller behavior.
+
+## What to compare and where to find the manifests
+
+For both GUI attempts, observe the same milestones:
+
+1. Whether the spine rises and its approximate working height.
+2. Whether both wrists compensate for spine motion or ride upward with it.
+3. Whether the right gripper approaches and aligns with the thermal pad.
+4. Whether the right gripper visibly closes on the pad.
+5. Whether the pad lifts or moves toward the target RAM board.
+
+Each shadow and GUI invocation creates a new timestamped directory below
+`$TASK2_PI05_ROOT/outputs/live_submit_*`. After each run, note its path before
+starting the next command. To list the newest outputs:
+
+```bash
+ls -dt "$TASK2_PI05_ROOT"/outputs/live_submit_* | head
+```
+
+The primary numerical evidence is `live_runner_manifest.json` inside that
+directory. Keep the V1 and V2 GUI directory names with your visual notes so the
+two runs are not confused.
+
+The known V2 simulator-clock reference completed `600/600` actions and reached
+spine `0.4884 m` at action 200, maximum `0.5187 m`, and final `0.4824 m`, but
+both wrists rose too far, the right gripper produced `0/600` close actions,
+and the pad was not grasped. That older result predates hard5, so the current
+V2 run is a new execution-horizon comparison. Prior V1 GUI evidence covered
+only 25 actions, so the 600-action V1 run is also a new full-horizon
+observation.
 
 Do not loosen the camera freshness/skew thresholds. Startup now reports an
 explicit inventory and retries its DDS participant once before model load.
+For the current runner, a valid event must also contain all four state
+capture stamps and `observation_capture_skew_s <= 0.10`. Check the newest
+shadow manifest before arming either checkpoint:
 
-## Terminal 2C: organizer dataset replay
+```bash
+PI05_LAST_RUN="$(ls -dt "$TASK2_PI05_ROOT"/outputs/live_submit_* | head -1)"
+python3 - "$PI05_LAST_RUN/live_runner_manifest.json" <<'PY'
+import json
+import sys
+
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+event = manifest["events"][0]
+fresh = event["freshness"]
+print("valid:", event["valid"])
+print("camera stamps:", fresh["camera_capture_times_s"])
+print("state stamps:", fresh["state_capture_times_s"])
+print("camera/state skew s:", fresh["observation_capture_skew_s"])
+print("capture-to-ready sim s:", event["capture_to_ready_sim_s"])
+print("command publications:", manifest["command_publications"])
+PY
+```
+
+The capture-to-ready value is causal policy latency, not a synchronization
+failure. It must be reported rather than described as a same-time action: in
+`hard5`, index 0 starts when inference is ready and is then paced on simulator
+time.
+
+## Organizer dataset replay (not part of the V1/V2 comparison)
 
 Offline summary, with no simulator control:
 
@@ -150,8 +269,10 @@ ros2 topic echo /isaac/odom --once
 ros2 topic info /isaac/spine_target --verbose
 ```
 
-Run the official evaluator only after trajectory Gate B passes and the live
-object reset is known to match the selected episode:
+For V1/V2, run the official evaluator only if the right gripper actually
+closes on the pad and creates a meaningful lift or transfer attempt. For raw
+replay, run it only after trajectory Gate B passes and the live object reset is
+known to match the selected episode:
 
 ```bash
 bash task2_isaacsim/baselines/pi05/run_pi05.sh evaluate
@@ -165,8 +286,9 @@ is wrong.
 
 ## Stop and cleanup
 
-Press Ctrl-C in Terminal 2 first. The replay stops publishing and leaves the
-last legal target active. Then press Ctrl-C in Terminal 1 and run:
+Press Ctrl-C in Terminal 2 first. A VLA runner stops publication safely; replay
+stops publishing and leaves the last legal target active. Then press Ctrl-C in
+Terminal 1 and run:
 
 ```bash
 bash task2_isaacsim/baselines/pi05/run_pi05.sh down
@@ -181,8 +303,8 @@ spine 0.10 m at frame 38, spine 0.30 m at frame 42, and right-gripper close at
 frame 464.
 
 Stop and investigate if base staging does not pass, alignment times out, a
-second command publisher is reported, action validation fails, or the partial
-VLA reports `live_stream_stale`. Camera stale/skew is a safety stop, not an
+second command publisher is reported, action validation fails, or either VLA
+reports `live_stream_stale`. Camera stale/skew is a safety stop, not an
 instruction to raise thresholds.
 
 ## Verified simulator-clock replay result
@@ -263,8 +385,10 @@ than either 848x480 wrist frame. Equal documented rates therefore do not imply
 synchronized arrival. A measured GUI run delivered head/left/right at only
 6.25/8.19/10.07 Hz, with different maximum gaps.
 
-Keep the freshness/skew stop. For a short-term demo, reduce unrelated GUI,
-render, and recording load and wait for a coherent triplet before inference.
-The durable fix is to gate on sensor/simulation timestamps and use a shared
-capture barrier or timestamp buffer (approximate-time synchronization), rather
-than combining the latest independently arriving image from each camera.
+Keep the freshness/skew stop. The current runner rejects the latest
+camera/state tuple unless all ROS header stamps fit within `0.10 s`; host
+monotonic time is used only for arrival age. For a short-term demo, reduce
+unrelated GUI, render, and recording load and let the runner wait for that
+coherent tuple. A shared capture barrier or timestamp buffer remains the
+durable way to recover an older coherent tuple instead of rejecting the latest
+independently arriving samples.

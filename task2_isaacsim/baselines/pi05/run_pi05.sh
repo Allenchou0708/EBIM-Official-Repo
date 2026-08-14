@@ -152,9 +152,19 @@ live_shell() {
 
 command_sim_up() {
   [[ "${1:-}" = "--gui" ]] || { echo "sim-up requires --gui" >&2; exit 2; }
-  exec "${REPO_ROOT}/task2_isaacsim/scripts/run_isaacsim_teleop.sh" \
+  local log_dir log_path status
+  log_dir="${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/launcher"
+  log_path="${log_dir}/isaac_gui_$(date +%Y%m%d_%H%M%S).log"
+  mkdir -p "${log_dir}"
+  echo "Isaac GUI log: ${log_path}"
+  set +e
+  "${REPO_ROOT}/task2_isaacsim/scripts/run_isaacsim_teleop.sh" \
     --scene room --controller-mode none --no-browser --no-republisher -- \
-    --disable-browser-command-topics --record
+    --disable-browser-command-topics --record 2>&1 | tee "${log_path}"
+  status="${PIPESTATUS[0]}"
+  set -e
+  echo "isaac_gui_exit_code=${status}" | tee -a "${log_path}"
+  return "${status}"
 }
 
 command_run_task() {
@@ -210,7 +220,6 @@ command_run_task() {
   output="${TASK2_PI05_ROOT}/outputs/live_submit_$(date +%Y%m%d_%H%M%S)"
   mkdir -p "${output}" "${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/launcher"
   live_shell "ros2 topic pub --once /isaac/task2/scene_reset_request std_msgs/msg/String '{data: reset}'"
-  live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_base.py --target ${base_target} --position-tolerance-m 0.03 --yaw-tolerance-rad 0.04 --output /data/evidence/task2_200_submit_20260812/launcher/fixed_base.json"
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_spine.py --target-m 0.0 --measured-target-m 0.0 --output /data/evidence/task2_200_submit_20260812/launcher/initial_spine.json"
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/eval_camera_preflight.py --output /data/evidence/task2_200_submit_20260812/launcher/eval_preflight.json"
   exec docker run --rm --gpus all --network host --ipc=host \
@@ -230,6 +239,7 @@ command_run_task() {
     --output-dir /data/output --base-target ${base_target} \
     --base-coordinate-frame dataset_odom_world_verified_against_room_scene \
     --confirm-fixed-base-staging \
+    --stage-base-after-policy-load \
     --runtime-mode "${runtime_mode}" \
     --position-tolerance-m 0.03 --yaw-tolerance-rad 0.04 \
     "${runner_mode[@]}" \

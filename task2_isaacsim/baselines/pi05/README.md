@@ -117,19 +117,40 @@ Use three terminals for a GUI run:
 ./run_pi05.sh evaluate
 ```
 
-`run-task` requests a scene reset, follows the fixed base route to
-`(2.10, 3.05, -1.571)`, returns the spine to the demonstrated near-zero
-starting height, checks the evaluation camera, and then starts inference.
+`sim-up` mirrors Isaac/Kit output to the terminal and to a timestamped
+`isaac_gui_*.log` below
+`$TASK2_PI05_ROOT/evidence/task2_200_submit_20260812/launcher/`. The final log
+line records the launcher exit code, so a bridge-start or Kit crash remains
+diagnosable after the GUI closes. The Isaac ROS bridge uses UDPv4 like the
+helper/live containers; disabling its ineffective cross-container Fast DDS
+shared-memory transport prevents stale DDS files from filling the long-lived
+container's `/dev/shm` and causing a Kit `Bus error`.
+
+`run-task` requests a scene reset, returns the spine to the demonstrated
+near-zero starting height, checks the evaluation camera, and starts the runner.
+The runner loads the checkpoint before invoking the existing fixed base route
+to `(2.10, 3.05, -1.571)`. This moves the approximately two-minute PI0.5 load
+out of the post-base idle window. It discards staging-time observations and
+requires a fresh, settled camera/state tuple before warmup or inference.
+The route's command pulses, braking pauses, and settle duration use
+`/isaac/clock`; its bounded process timeout remains on host monotonic time.
+Short `0.05 s` correction pulses (`0.10 s` for forward/back) and `0.10 s`
+braking pauses keep the base trajectory consistent when GUI real-time factor
+changes without amplifying the previous wall-time pulse lengths.
 After manipulation begins, effective base output is always zero. Action 19 is
 clamped to the demonstrated `0.0–0.6 m` range and published to the existing
 `/isaac/spine_target` bridge interface, so PI0.5 controls the spine together
 with both arms and grippers. The runner creates no base publisher.
 
-Frame and state age use the host-monotonic clock. Cross-camera skew uses the
-ROS image-header simulator timestamps, so transport/callback delay is not
-misreported as capture-time misalignment. The default `hard5` mode executes
-only chunk indices 0--4, matching checkpoint `n_action_steps: 5`, then holds
-the last legal absolute target while the next fresh observation is inferred.
+Frame and per-stream state age use the host-monotonic clock. Capture alignment
+uses ROS simulator timestamps from all three images, full joint state, odom,
+and both EE poses; an observation is rejected if any state stream is missing
+or the combined capture skew exceeds `0.10 s`. Transport/callback delay is
+therefore not misreported as capture-time misalignment. Arm and gripper
+`JointState` commands carry the current `/isaac/clock` stamp. The default
+`hard5` mode executes only chunk indices 0--4, matching checkpoint
+`n_action_steps: 5`, then holds the last legal absolute target while the next
+fresh observation is inferred.
 All policy and hold publications are paced by `/isaac/clock`, so low GUI
 real-time factor cannot consume the trajectory too quickly. The optional
 `legacy` mode retains asynchronous full-chunk replacement for diagnostics.

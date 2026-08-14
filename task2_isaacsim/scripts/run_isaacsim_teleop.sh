@@ -304,7 +304,10 @@ DOCKER_EXEC_ENV+=(
   "-e" "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}"
   "-e" "ROS_DISTRO=jazzy"
   "-e" "RMW_IMPLEMENTATION=rmw_fastrtps_cpp"
-  "-e" "FASTDDS_BUILTIN_TRANSPORTS=DEFAULT"
+  # ROS peers run in separate containers, so Fast DDS shared-memory transport
+  # cannot help here. UDPv4 also prevents stale fastrtps_* files from filling
+  # the long-running Isaac container's 64 MiB /dev/shm and crashing Kit.
+  "-e" "FASTDDS_BUILTIN_TRANSPORTS=UDPv4"
   "-e" "LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib"
   "-e" "ROS_HOME=/tmp/isaac_ros_home"
 )

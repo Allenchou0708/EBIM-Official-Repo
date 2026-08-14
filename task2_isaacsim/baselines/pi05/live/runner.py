@@ -10,6 +10,8 @@ import json
 import math
 import signal
 import statistics
+import subprocess
+import sys
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -21,6 +23,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float64, String
@@ -63,6 +66,11 @@ SPINE_COMMAND_TOPIC = TOPICS["teleop"]["spine_target"]
 POLICY_COMMAND_TOPICS = policy_command_topics(TOPICS)
 
 
+def _stamp_seconds(message: object) -> float:
+    stamp = message.header.stamp
+    return float(stamp.sec) + float(stamp.nanosec) * 1e-9
+
+
 def _image_array(message: Image) -> np.ndarray:
     if message.encoding.lower() not in {"rgb8", "bgr8"}:
         raise ValueError(f"unsupported RGB encoding: {message.encoding}")
@@ -92,11 +100,14 @@ class LiveObservationNode(Node):
         }
         self.odom: tuple[float, ...] | None = None
         self.state_time = -math.inf
+        self.state_times: dict[str, float] = {}
+        self.state_capture_times: dict[str, float] = {}
         self.sim_time: float | None = None
         self.sim_clock_time = -math.inf
         self.reset_count = 0
         self.stop_requested = False
         self.base_input_count = 0
+        self.base_input_after_manipulation_count = 0
         self.publish_count = 0
         self._command_publishers: dict[str, object] = {}
 
@@ -167,10 +178,7 @@ class LiveObservationNode(Node):
             return
         self.images[key] = image
         self.image_times[key] = received_at
-        self.image_capture_times[key] = (
-            float(message.header.stamp.sec)
-            + float(message.header.stamp.nanosec) * 1e-9
-        )
+        self.image_capture_times[key] = _stamp_seconds(message)
         self.image_sequences[key] = self.image_sequences.get(key, 0) + 1
 
     def _on_joints(self, message: JointState) -> None:
@@ -178,7 +186,7 @@ class LiveObservationNode(Node):
             str(name): float(position)
             for name, position in zip(message.name, message.position)
         }
-        self.state_time = time.monotonic()
+        self._record_state_time("joints", message)
 
     def _on_ee(self, side: str, message: PoseStamped) -> None:
         pose = message.pose
@@ -191,7 +199,7 @@ class LiveObservationNode(Node):
             pose.orientation.z,
             pose.orientation.w,
         )
-        self.state_time = time.monotonic()
+        self._record_state_time(f"ee_{side}", message)
 
     def _on_odom(self, message: Odometry) -> None:
         pose = message.pose.pose
@@ -209,7 +217,14 @@ class LiveObservationNode(Node):
             twist.linear.z,
             twist.angular.z,
         )
-        self.state_time = time.monotonic()
+        self._record_state_time("odom", message)
+
+    def _record_state_time(self, key: str, message: object) -> None:
+        self.state_times[key] = time.monotonic()
+        self.state_capture_times[key] = _stamp_seconds(message)
+        # Freshness must describe the oldest component used by assemble_state,
+        # not whichever ROS callback happened to arrive last.
+        self.state_time = min(self.state_times.values())
 
     def _on_base_command(self, message: Twist) -> None:
         velocity = (
@@ -219,6 +234,8 @@ class LiveObservationNode(Node):
         )
         if any(abs(value) > 1e-6 for value in velocity):
             self.base_input_count += 1
+            if self.gate.phase == RunnerPhase.PI05_MANIPULATION:
+                self.base_input_after_manipulation_count += 1
             self.gate.note_base_input()
 
     def _on_reset(self, _message: String) -> None:
@@ -226,6 +243,9 @@ class LiveObservationNode(Node):
         self.images.clear()
         self.image_times.clear()
         self.image_capture_times.clear()
+        self.state_times.clear()
+        self.state_capture_times.clear()
+        self.state_time = -math.inf
         self.gate.reset()
 
     def _on_clock(self, message: Clock) -> None:
@@ -242,6 +262,17 @@ class LiveObservationNode(Node):
             }
         )
         return {key: value.copy() for key, value in self.images.items()}, state
+
+    def discard_staging_observations(self) -> None:
+        """Require fresh samples after pre-manipulation staging."""
+
+        self.images.clear()
+        self.image_times.clear()
+        self.image_capture_times.clear()
+        self.image_sequences.clear()
+        self.state_times.clear()
+        self.state_capture_times.clear()
+        self.state_time = -math.inf
 
     def startup_status(self) -> dict[str, object]:
         _images, state = self.snapshot()
@@ -292,6 +323,11 @@ class LiveObservationNode(Node):
     def publish_action(self, action: tuple[float, ...]) -> None:
         if not self.publish_enabled:
             raise RuntimeError("shadow runner cannot publish")
+        if self.sim_time is None:
+            raise RuntimeError("simulator clock unavailable for command stamp")
+        command_stamp = Time(
+            nanoseconds=max(int(self.sim_time * 1e9), 0)
+        ).to_msg()
         groups = {
             "left_arm": (LEFT_JOINTS, action[3:10]),
             "right_arm": (RIGHT_JOINTS, action[10:17]),
@@ -306,7 +342,7 @@ class LiveObservationNode(Node):
         }
         for group, (names, positions) in groups.items():
             message = JointState()
-            message.header.stamp = self.get_clock().now().to_msg()
+            message.header.stamp = command_stamp
             message.name = list(names)
             message.position = list(positions)
             self._command_publishers[group].publish(message)
@@ -336,6 +372,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-target", nargs=3, type=float, required=True)
     parser.add_argument("--base-coordinate-frame", required=True)
     parser.add_argument("--confirm-fixed-base-staging", action="store_true")
+    parser.add_argument("--stage-base-after-policy-load", action="store_true")
+    parser.add_argument(
+        "--base-stage-max-duration-s", type=float, default=90.0
+    )
     parser.add_argument("--arm-simulator", action="store_true")
     parser.add_argument(
         "--runtime-mode", choices=("legacy", "hard5"), default="hard5"
@@ -355,6 +395,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-max-age-s", type=float, default=0.65)
     parser.add_argument("--camera-max-skew-s", type=float, default=0.10)
     parser.add_argument("--state-max-age-s", type=float, default=0.15)
+    parser.add_argument("--observation-max-skew-s", type=float, default=0.10)
     parser.add_argument("--action-queue-max-age-s", type=float, default=2.0)
     parser.add_argument("--action-rate-hz", type=float, default=30.0)
     parser.add_argument("--seed", type=int, default=1000)
@@ -387,6 +428,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         camera_max_age_s=args.camera_max_age_s,
         camera_max_skew_s=args.camera_max_skew_s,
         state_max_age_s=args.state_max_age_s,
+        observation_max_skew_s=args.observation_max_skew_s,
         action_queue_max_age_s=args.action_queue_max_age_s,
     )
     gate = BaseReadinessGate(readiness)
@@ -469,6 +511,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         print(json.dumps(failure["startup"], sort_keys=True), flush=True)
         return 2
 
+    policy_load_started = time.monotonic()
     policy = LivePi05Policy(
         checkpoint=args.checkpoint,
         dataset_root=args.dataset_root,
@@ -476,6 +519,67 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         instruction=PI05_CONTRACT.task_instruction,
         seed=args.seed,
     )
+    policy_load_s = time.monotonic() - policy_load_started
+    print(
+        json.dumps({"startup": {"policy_loaded_s": policy_load_s}}),
+        flush=True,
+    )
+    base_stage_s: float | None = None
+    base_stage_output: Path | None = None
+    if args.stage_base_after_policy_load:
+        base_stage_output = (
+            args.output_dir / "fixed_base_after_policy_load.json"
+        )
+        base_stage_started = time.monotonic()
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "task2_isaacsim.baselines.pi05.live.fixed_stage_base",
+                "--target",
+                *(str(value) for value in args.base_target),
+                "--position-tolerance-m",
+                str(args.position_tolerance_m),
+                "--yaw-tolerance-rad",
+                str(args.yaw_tolerance_rad),
+                "--velocity-threshold",
+                str(args.velocity_threshold),
+                "--settle-duration-s",
+                str(args.settle_duration_s),
+                "--max-duration-s",
+                str(args.base_stage_max_duration_s),
+                "--output",
+                str(base_stage_output),
+            ],
+            check=False,
+        )
+        base_stage_s = time.monotonic() - base_stage_started
+        if result.returncode != 0:
+            failure = {
+                "schema_version": 6,
+                "mode": mode,
+                "completed": False,
+                "decisions": 0,
+                "valid_decisions": 0,
+                "command_publications": 0,
+                "published_actions": 0,
+                "publish_blocked": "base_stage_after_policy_load_failed",
+                "startup_timing": {
+                    "policy_load_s": policy_load_s,
+                    "base_stage_s": base_stage_s,
+                    "base_stage_order": "after_policy_load",
+                    "base_stage_output": str(base_stage_output),
+                },
+            }
+            _write_json(
+                args.output_dir / "live_runner_manifest.json", failure
+            )
+            node.destroy_node()
+            rclpy.shutdown()
+            print("FAIL: base staging after policy load failed", flush=True)
+            return 2
+        node.discard_staging_observations()
+        gate.reset("base_staged_after_policy_load")
     started = time.monotonic()
     last_sequences: dict[str, int] = {}
     last_reset_count = node.reset_count
@@ -530,6 +634,8 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 camera_capture_times=node.image_capture_times,
                 camera_sequences=node.image_sequences,
                 state_time=node.state_time,
+                state_times=node.state_times,
+                state_capture_times=node.state_capture_times,
                 last_camera_sequences={},
                 config=freshness,
             )
@@ -853,6 +959,8 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                         camera_capture_times=node.image_capture_times,
                         camera_sequences=node.image_sequences,
                         state_time=node.state_time,
+                        state_times=node.state_times,
+                        state_capture_times=node.state_capture_times,
                         last_camera_sequences=last_sequences,
                         config=freshness,
                     )
@@ -926,7 +1034,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         value <= refill_window_s for value in latencies
     )
     summary = {
-        "schema_version": 5,
+        "schema_version": 6,
         "mode": mode,
         "runtime_mode": args.runtime_mode,
         "execution_horizon": 5 if hard5 else "asynchronous_refill",
@@ -951,6 +1059,20 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             "attempts": startup_attempts,
             "final": startup_status,
         },
+        "startup_timing": {
+            "policy_load_s": policy_load_s,
+            "base_stage_s": base_stage_s,
+            "base_stage_order": (
+                "after_policy_load"
+                if args.stage_base_after_policy_load
+                else "before_runner_start"
+            ),
+            "base_stage_output": (
+                str(base_stage_output)
+                if base_stage_output is not None
+                else None
+            ),
+        },
         "final_readiness": gate.last_evidence,
         "decisions": len(events),
         "valid_decisions": sum(event.get("valid", False) for event in events),
@@ -964,6 +1086,8 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             "clock": "simulator",
             "clock_topic": TOPICS["clock"],
             "freshness_clock": "host_monotonic",
+            "capture_alignment_clock": "simulator_message_headers",
+            "action_command_header_clock": "simulator",
             "action_queue_watchdog_clock": "simulator",
             "first_published_sim_time": first_published_sim_time,
             "last_published_sim_time": last_published_sim_time,
@@ -1021,6 +1145,9 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         ),
         "last_freshness_rejection": last_freshness_rejection,
         "base_input_events": node.base_input_count,
+        "base_input_events_after_manipulation_latch": (
+            node.base_input_after_manipulation_count
+        ),
         "spine_control": {
             "policy_controlled": True,
             "command_topic": SPINE_COMMAND_TOPIC,
