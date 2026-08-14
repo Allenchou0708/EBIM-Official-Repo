@@ -4,7 +4,11 @@ base_target: [2.10, 3.05, -1.571]
 base_coordinate_frame: dataset_odom_world_verified_against_room_scene
 base_stage_position_tolerance_m: 0.03
 base_stage_yaw_tolerance_rad: 0.04
-initial_spine_max_abs_m: 0.01
+staging_audit: startup_staging_audit.json
+staging_representative: {episode: 176, frame: 408}
+staging_guessed_ik: false
+initial_spine_target_m: 0.485743
+initial_spine_tolerance_m: 0.02
 spine_policy_target_range_m: [0.0, 0.6]
 max_actions: 600
 runtime_mode: hard5

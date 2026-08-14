@@ -48,6 +48,7 @@ from task2_isaacsim.baselines.pi05.live.core import (
     validate_rgb_frame,
 )
 from task2_isaacsim.baselines.pi05.live.policy import LivePi05Policy
+from task2_isaacsim.baselines.pi05.live.staging import validate_staging_audit
 from task2_isaacsim.common.state_contract import (
     GRIPPER_CLOSED_RAD,
     LEFT_GRIPPER_DRIVER,
@@ -155,18 +156,25 @@ class LiveObservationNode(Node):
         )
 
         if publish:
-            conflicts = self.command_publisher_counts()
-            if any(conflicts.values()):
-                raise RuntimeError(
-                    f"command publisher contention: {conflicts}"
-                )
-            for group, entry in COMMAND_ENTRIES.items():
-                self._command_publishers[group] = self.create_publisher(
-                    JointState, entry["command"], 10
-                )
-            self._command_publishers["spine"] = self.create_publisher(
-                Float64, SPINE_COMMAND_TOPIC, 10
+            self.activate_publishers()
+
+    def activate_publishers(self) -> None:
+        """Create policy publishers only after the staging process exits."""
+
+        if self._command_publishers:
+            self.publish_enabled = True
+            return
+        conflicts = self.command_publisher_counts()
+        if any(conflicts.values()):
+            raise RuntimeError(f"command publisher contention: {conflicts}")
+        for group, entry in COMMAND_ENTRIES.items():
+            self._command_publishers[group] = self.create_publisher(
+                JointState, entry["command"], 10
             )
+        self._command_publishers["spine"] = self.create_publisher(
+            Float64, SPINE_COMMAND_TOPIC, 10
+        )
+        self.publish_enabled = True
 
     def _on_image(self, key: str, message: Image) -> None:
         received_at = time.monotonic()
@@ -361,6 +369,18 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def _write_ppm(path: Path, image: np.ndarray) -> None:
+    """Persist an RGB gate frame without adding an image-codec dependency."""
+
+    height, width, channels = image.shape
+    if channels != 3 or image.dtype != np.uint8:
+        raise ValueError("PPM evidence requires uint8 RGB")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as stream:
+        stream.write(f"P6\n{width} {height}\n255\n".encode("ascii"))
+        stream.write(image.tobytes())
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
@@ -373,8 +393,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-coordinate-frame", required=True)
     parser.add_argument("--confirm-fixed-base-staging", action="store_true")
     parser.add_argument("--stage-base-after-policy-load", action="store_true")
+    parser.add_argument("--stage-manipulation-after-base", action="store_true")
+    parser.add_argument("--staging-audit", type=Path)
+    parser.add_argument(
+        "--confirm-right-wrist-pad-visible", action="store_true"
+    )
     parser.add_argument(
         "--base-stage-max-duration-s", type=float, default=90.0
+    )
+    parser.add_argument(
+        "--manipulation-stage-max-duration-s", type=float, default=300.0
     )
     parser.add_argument("--arm-simulator", action="store_true")
     parser.add_argument(
@@ -391,7 +419,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yaw-tolerance-rad", type=float, default=0.10)
     parser.add_argument("--velocity-threshold", type=float, default=0.02)
     parser.add_argument("--settle-duration-s", type=float, default=1.0)
-    parser.add_argument("--initial-spine-max-abs-m", type=float, default=0.01)
     parser.add_argument("--camera-max-age-s", type=float, default=0.65)
     parser.add_argument("--camera-max-skew-s", type=float, default=0.10)
     parser.add_argument("--state-max-age-s", type=float, default=0.15)
@@ -410,6 +437,31 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     if args.arm_simulator and args.max_publish_actions <= 0:
         print("FAIL: --max-publish-actions must be positive")
         return 2
+    if not args.stage_manipulation_after_base or args.staging_audit is None:
+        print(
+            "FAIL: dataset-derived --stage-manipulation-after-base and "
+            "--staging-audit are required"
+        )
+        return 2
+    if args.arm_simulator and not args.confirm_right_wrist_pad_visible:
+        print(
+            "FAIL: formal publication requires "
+            "--confirm-right-wrist-pad-visible after shadow evidence review"
+        )
+        return 2
+    try:
+        staging_audit = validate_staging_audit(
+            json.loads(args.staging_audit.read_text(encoding="utf-8"))
+        )
+        staged_spine_target = float(
+            staging_audit["final_target"]["measured_reference"]["spine_m"]
+        )
+        staged_spine_tolerance = float(
+            staging_audit["tolerances"]["spine_abs_m"]
+        )
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        print(f"FAIL: invalid staging audit: {error}")
+        return 2
     if not 0 < args.queue_refill_actions <= PI05_CONTRACT.chunk_size:
         print("FAIL: --queue-refill-actions must be within the policy chunk")
         return 2
@@ -418,7 +470,8 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         return 2
     readiness = ReadinessConfig(
         *args.base_target,
-        initial_spine_max_abs_m=args.initial_spine_max_abs_m,
+        initial_spine_target_m=staged_spine_target,
+        initial_spine_max_abs_m=staged_spine_tolerance,
         position_tolerance_m=args.position_tolerance_m,
         yaw_tolerance_rad=args.yaw_tolerance_rad,
         velocity_threshold=args.velocity_threshold,
@@ -435,7 +488,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     gate.reset("startup")
     rclpy.init()
     try:
-        node = LiveObservationNode(publish=args.arm_simulator, gate=gate)
+        node = LiveObservationNode(publish=False, gate=gate)
     except Exception as error:
         rclpy.shutdown()
         print(f"FAIL: {error}")
@@ -467,7 +520,8 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             and not node.stop_requested
         ):
             rclpy.spin_once(node, timeout_sec=0.05)
-            node.update_readiness(time.monotonic())
+            if node.sim_time is not None:
+                node.update_readiness(node.sim_time)
             startup_status = node.startup_status()
             if startup_status["all_required_samples"]:
                 break
@@ -486,7 +540,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             time.sleep(0.5)
             gate.reset("dds_participant_retry")
             rclpy.init()
-            node = LiveObservationNode(publish=args.arm_simulator, gate=gate)
+            node = LiveObservationNode(publish=False, gate=gate)
 
     if not startup_status["all_required_samples"]:
         failure = {
@@ -578,8 +632,69 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             rclpy.shutdown()
             print("FAIL: base staging after policy load failed", flush=True)
             return 2
-        node.discard_staging_observations()
-        gate.reset("base_staged_after_policy_load")
+    manipulation_stage_output = (
+        args.output_dir / "dataset_pregrasp_staging_manifest.json"
+    )
+    manipulation_stage_started = time.monotonic()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            (
+                "task2_isaacsim.baselines.pi05.live."
+                "fixed_stage_manipulation"
+            ),
+            "--audit",
+            str(args.staging_audit),
+            "--output",
+            str(manipulation_stage_output),
+            "--max-duration-s",
+            str(args.manipulation_stage_max_duration_s),
+        ],
+        check=False,
+    )
+    manipulation_stage_s = time.monotonic() - manipulation_stage_started
+    stage_result: dict = {}
+    if manipulation_stage_output.is_file():
+        stage_result = json.loads(
+            manipulation_stage_output.read_text(encoding="utf-8")
+        )
+    if (
+        result.returncode != 0
+        or stage_result.get("success") is not True
+        or stage_result.get("feedback", {}).get("within_tolerance") is not True
+    ):
+        failure = {
+            "schema_version": 7,
+            "mode": mode,
+            "completed": False,
+            "decisions": 0,
+            "valid_decisions": 0,
+            "command_publications": 0,
+            "published_actions": 0,
+            "publish_blocked": "dataset_pregrasp_staging_failed",
+            "staging": stage_result,
+            "startup_timing": {
+                "policy_load_s": policy_load_s,
+                "base_stage_s": base_stage_s,
+                "manipulation_stage_s": manipulation_stage_s,
+            },
+        }
+        _write_json(args.output_dir / "live_runner_manifest.json", failure)
+        node.destroy_node()
+        rclpy.shutdown()
+        print("FAIL: dataset pregrasp staging failed", flush=True)
+        return 2
+    if args.arm_simulator:
+        try:
+            node.activate_publishers()
+        except RuntimeError as error:
+            print(f"FAIL: {error}", flush=True)
+            node.destroy_node()
+            rclpy.shutdown()
+            return 2
+    node.discard_staging_observations()
+    gate.reset("dataset_pregrasp_staging_complete")
     started = time.monotonic()
     last_sequences: dict[str, int] = {}
     last_reset_count = node.reset_count
@@ -610,12 +725,14 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     spine_trajectory: list[dict[str, float | int]] = []
     first_published_sim_time: float | None = None
     last_published_sim_time: float | None = None
+    last_actuator_publication_sim_time: float | None = None
     worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pi05")
 
     # Warm up CUDA/model kernels before steady-state measurements. No action is
     # published here and the same valid observation can be reused safely.
     warmup_images: dict[str, np.ndarray] | None = None
     warmup_state: tuple[float, ...] | None = None
+    staging_observation_images: dict[str, str] = {}
     while (
         warmup_images is None
         and time.monotonic() - started < args.max_duration_s
@@ -623,13 +740,14 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     ):
         rclpy.spin_once(node, timeout_sec=0.02)
         now = time.monotonic()
-        if not node.update_readiness(now):
+        if node.sim_time is None or not node.update_readiness(node.sim_time):
             continue
         try:
             warmup_images, warmup_state = node.snapshot()
             validate_live_state(warmup_state)
             freshness_metrics(
                 now=now,
+                capture_now=node.sim_time,
                 camera_times=node.image_times,
                 camera_capture_times=node.image_capture_times,
                 camera_sequences=node.image_sequences,
@@ -644,6 +762,10 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             stale_observations += 1
     if warmup_images is not None and warmup_state is not None:
         initial_spine_position_m = warmup_state[28]
+        for key, image in warmup_images.items():
+            path = args.output_dir / f"settled_fresh_{key}.ppm"
+            _write_ppm(path, image)
+            staging_observation_images[key] = str(path)
         for _ in range(args.warmup_decisions):
             _, latency = policy.predict_chunk(
                 images=warmup_images, state=warmup_state
@@ -671,7 +793,10 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 reset_recoveries += 1
                 continue
 
-            ready = node.update_readiness(now)
+            ready = (
+                node.sim_time is not None
+                and node.update_readiness(node.sim_time)
+            )
             if args.arm_simulator and manipulation_latched and not ready:
                 publish_blocked = str(
                     gate.last_evidence.get("reason", "readiness_revoked")
@@ -842,6 +967,10 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 and queue
                 and node.sim_time is not None
                 and node.sim_time >= queue[0][1]
+                and (
+                    last_actuator_publication_sim_time is None
+                    or node.sim_time > last_actuator_publication_sim_time
+                )
             ):
                 if not ready:
                     gate.stop("readiness_revoked_before_publish")
@@ -870,6 +999,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     else:
                         node.publish_action(effective)
                         published_actions += 1
+                        last_actuator_publication_sim_time = node.sim_time
                         last_policy_action = effective
                         if first_published_sim_time is None:
                             first_published_sim_time = node.sim_time
@@ -912,6 +1042,10 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 and node.sim_time is not None
                 and next_hold_sim_time is not None
                 and node.sim_time >= next_hold_sim_time
+                and (
+                    last_actuator_publication_sim_time is None
+                    or node.sim_time > last_actuator_publication_sim_time
+                )
             ):
                 if not ready:
                     publish_blocked = "readiness_revoked_before_hold"
@@ -923,6 +1057,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     gate.stop(publish_blocked)
                     break
                 node.publish_action(hold_target)
+                last_actuator_publication_sim_time = node.sim_time
                 hold_action_publications += 1
                 assert future_context is not None
                 future_context["hold_action_publications"] += 1
@@ -955,6 +1090,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     validate_live_state(state)
                     metrics = freshness_metrics(
                         now=capture_at,
+                        capture_now=capture_sim_at,
                         camera_times=node.image_times,
                         camera_capture_times=node.image_capture_times,
                         camera_sequences=node.image_sequences,
@@ -1034,7 +1170,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         value <= refill_window_s for value in latencies
     )
     summary = {
-        "schema_version": 6,
+        "schema_version": 7,
         "mode": mode,
         "runtime_mode": args.runtime_mode,
         "execution_horizon": 5 if hard5 else "asynchronous_refill",
@@ -1043,6 +1179,9 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         "policy_controlled_groups": list(POLICY_COMMAND_TOPICS),
         "forbidden_groups": ["base"],
         "checkpoint": str(args.checkpoint.resolve()),
+        "checkpoint_relative_action_state_indices": list(
+            policy.action_state_indices
+        ),
         "dataset_root": str(args.dataset_root.resolve()),
         "dataset_repo_id": args.dataset_repo_id,
         "task_instruction": PI05_CONTRACT.task_instruction,
@@ -1062,6 +1201,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         "startup_timing": {
             "policy_load_s": policy_load_s,
             "base_stage_s": base_stage_s,
+            "manipulation_stage_s": manipulation_stage_s,
             "base_stage_order": (
                 "after_policy_load"
                 if args.stage_base_after_policy_load
@@ -1071,6 +1211,16 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 str(base_stage_output)
                 if base_stage_output is not None
                 else None
+            ),
+        },
+        "staging": {
+            "audit": str(args.staging_audit.resolve()),
+            "execution_manifest": str(manipulation_stage_output),
+            "result": stage_result,
+            "observations_discarded_after_staging": True,
+            "settled_fresh_observation_images": staging_observation_images,
+            "right_wrist_pad_visible_operator_attested": (
+                args.confirm_right_wrist_pad_visible
             ),
         },
         "final_readiness": gate.last_evidence,

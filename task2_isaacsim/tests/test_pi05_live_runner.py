@@ -28,6 +28,12 @@ from task2_isaacsim.baselines.pi05.live.core import (
     validate_rgb_frame,
 )
 from task2_isaacsim.baselines.pi05.live.policy import LivePi05Policy
+from task2_isaacsim.baselines.pi05.live.staging import (
+    interpolate_staging_command,
+    staging_entry_duration_s,
+    staging_feedback,
+    validate_staging_audit,
+)
 from task2_isaacsim.common.state_contract import (
     LEFT_GRIPPER_DRIVER,
     LEFT_JOINTS,
@@ -94,6 +100,109 @@ class StateContractTest(unittest.TestCase):
 
 
 class LiveSafetyTest(unittest.TestCase):
+    def _staging_audit(self) -> dict:
+        left = [0.0, -0.7, 0.1, -2.3, 0.0, 1.6, 0.8]
+        right = [0.8, -1.6, -1.8, -2.4, -0.7, 3.8, -0.5]
+        left_ee = [2.45, 2.2, 0.91, 0.0, 0.0, 0.0, 1.0]
+        right_ee = [1.75, 2.14, 0.87, 0.0, 0.7071, -0.7071, 0.0]
+        return {
+            "guessed_ik_used": False,
+            "selection": {"episode": 176, "frame": 408},
+            "final_target": {
+                "left_arm_rad": left,
+                "right_arm_rad": right,
+                "left_gripper_open_fraction": 1.0,
+                "right_gripper_open_fraction": 1.0,
+                "spine_command_m": 0.5,
+                "measured_reference": {
+                    "left_arm_rad": left,
+                    "right_arm_rad": right,
+                    "spine_m": 0.486,
+                    "left_gripper_open_fraction": 1.0,
+                    "right_gripper_open_fraction": 1.0,
+                    "left_ee": left_ee,
+                    "right_ee": right_ee,
+                },
+            },
+            "tolerances": {
+                "arm_max_abs_rad": 0.04,
+                "spine_abs_m": 0.02,
+                "gripper_open_fraction": 0.05,
+                "left_ee_z_m": 0.04,
+                "right_ee_position_m": 0.04,
+                "right_ee_orientation_deg": 12.0,
+                "stable_dwell_sim_s": 1.0,
+            },
+            "velocity_risk": {
+                "arm_limits_rad_s": [2.62] * 14,
+                "staging_arm_velocity_fraction": 0.5,
+                "staging_spine_velocity_m_s": 0.05,
+                "staging_gripper_velocity_fraction_s": 1.0,
+            },
+            "trajectory": [
+                {
+                    "frame": 0,
+                    "scheduled_at_s": 0.0,
+                    "command": [*left, *right, 1.0, 1.0, 0.0],
+                },
+                {
+                    "frame": 408,
+                    "scheduled_at_s": 10.0,
+                    "command": [*left, *right, 1.0, 1.0, 0.5],
+                },
+            ],
+        }
+
+    def test_dataset_staging_requires_provenance_and_no_ik(self) -> None:
+        audit = self._staging_audit()
+        self.assertIs(validate_staging_audit(audit), audit)
+        audit["guessed_ik_used"] = True
+        with self.assertRaisesRegex(ValueError, "guessed IK"):
+            validate_staging_audit(audit)
+
+    def test_dataset_staging_rejects_unsafe_intermediate_command(self) -> None:
+        audit = self._staging_audit()
+        audit["trajectory"][0]["command"][0] = 99.0
+        with self.assertRaisesRegex(ValueError, "outside FR3 bounds"):
+            validate_staging_audit(audit)
+
+    def test_staging_entry_uses_measured_state_and_sim_time_limits(self) -> None:
+        audit = self._staging_audit()
+        target = tuple(audit["trajectory"][0]["command"])
+        current = (*target[:14], *target[14:16], 0.5)
+        duration = staging_entry_duration_s(audit, current, target)
+        self.assertEqual(duration, 10.0)
+        midpoint = interpolate_staging_command(current, target, 0.5)
+        self.assertAlmostEqual(midpoint[16], 0.25)
+
+    def test_dataset_staging_feedback_covers_every_required_group(self) -> None:
+        audit = self._staging_audit()
+        reference = audit["final_target"]["measured_reference"]
+        feedback = staging_feedback(
+            audit=audit,
+            left_arm=tuple(reference["left_arm_rad"]),
+            right_arm=tuple(reference["right_arm_rad"]),
+            spine_m=reference["spine_m"],
+            left_gripper_open=1.0,
+            right_gripper_open=1.0,
+            left_ee=tuple(reference["left_ee"]),
+            right_ee=tuple(reference["right_ee"]),
+        )
+        self.assertTrue(feedback["within_tolerance"])
+        self.assertTrue(all(feedback["groups"].values()))
+        failed = staging_feedback(
+            audit=audit,
+            left_arm=tuple(reference["left_arm_rad"]),
+            right_arm=tuple(reference["right_arm_rad"]),
+            spine_m=0.40,
+            left_gripper_open=1.0,
+            right_gripper_open=1.0,
+            left_ee=tuple(reference["left_ee"]),
+            right_ee=tuple(reference["right_ee"]),
+        )
+        self.assertFalse(failed["groups"]["spine"])
+        self.assertFalse(failed["within_tolerance"])
+
     def test_hard5_two_decisions_execute_zero_to_four_and_hold_only(
         self,
     ) -> None:
@@ -352,6 +461,7 @@ class LiveSafetyTest(unittest.TestCase):
     def test_freshness_rejects_camera_state_capture_misalignment(self) -> None:
         common = {
             "now": 10.0,
+            "capture_now": 20.04,
             "camera_times": {
                 "head": 9.95,
                 "wrist_left": 9.96,
@@ -521,6 +631,28 @@ class LiveSafetyTest(unittest.TestCase):
         gate.arm()
         gate.note_base_input()
         self.assertEqual(gate.phase, RunnerPhase.STOPPED)
+
+    def test_dataset_staged_spine_uses_simulator_time_dwell(self) -> None:
+        gate = BaseReadinessGate(
+            ReadinessConfig(
+                1.0,
+                2.0,
+                0.0,
+                initial_spine_target_m=0.486,
+                initial_spine_max_abs_m=0.02,
+                settle_duration_s=1.0,
+            )
+        )
+        gate.reset()
+        self.assertFalse(
+            gate.update(20.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.486)
+        )
+        self.assertFalse(
+            gate.update(20.5, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.486)
+        )
+        self.assertTrue(
+            gate.update(21.0, (1.0, 2.0, 0.0), (0.0, 0.0, 0.0), 0.486)
+        )
 
 
 if __name__ == "__main__":

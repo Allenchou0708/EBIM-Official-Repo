@@ -167,6 +167,7 @@ class ReadinessConfig:
     target_x: float
     target_y: float
     target_yaw: float
+    initial_spine_target_m: float = 0.0
     initial_spine_max_abs_m: float = 0.01
     position_tolerance_m: float = 0.05
     yaw_tolerance_rad: float = 0.10
@@ -218,12 +219,12 @@ class BaseReadinessGate:
         position_error = math.hypot(dx, dy)
         yaw_error = abs(angular_error(float(pose[2]), cfg.target_yaw))
         speed = math.sqrt(sum(float(value) ** 2 for value in velocity))
-        spine_abs = abs(float(spine_position))
+        spine_error = abs(float(spine_position) - cfg.initial_spine_target_m)
         pose_within = (
             position_error <= cfg.position_tolerance_m
             and yaw_error <= cfg.yaw_tolerance_rad
         )
-        initial_spine_within = spine_abs <= cfg.initial_spine_max_abs_m
+        initial_spine_within = spine_error <= cfg.initial_spine_max_abs_m
         within = (
             pose_within
             and initial_spine_within
@@ -271,6 +272,8 @@ class BaseReadinessGate:
             "yaw_error_rad": yaw_error,
             "speed": speed,
             "spine_position_m": float(spine_position),
+            "initial_spine_target_m": cfg.initial_spine_target_m,
+            "initial_spine_error_m": spine_error,
             "initial_spine_max_abs_m": cfg.initial_spine_max_abs_m,
             "initial_spine_within": initial_spine_within,
             "settled_for_s": 0.0
@@ -307,6 +310,7 @@ def validate_rgb_frame(key: str, array: Any) -> None:
 def freshness_metrics(
     *,
     now: float,
+    capture_now: float | None = None,
     camera_times: dict[str, float],
     camera_capture_times: dict[str, float] | None = None,
     camera_sequences: dict[str, int],
@@ -318,10 +322,9 @@ def freshness_metrics(
 ) -> dict[str, Any]:
     """Require new cameras and a capture-aligned, fresh robot state.
 
-    Arrival ages use host monotonic time because ROS transport latency is a
-    wall-clock property. Capture alignment uses message-header simulation time.
-    The legacy scalar ``state_time`` path remains for dependency-light callers;
-    the live runner supplies per-stream state times and capture stamps.
+    The live runner gates ages and alignment on message-header simulator time.
+    Host arrival ages remain diagnostic only. The legacy path without
+    ``capture_now`` remains for dependency-light callers and tests.
     """
 
     missing = [key for key in ROBOT_CAMERA_KEYS if key not in camera_times]
@@ -335,7 +338,7 @@ def freshness_metrics(
         for key in ROBOT_CAMERA_KEYS
         if camera_sequences.get(key, -1) <= last_camera_sequences.get(key, -1)
     ]
-    ages = {
+    arrival_ages = {
         key: max(0.0, now - camera_times[key]) for key in ROBOT_CAMERA_KEYS
     }
     capture_times = camera_capture_times or camera_times
@@ -350,9 +353,17 @@ def freshness_metrics(
                 "missing_camera_capture_times": missing_capture_times,
             },
         )
+    ages = (
+        {
+            key: max(0.0, capture_now - capture_times[key])
+            for key in ROBOT_CAMERA_KEYS
+        }
+        if capture_now is not None
+        else arrival_ages
+    )
     arrival_skew = max(camera_times.values()) - min(camera_times.values())
     skew = max(capture_times.values()) - min(capture_times.values())
-    state_ages = (
+    state_arrival_ages = (
         {
             key: max(0.0, now - received_at)
             for key, received_at in state_times.items()
@@ -373,6 +384,14 @@ def freshness_metrics(
         ]
         if state_capture_times is not None
         else []
+    )
+    state_ages = (
+        {
+            key: max(0.0, capture_now - captured_at)
+            for key, captured_at in state_capture_times.items()
+        }
+        if capture_now is not None and state_capture_times is not None
+        else state_arrival_ages
     )
     state_age = max(state_ages.values(), default=math.inf)
     state_capture_skew = None
@@ -398,6 +417,7 @@ def freshness_metrics(
         )
     metrics = {
         "frame_age_s": ages,
+        "frame_arrival_age_s": arrival_ages,
         "inter_camera_skew_s": skew,
         "inter_camera_capture_skew_s": skew,
         "inter_camera_arrival_skew_s": arrival_skew,
@@ -406,6 +426,7 @@ def freshness_metrics(
         },
         "state_age_s": state_age,
         "state_age_by_stream_s": state_ages,
+        "state_arrival_age_by_stream_s": state_arrival_ages,
         "state_capture_times_s": dict(state_capture_times or {}),
         "missing_state_times": missing_state_times,
         "missing_state_capture_times": missing_state_capture_times,

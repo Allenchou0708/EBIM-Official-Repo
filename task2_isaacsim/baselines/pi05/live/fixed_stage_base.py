@@ -73,11 +73,23 @@ class FixedBaseStager(Node):
     def publish(self, token: str) -> None:
         self.publisher.publish(String(data=token))
 
-    def stop(self) -> None:
-        for _ in range(10):
-            self.publish("NONE")
-            rclpy.spin_once(self, timeout_sec=0.0)
-            time.sleep(0.05)
+    def stop(self, duration_sim_s: float = 0.10) -> None:
+        started_sim = self.sim_time
+        started_wall = time.monotonic()
+        last_publish_sim: float | None = None
+        while (
+            started_sim is None
+            or self.sim_time is None
+            or self.sim_time - started_sim < duration_sim_s
+        ):
+            rclpy.spin_once(self, timeout_sec=0.02)
+            if self.sim_time is not None and (
+                last_publish_sim is None or self.sim_time > last_publish_sim
+            ):
+                self.publish("NONE")
+                last_publish_sim = self.sim_time
+            if time.monotonic() - started_wall >= 2.0:
+                break
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -150,6 +162,7 @@ def main() -> int:
     command_until: float | None = None
     next_correction_at: float | None = None
     route: list[dict[str, object]] = []
+    last_sim_time: float | None = None
 
     def enter(next_phase: str) -> None:
         nonlocal phase, phase_since
@@ -170,6 +183,12 @@ def main() -> int:
             now = node.sim_time
             if node.pose is None or now is None:
                 continue
+            if last_sim_time is not None and now < last_sim_time:
+                phase = "SIMULATOR_CLOCK_RESET"
+                break
+            if last_sim_time is not None and now == last_sim_time:
+                continue
+            last_sim_time = now
             if sim_started is None:
                 sim_started = now
                 phase_since = now

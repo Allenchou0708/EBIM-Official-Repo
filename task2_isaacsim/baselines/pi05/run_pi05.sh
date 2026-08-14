@@ -28,13 +28,19 @@ DEFAULT_CONFIG="${SCRIPT_DIR}/configs/task2_fixpos_200_expert.yaml"
 usage() {
   cat <<'EOF'
 Usage:
-  ./run_pi05.sh doctor
+  ./run_pi05.sh doctor [--profile NAME]
+  ./run_pi05.sh parser-gate [--profile NAME]
   ./run_pi05.sh dataset [--config PATH]
-  ./run_pi05.sh train [--config PATH] [--run NAME]
+  ./run_pi05.sh audit-staging [--dataset-root PATH] [--output-dir PATH]
+  ./run_pi05.sh train [--config PATH] [--run NAME] [--dry-run] [--one-step-smoke] [--vram-smoke-run NAME]
+  ./run_pi05.sh verify-training [--run NAME]
+  ./run_pi05.sh verify-smoke [--run NAME]
+  ./run_pi05.sh verify-shadow --run-dir PATH
+  ./run_pi05.sh offline-gate [--run NAME] [--max-frames N]
   ./run_pi05.sh train-v4 [--run NAME]
   ./run_pi05.sh gate-v4 [--checkpoint PATH] [--maximum-episodes N]
   ./run_pi05.sh sim-up [--gui]
-  ./run_pi05.sh run-task [--runtime-mode hard5|legacy] [--checkpoint PATH] [--dataset-root PATH] [--shadow] [--max-actions N] [--max-duration-s S]
+  ./run_pi05.sh run-task [--runtime-mode hard5|legacy] [--checkpoint PATH] [--dataset-root PATH] [--staging-audit PATH] [--run-label LABEL] [--shadow] [--confirm-right-wrist-pad-visible] [--max-actions N] [--max-duration-s S]
   ./run_pi05.sh replay-dataset [--dataset-root PATH] [--episode auto|N] [--summary-only|--align-only|--max-frames N]
   ./run_pi05.sh audit-initial-states [--dataset-root PATH] [--output-dir PATH]
   ./run_pi05.sh evaluate
@@ -68,10 +74,16 @@ print(value)
 parse_config_run() {
   CONFIG="${DEFAULT_CONFIG}"
   RUN_NAME=""
+  ONE_STEP_SMOKE=false
+  VRAM_SMOKE_RUN=""
+  TRAIN_EXECUTE=true
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --config) CONFIG="$(resolve_config "$2")"; shift 2 ;;
       --run) RUN_NAME="$2"; shift 2 ;;
+      --one-step-smoke) ONE_STEP_SMOKE=true; shift ;;
+      --vram-smoke-run) VRAM_SMOKE_RUN="$2"; shift 2 ;;
+      --dry-run) TRAIN_EXECUTE=false; shift ;;
       *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
   done
@@ -96,9 +108,29 @@ training_base_args() {
 }
 
 command_doctor() {
+  local profile=expert
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --profile) profile="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
   training_base_args
   docker run "${TRAINING_ARGS[@]}" "${PI05_TRAIN_IMAGE}" \
-    doctor --profile expert
+    doctor --profile "${profile}"
+}
+
+command_parser_gate() {
+  local profile=v2_full_30k
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --profile) profile="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  training_base_args
+  docker run "${TRAINING_ARGS[@]}" "${PI05_TRAIN_IMAGE}" \
+    parser-gate --profile "${profile}"
 }
 
 command_dataset() {
@@ -136,6 +168,23 @@ command_train() {
   output="${TASK2_PI05_ROOT}/outputs/${RUN_NAME}"
   episodes="$(python3 -c 'import json,sys; print(",".join(map(str,json.load(open(sys.argv[1]))["split"]["train"])))' "${audit}")"
   training_base_args
+  local -a smoke_args=()
+  local -a execute_args=(--execute)
+  ${TRAIN_EXECUTE} || execute_args=()
+  if ${ONE_STEP_SMOKE}; then
+    smoke_args=(
+      --allow-vram-smoke
+      --override=--steps=1
+      --override=--save_checkpoint=false
+      --override=--log_freq=1
+    )
+  fi
+  if [[ -n "${VRAM_SMOKE_RUN}" ]]; then
+    smoke_args+=(
+      --vram-smoke-report
+      "/data/outputs/${VRAM_SMOKE_RUN}/run_manifest.json"
+    )
+  fi
   docker run "${TRAINING_ARGS[@]}" \
     -v "${dataset_root}:/data/dataset:ro" \
     -v "${TASK2_PI05_ROOT}/outputs:/data/outputs" \
@@ -144,7 +193,113 @@ command_train() {
     --dataset-root /data/dataset \
     --audit-report /data/evidence/$(basename "${audit}") \
     --output-dir "/data/outputs/${RUN_NAME}" \
-    --episodes "${episodes}" --execute
+    --episodes "${episodes}" "${smoke_args[@]}" "${execute_args[@]}"
+}
+
+command_audit_staging() {
+  local dataset="${TASK2_PI05_ROOT}/datasets/task2_fixpos_200_46ab41f"
+  local audit="${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/task2_fixpos_200_audit.json"
+  local output="${TASK2_PI05_ROOT}/evidence/task2_pi05_v2_full_30k_preflight"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dataset-root) dataset="$(realpath "$2")"; shift 2 ;;
+      --output-dir) output="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  dataset="$(realpath "${dataset}")"
+  mkdir -p "${output}"
+  output="$(realpath "${output}")"
+  [[ -f "${audit}" ]] || { echo "Dataset audit report not found" >&2; exit 2; }
+  training_base_args
+  docker run "${TRAINING_ARGS[@]}" \
+    -v "${dataset}:/data/dataset:ro" \
+    -v "${audit}:/data/dataset_audit.json:ro" \
+    -v "${output}:/data/output" \
+    "${PI05_TRAIN_IMAGE}" audit-staging \
+    --dataset-root /data/dataset \
+    --audit-report /data/dataset_audit.json \
+    --output-dir /data/output
+}
+
+command_verify_training() {
+  local run_name="task2_pi05_v2_full_30k"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --run) run_name="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  local run_root output
+  run_root="${TASK2_PI05_ROOT}/outputs/${run_name}"
+  output="${TASK2_PI05_ROOT}/evidence/task2_pi05_v2_full_30k_preflight/training_verification.json"
+  PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
+    python3 -m task2_isaacsim.baselines.pi05.verify_v2_full_run \
+    --run-root "${run_root}" --output "${output}"
+}
+
+command_verify_smoke() {
+  local run_name="task2_pi05_v2_full_30k_smoke_1step"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --run) run_name="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
+    python3 -m task2_isaacsim.baselines.pi05.verify_vram_smoke \
+    --manifest "${TASK2_PI05_ROOT}/outputs/${run_name}/run_manifest.json"
+}
+
+command_verify_shadow() {
+  local run_dir=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --run-dir) run_dir="$(realpath "$2")"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  [[ -n "${run_dir}" ]] || { echo "--run-dir is required" >&2; exit 2; }
+  PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
+    python3 -m task2_isaacsim.baselines.pi05.verify_shadow_run \
+    --run-dir "${run_dir}"
+}
+
+command_offline_gate() {
+  local run_name="task2_pi05_v2_full_30k" max_frames=128
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --run) run_name="$2"; shift 2 ;;
+      --max-frames) max_frames="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  [[ "${max_frames}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "--max-frames must be a positive integer" >&2
+    exit 2
+  }
+  local checkpoints dataset audit output_dir
+  checkpoints="${TASK2_PI05_ROOT}/outputs/${run_name}/training/checkpoints"
+  dataset="${TASK2_PI05_ROOT}/datasets/task2_fixpos_200_46ab41f"
+  audit="${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/task2_fixpos_200_audit.json"
+  output_dir="${TASK2_PI05_ROOT}/evidence/task2_pi05_v2_full_30k_offline_gate"
+  [[ -d "${checkpoints}" ]] || { echo "Checkpoint root not found" >&2; exit 2; }
+  [[ -d "${dataset}" ]] || { echo "Raw dataset not found" >&2; exit 2; }
+  [[ -f "${audit}" ]] || { echo "Dataset audit not found" >&2; exit 2; }
+  mkdir -p "${output_dir}"
+  training_base_args
+  docker run "${TRAINING_ARGS[@]}" \
+    -v "${checkpoints}:/data/checkpoints:ro" \
+    -v "${dataset}:/data/dataset:ro" \
+    -v "${audit}:/data/dataset_audit.json:ro" \
+    -v "${output_dir}:/data/output" \
+    "${PI05_TRAIN_IMAGE}" checkpoint-sweep \
+    --checkpoints-root /data/checkpoints \
+    --dataset-root /data/dataset \
+    --dataset-repo-id hermanprawiro/task2_fixpos_200 \
+    --audit-report /data/dataset_audit.json \
+    --output /data/output/offline_gate.json \
+    --max-frames "${max_frames}" --seed 1000
 }
 
 command_train_v4() {
@@ -236,21 +391,30 @@ command_sim_up() {
 
 command_run_task() {
   local checkpoint="${PI05_CHECKPOINT}" dataset="${PI05_RELATIVE_DATASET}"
+  local staging_audit="${TASK2_PI05_ROOT}/evidence/task2_pi05_v2_full_30k_preflight/startup_staging_audit.json"
   local base_target="2.100026845932007 3.0529046058654785 -1.5706931352615356"
   local runtime_mode=hard5 max_actions=600 max_duration_s=300 max_decisions shadow=false
+  local run_label="unlabeled" confirm_right_wrist_pad_visible=false
   local -a runner_mode=(--arm-simulator)
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --checkpoint) checkpoint="$(realpath "$2")"; shift 2 ;;
       --dataset-root) dataset="$(realpath "$2")"; shift 2 ;;
+      --staging-audit) staging_audit="$(realpath "$2")"; shift 2 ;;
+      --run-label) run_label="$2"; shift 2 ;;
       --runtime-mode) runtime_mode="$2"; shift 2 ;;
       --shadow) shadow=true; shift ;;
+      --confirm-right-wrist-pad-visible) confirm_right_wrist_pad_visible=true; shift ;;
       --max-actions) max_actions="$2"; shift 2 ;;
       --max-duration-s) max_duration_s="$2"; shift 2 ;;
       *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
   done
   [[ -n "${checkpoint}" ]] || { echo "--checkpoint is required" >&2; exit 2; }
+  [[ "${run_label}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
+    echo "--run-label must use only letters, digits, dot, underscore, or dash" >&2
+    exit 2
+  }
   [[ "${runtime_mode}" = "hard5" || "${runtime_mode}" = "legacy" ]] || {
     echo "--runtime-mode must be hard5 or legacy" >&2
     exit 2
@@ -284,11 +448,14 @@ command_run_task() {
   fi
   dataset="$(realpath "${dataset}")"
   [[ -d "${dataset}" ]] || { echo "Relative dataset directory not found" >&2; exit 2; }
-  output="${TASK2_PI05_ROOT}/outputs/live_submit_$(date +%Y%m%d_%H%M%S)"
+  staging_audit="$(realpath "${staging_audit}")"
+  [[ -f "${staging_audit}" ]] || { echo "Staging audit not found" >&2; exit 2; }
+  output="${TASK2_PI05_ROOT}/outputs/live_submit_${run_label}_$(date +%Y%m%d_%H%M%S)"
   mkdir -p "${output}" "${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/launcher"
   live_shell "ros2 topic pub --once /isaac/task2/scene_reset_request std_msgs/msg/String '{data: reset}'"
-  live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_spine.py --target-m 0.0 --measured-target-m 0.0 --output /data/evidence/task2_200_submit_20260812/launcher/initial_spine.json"
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/eval_camera_preflight.py --output /data/evidence/task2_200_submit_20260812/launcher/eval_preflight.json"
+  local -a visibility_arg=()
+  ${confirm_right_wrist_pad_visible} && visibility_arg=(--confirm-right-wrist-pad-visible)
   exec docker run --rm --gpus all --network host --ipc=host \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp/ebim-live-home -e USER=ebim -e LOGNAME=ebim \
@@ -300,16 +467,22 @@ command_run_task() {
     -v "${TASK2_PI05_ROOT}/cache:/cache" \
     -v "${REPO_ROOT}:/workspace/EBiM_Challenge:ro" \
     -v "${checkpoint}:/data/checkpoint:ro" \
-    -v "${dataset}:/data/dataset:ro" -v "${output}:/data/output" \
+    -v "${dataset}:/data/dataset:ro" \
+    -v "${staging_audit}:/data/staging_audit.json:ro" \
+    -v "${output}:/data/output" \
     "${PI05_LIVE_IMAGE}" run-task --checkpoint /data/checkpoint \
     --dataset-root /data/dataset --dataset-repo-id hermanprawiro/task2_fixpos_200 \
     --output-dir /data/output --base-target ${base_target} \
     --base-coordinate-frame dataset_odom_world_verified_against_room_scene \
     --confirm-fixed-base-staging \
     --stage-base-after-policy-load \
+    --stage-manipulation-after-base \
+    --staging-audit /data/staging_audit.json \
+    --manipulation-stage-max-duration-s 600 \
     --runtime-mode "${runtime_mode}" \
     --position-tolerance-m 0.03 --yaw-tolerance-rad 0.04 \
     "${runner_mode[@]}" \
+    "${visibility_arg[@]}" \
     --max-decisions "${max_decisions}" \
     --max-publish-actions "${max_actions}" \
     --max-duration-s "${max_duration_s}"
@@ -404,7 +577,13 @@ command_down() {
 
 case "${1:-}" in
   doctor) shift; command_doctor "$@" ;;
+  parser-gate) shift; command_parser_gate "$@" ;;
   dataset) shift; command_dataset "$@" ;;
+  audit-staging) shift; command_audit_staging "$@" ;;
+  verify-training) shift; command_verify_training "$@" ;;
+  verify-smoke) shift; command_verify_smoke "$@" ;;
+  verify-shadow) shift; command_verify_shadow "$@" ;;
+  offline-gate) shift; command_offline_gate "$@" ;;
   train) shift; command_train "$@" ;;
   train-v4) shift; command_train_v4 "$@" ;;
   gate-v4) shift; command_gate_v4 "$@" ;;

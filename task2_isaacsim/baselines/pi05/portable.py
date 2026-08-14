@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -39,7 +40,13 @@ from task2_isaacsim.baselines.pi05.heldout_evaluation import (  # noqa: E402
 from task2_isaacsim.baselines.pi05.loss_parity import (
     loss_parity_report,  # noqa: E402
 )
+from task2_isaacsim.baselines.pi05.live.staging import (  # noqa: E402
+    validate_staging_audit,
+)
 from task2_isaacsim.baselines.pi05.phase_balance import build_phase_manifest
+from task2_isaacsim.baselines.pi05.pregrasp_pose_audit import (
+    build_pregrasp_pose_audit,
+)
 from task2_isaacsim.baselines.pi05.offline_inference import (
     run_offline_inference,  # noqa: E402
 )
@@ -49,6 +56,9 @@ from task2_isaacsim.baselines.pi05.relative_dataset import (  # noqa: E402
 )
 from task2_isaacsim.baselines.pi05.train_smoke import (
     load_episode_labels,  # noqa: E402
+)
+from task2_isaacsim.baselines.pi05.startup_staging_audit import (
+    build_startup_staging_audit,
 )
 
 LEROBOT_SOURCE_COMMIT = "30da8e687a6dfc617fcd94afc367ac7071c376ce"
@@ -131,6 +141,7 @@ def _profile_path(name_or_path: str) -> Path:
         "expert_v3": "expert_v3.yaml",
         "v4": "expert_v4.yaml",
         "expert_v4": "expert_v4.yaml",
+        "v2_full_30k": "v2_full_30k.yaml",
         "full": "full_finetune.yaml",
     }
     path = PROFILE_DIRECTORY / names.get(name_or_path, name_or_path)
@@ -187,13 +198,20 @@ def validate_profile(path: Path) -> dict[str, Any]:
             True,
             True,
         ),
+        "v2_full_30k.yaml": (
+            "v2_full_30k",
+            True,
+            False,
+            True,
+            True,
+        ),
         "full_finetune.yaml": ("full_finetune", True, False, False, False),
     }
     if path.name not in expected_modes:
         raise ValueError(
             "profile filename must be smoke_expert.yaml, "
             "expert_finetune.yaml, expert_v2.yaml, expert_v3.yaml, "
-            "expert_v4.yaml, "
+            "expert_v4.yaml, v2_full_30k.yaml, "
             "or full_finetune.yaml"
         )
     mode, formal, train_expert_only, freeze_vision_encoder, phase_balanced = (
@@ -311,10 +329,18 @@ def parser_integration_gate(profile_path: Path) -> dict[str, Any]:
         errors.append("relative processor did not receive the Task 2 mapping")
     if active_cfg.pretrained_revision != PI05_MODEL_REVISION:
         errors.append("pretrained PI0.5 revision drifted")
-    if active_cfg.train_expert_only is not True:
-        errors.append("train_expert_only must be true")
-    if active_cfg.freeze_vision_encoder is not True:
-        errors.append("freeze_vision_encoder must be true")
+    expected_policy = profile["policy"]
+    if active_cfg.train_expert_only is not expected_policy["train_expert_only"]:
+        errors.append(
+            "train_expert_only parser value does not match the profile"
+        )
+    if (
+        active_cfg.freeze_vision_encoder
+        is not expected_policy["freeze_vision_encoder"]
+    ):
+        errors.append(
+            "freeze_vision_encoder parser value does not match the profile"
+        )
     if errors:
         raise RuntimeError("; ".join(errors))
     return {
@@ -337,10 +363,11 @@ def doctor(profile_path: Path) -> tuple[dict[str, Any], list[str]]:
     if not gpu["bf16_supported"]:
         errors.append("selected GPU does not support bfloat16")
     mode = profile["_ebim_mode"]
-    is_full = mode == "full_finetune"
+    is_full = mode in {"full_finetune", "v2_full_30k"}
     if is_full and gpu["total_memory_gib"] < FULL_PROFILE_MIN_GIB:
         errors.append(
-            "full_finetune requires a single 80 GB-class GPU; "
+            f"{mode} requires a single 80 GB-class GPU or a passing "
+            "one-step memory smoke; "
             f"detected {gpu['total_memory_gib']:.1f} GiB. No automatic "
             "LoRA or expert-only downgrade is allowed."
         )
@@ -352,6 +379,7 @@ def doctor(profile_path: Path) -> tuple[dict[str, Any], list[str]]:
         "task2_relative_action_state_indices": profile[
             "task2_relative_action_state_indices"
         ],
+        "policy": profile["policy"],
         "gpu": gpu,
         "video_runtime": video_runtime,
         "lerobot_source_commit": LEROBOT_SOURCE_COMMIT,
@@ -448,7 +476,7 @@ def _verify_parameter_mode(
         ]
     if not 3_500_000_000 <= total <= 5_000_000_000:
         errors.append(f"unexpected PI0.5 total parameter count: {total}")
-    if mode == "full_finetune" and trainable < 3_500_000_000:
+    if mode in {"full_finetune", "v2_full_30k"} and trainable < 3_500_000_000:
         errors.append(
             f"full profile trained only {trainable} parameters; "
             "expected approximately 4B"
@@ -529,10 +557,74 @@ def command_train(args: argparse.Namespace) -> int:
     except (OSError, RuntimeError, ValueError) as error:
         print(f"FAIL: doctor: {error}")
         return 2
-    if errors:
-        for error in errors:
+    vram_smoke = bool(args.allow_vram_smoke)
+    if vram_smoke:
+        required_smoke_overrides = {
+            "--steps=1",
+            "--save_checkpoint=false",
+            "--log_freq=1",
+        }
+        if not required_smoke_overrides <= set(args.override):
+            print(
+                "FAIL: --allow-vram-smoke requires --steps=1, "
+                "--save_checkpoint=false, and --log_freq=1"
+            )
+            return 2
+    vram_smoke_passed = False
+    if args.vram_smoke_report is not None:
+        try:
+            smoke = json.loads(
+                args.vram_smoke_report.read_text(encoding="utf-8")
+            )
+            smoke_command = set(smoke["command"])
+            smoke_counts = smoke["parameter_counts"]
+            smoke_metrics = smoke["training_metrics"]
+            smoke_profile = smoke.get("profile", {})
+            smoke_policy = smoke_profile.get("policy", {})
+            vram_smoke_passed = bool(
+                smoke.get("returncode") == 0
+                and smoke_profile.get("mode") == "v2_full_30k"
+                and smoke_policy.get("train_expert_only") is False
+                and smoke_policy.get("freeze_vision_encoder") is True
+                and smoke_profile.get(
+                    "task2_relative_action_state_indices"
+                )
+                == list(V2_RELATIVE_ACTION_STATE_INDICES)
+                and "--steps=1" in smoke_command
+                and "--save_checkpoint=false" in smoke_command
+                and "--log_freq=1" in smoke_command
+                and smoke_counts.get("trainable_parameters", 0)
+                >= 3_500_000_000
+                and smoke_metrics.get("loss") is not None
+                and math.isfinite(float(smoke_metrics["loss"]))
+                and smoke_metrics.get("memory_gib") is not None
+                and math.isfinite(float(smoke_metrics["memory_gib"]))
+                and not smoke.get("parameter_mode_errors")
+            )
+        except (KeyError, OSError, TypeError, ValueError) as error:
+            print(f"FAIL: invalid VRAM smoke report: {error}")
+            return 2
+        if not vram_smoke_passed:
+            print("FAIL: VRAM smoke report did not pass the full-mode gate")
+            return 2
+    vram_errors = [
+        error for error in errors if "80 GB-class GPU" in error
+    ]
+    other_errors = [error for error in errors if error not in vram_errors]
+    if other_errors or (
+        vram_errors and not (vram_smoke or vram_smoke_passed)
+    ):
+        for error in (*other_errors, *vram_errors):
             print(f"FAIL: {error}")
         return 2
+    if vram_errors and vram_smoke:
+        for error in vram_errors:
+            print(f"WARN: one-step VRAM smoke bypass: {error}")
+    if vram_errors and vram_smoke_passed:
+        print(
+            "PASS: prior one-step full-mode VRAM smoke permits this "
+            "same-contract run"
+        )
 
     try:
         output_dir = _require_external_output(args.output_dir)
@@ -740,7 +832,10 @@ def command_train(args: argparse.Namespace) -> int:
         for error in manifest["parameter_mode_errors"]:
             print(f"FAIL: {error}")
         return 3
-    if manifest["training_metrics"]["loss"] is None:
+    if (
+        manifest["training_metrics"]["loss"] is None
+        or not math.isfinite(float(manifest["training_metrics"]["loss"]))
+    ):
         print("FAIL: successful training log did not contain a finite loss")
         return 3
     if (
@@ -882,6 +977,59 @@ def command_validate_shadow(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_audit_staging(args: argparse.Namespace) -> int:
+    try:
+        output_dir = _require_external_output(args.output_dir)
+        audit = _load_formal_audit(
+            args.audit_report.resolve(), args.dataset_root.resolve()
+        )
+        del audit
+        output_dir.mkdir(parents=True, exist_ok=True)
+        phase_path = output_dir / "phase_manifest.json"
+        pose_path = output_dir / "pregrasp_pose_audit.json"
+        staging_path = output_dir / "startup_staging_audit.json"
+        phase = build_phase_manifest(
+            dataset_root=args.dataset_root.resolve(),
+            audit_report=args.audit_report.resolve(),
+        )
+        _write_json(phase_path, phase)
+        pose = build_pregrasp_pose_audit(
+            dataset_root=args.dataset_root.resolve(),
+            phase_manifest=phase_path,
+        )
+        _write_json(pose_path, pose)
+        staging = validate_staging_audit(
+            build_startup_staging_audit(
+                dataset_root=args.dataset_root.resolve(),
+                pregrasp_audit=pose_path,
+            )
+        )
+        _write_json(staging_path, staging)
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"FAIL: staging audit: {error}")
+        return 2
+    print(
+        json.dumps(
+            {
+                "selection": staging["selection"],
+                "final_target": staging["final_target"],
+                "velocity_risk": {
+                    key: staging["velocity_risk"][key]
+                    for key in (
+                        "audited_segment_count",
+                        "raw_arm_limit_violation_count",
+                        "scheduled_duration_sim_s",
+                    )
+                },
+                "output": str(staging_path),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -902,6 +1050,15 @@ def build_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--dataset-root", type=Path, required=True)
     audit_parser.add_argument("--source-manifest", type=Path)
     audit_parser.add_argument("--output", type=Path, required=True)
+
+    staging_audit_parser = subparsers.add_parser("audit-staging")
+    staging_audit_parser.add_argument(
+        "--dataset-root", type=Path, required=True
+    )
+    staging_audit_parser.add_argument(
+        "--audit-report", type=Path, required=True
+    )
+    staging_audit_parser.add_argument("--output-dir", type=Path, required=True)
 
     split_parser = subparsers.add_parser("split")
     split_parser.add_argument("--total-episodes", type=int, required=True)
@@ -927,6 +1084,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--require-loss-improvement", action="store_true"
     )
     train_parser.add_argument("--override", action="append", default=[])
+    train_parser.add_argument("--allow-vram-smoke", action="store_true")
+    train_parser.add_argument("--vram-smoke-report", type=Path)
     train_parser.add_argument(
         "--allow-unsuccessful-smoke-data", action="store_true"
     )
@@ -1042,6 +1201,8 @@ def main() -> int:
             f"formal={report['formal_training_allowed']} output={output}"
         )
         return 0 if report["audit_pass"] else 3
+    if args.command == "audit-staging":
+        return command_audit_staging(args)
     if args.command == "split":
         train, held_out = deterministic_split(
             args.total_episodes, args.held_out

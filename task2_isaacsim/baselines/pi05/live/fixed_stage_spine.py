@@ -14,6 +14,8 @@ from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64
 
@@ -21,21 +23,31 @@ from task2_isaacsim.common.state_contract import SPINE_JOINT
 
 
 class FixedSpineStager(Node):
-    def __init__(self, *, command_topic: str, state_topic: str):
+    def __init__(self, *, command_topic: str, state_topic: str, clock_topic: str):
         super().__init__("pi05_fixed_spine_stager")
         self.publisher = self.create_publisher(Float64, command_topic, 10)
         self.create_subscription(JointState, state_topic, self._on_state, 10)
+        self.create_subscription(
+            Clock, clock_topic, self._on_clock, qos_profile_sensor_data
+        )
         self.position: float | None = None
         self.previous_position: float | None = None
         self.previous_time: float | None = None
         self.velocity = math.inf
         self.stop_requested = False
+        self.sim_time: float | None = None
+
+    def _on_clock(self, message: Clock) -> None:
+        self.sim_time = (
+            float(message.clock.sec) + float(message.clock.nanosec) * 1e-9
+        )
 
     def _on_state(self, message: JointState) -> None:
         positions = dict(zip(message.name, message.position))
         if SPINE_JOINT not in positions:
             return
-        now = time.monotonic()
+        stamp = message.header.stamp
+        now = float(stamp.sec) + float(stamp.nanosec) * 1e-9
         position = float(positions[SPINE_JOINT])
         if self.previous_position is not None and self.previous_time is not None:
             elapsed = now - self.previous_time
@@ -57,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rate-hz", type=float, default=20.0)
     parser.add_argument("--command-topic", default="/isaac/spine_target")
     parser.add_argument("--state-topic", default="/isaac/joint_states_full")
+    parser.add_argument("--clock-topic", default="/isaac/clock")
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -65,7 +78,9 @@ def main() -> int:
     args = build_parser().parse_args()
     rclpy.init()
     node = FixedSpineStager(
-        command_topic=args.command_topic, state_topic=args.state_topic
+        command_topic=args.command_topic,
+        state_topic=args.state_topic,
+        clock_topic=args.clock_topic,
     )
     signal.signal(
         signal.SIGTERM, lambda *_: setattr(node, "stop_requested", True)
@@ -78,13 +93,23 @@ def main() -> int:
     period_s = 1.0 / args.rate_hz
     success = False
     reason = "timeout"
+    last_sim_time: float | None = None
     try:
         while (
             not node.stop_requested
             and time.monotonic() - started < args.max_duration_s
         ):
             rclpy.spin_once(node, timeout_sec=period_s)
-            now = time.monotonic()
+            now = node.sim_time
+            if now is None:
+                stable_since = None
+                continue
+            if last_sim_time is not None and now < last_sim_time:
+                reason = "simulator_clock_reset"
+                break
+            if last_sim_time is not None and now == last_sim_time:
+                continue
+            last_sim_time = now
             if node.publisher.get_subscription_count() < 1:
                 stable_since = None
                 continue
@@ -116,6 +141,9 @@ def main() -> int:
             "final_position_m": node.position,
             "final_velocity_mps": node.velocity,
             "elapsed_s": time.monotonic() - started,
+            "clock": "simulator",
+            "clock_topic": args.clock_topic,
+            "stable_dwell_clock": "simulator",
         }
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -564,6 +564,9 @@ class Pi05ContractTest(unittest.TestCase):
         full = (profile_dir / "full_finetune.yaml").read_text(encoding="utf-8")
         v2 = (profile_dir / "expert_v2.yaml").read_text(encoding="utf-8")
         v3 = (profile_dir / "expert_v3.yaml").read_text(encoding="utf-8")
+        v2_full = (profile_dir / "v2_full_30k.yaml").read_text(
+            encoding="utf-8"
+        )
         self.assertNotIn("mode:", smoke)
         self.assertNotIn("formal:", expert)
         self.assertIn("train_expert_only: true", smoke)
@@ -590,6 +593,13 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn("save_freq: 3000", v3)
         self.assertIn(
             "21, 22, 23, 24, 25, 26, 27, null, null, null]", v3
+        )
+        self.assertIn("train_expert_only: false", v2_full)
+        self.assertIn("freeze_vision_encoder: true", v2_full)
+        self.assertIn("steps: 30000", v2_full)
+        self.assertIn("save_freq: 15000", v2_full)
+        self.assertIn(
+            "21, 22, 23, 24, 25, 26, 27, null, null, null]", v2_full
         )
 
     def test_portable_training_pins_task2_relative_mapping(self) -> None:
@@ -708,6 +718,34 @@ class Pi05ContractTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "freeze_vision_encoder"):
                 validate_profile(Path("full_finetune.yaml"))
+
+    def test_v2_full_profile_keeps_vision_frozen_and_absolute_spine(
+        self,
+    ) -> None:
+        profile = {
+            "task2_relative_action_state_indices": list(
+                V2_RELATIVE_ACTION_STATE_INDICES
+            ),
+            "policy": {
+                "dtype": "bfloat16",
+                "gradient_checkpointing": True,
+                "freeze_vision_encoder": True,
+                "use_relative_actions": True,
+                "max_state_dim": 37,
+                "max_action_dim": 32,
+                "push_to_hub": False,
+                "train_expert_only": False,
+            },
+        }
+        with patch(
+            "task2_isaacsim.baselines.pi05.portable._load_yaml",
+            return_value=profile,
+        ):
+            parsed = validate_profile(Path("v2_full_30k.yaml"))
+        self.assertEqual(parsed["_ebim_mode"], "v2_full_30k")
+        self.assertTrue(parsed["_ebim_phase_balanced"])
+        self.assertFalse(parsed["policy"]["train_expert_only"])
+        self.assertTrue(parsed["policy"]["freeze_vision_encoder"])
 
     def test_executable_run_requires_immutable_image_digest(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

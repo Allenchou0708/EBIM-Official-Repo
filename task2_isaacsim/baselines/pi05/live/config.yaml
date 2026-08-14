@@ -1,8 +1,16 @@
 # Copyright (c) 2026 The EBiM Benchmark Contributors
 # SPDX-License-Identifier: Apache-2.0
-version: 1
+version: 2
 fixed_base_staging: true
 manipulation_only: true
+pre_inference_staging:
+  source: startup_staging_audit.json
+  representative_episode: 176
+  representative_frame: 408
+  guessed_ik: false
+  simulator_clock_pacing: true
+  discard_staging_observations: true
+  require_fresh_settled_observation: true
 policy:
   chunk_size: 50
   n_action_steps: 5
@@ -27,7 +35,8 @@ safety:
   effective_base: [0.0, 0.0, 0.0]
   spine:
     control: policy
-    initial_max_abs_m: 0.01
+    staged_measured_target_m: 0.485743
+    staged_tolerance_m: 0.02
     target_range_m: [0.0, 0.6]
 publication:
   default: shadow

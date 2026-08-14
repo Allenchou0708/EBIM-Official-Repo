@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 The EBiM Benchmark Contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Verify a staged hard5 shadow manifest before GUI policy publication."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from pathlib import Path
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-dir", type=Path, required=True)
+    args = parser.parse_args()
+    manifest_path = args.run_dir / "live_runner_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    events = manifest.get("events", [])
+    event = events[0] if events else {}
+    staging = manifest.get("staging", {})
+    stage_result = staging.get("result", {})
+    wrist_path = args.run_dir / "settled_fresh_wrist_right.ppm"
+    mapping = manifest.get("checkpoint_relative_action_state_indices", [])
+    stage_groups = stage_result.get("feedback", {}).get("groups", {})
+    capture_skew = event.get("freshness", {}).get(
+        "observation_capture_skew_s", float("inf")
+    )
+    capture_to_ready = event.get("capture_to_ready_sim_s", float("inf"))
+    capture_skew_valid = isinstance(capture_skew, (int, float)) and math.isfinite(
+        capture_skew
+    )
+    capture_to_ready_valid = isinstance(
+        capture_to_ready, (int, float)
+    ) and math.isfinite(capture_to_ready)
+    required_stage_groups = {
+        "left_arm",
+        "right_arm",
+        "spine",
+        "left_gripper",
+        "right_gripper",
+        "left_ee_height",
+        "right_pregrasp_position",
+        "right_pregrasp_orientation",
+    }
+    checks = {
+        "completed": manifest.get("completed") is True,
+        "one_valid_decision": (
+            manifest.get("valid_decisions") == 1 and len(events) == 1
+            and event.get("valid") is True
+        ),
+        "zero_policy_command_publications": (
+            manifest.get("command_publications") == 0
+            and manifest.get("ros_publication") is False
+        ),
+        "absolute_spine_mapping": len(mapping) == 20 and mapping[19] is None,
+        "staging_all_within_tolerance": (
+            stage_result.get("feedback", {}).get("within_tolerance") is True
+            and set(stage_groups) == required_stage_groups
+            and all(stage_groups.values())
+        ),
+        "fresh_capture_skew": (
+            capture_skew_valid and 0.0 <= capture_skew <= 0.10
+        ),
+        "sim_capture_to_ready_reported": (
+            capture_to_ready_valid and capture_to_ready >= 0.0
+        ),
+        "hard5_indices": event.get("policy_indices") == [0, 1, 2, 3, 4],
+        "right_wrist_evidence_present": (
+            wrist_path.is_file() and wrist_path.stat().st_size > 16
+        ),
+    }
+    report = {
+        "valid": all(checks.values()),
+        "manifest": str(manifest_path.resolve()),
+        "checkpoint": manifest.get("checkpoint"),
+        "checks": checks,
+        "staging_feedback": stage_result.get("feedback"),
+        "freshness": event.get("freshness"),
+        "capture_to_ready_sim_s": event.get("capture_to_ready_sim_s"),
+        "right_wrist_image": str(wrist_path.resolve()),
+    }
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["valid"] else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
