@@ -25,6 +25,7 @@ from task2_isaacsim.common.state_contract import (
 )
 
 ROBOT_CAMERA_KEYS = ("head", "wrist_left", "wrist_right")
+HARD5_EXECUTION_HORIZON = 5
 SPINE_POLICY_MIN_M = 0.0
 SPINE_POLICY_MAX_M = 0.6
 TimedAction = tuple[tuple[float, ...], float, int]
@@ -97,6 +98,41 @@ def replace_action_queue(
     return residual_actions
 
 
+def hard5_action_window(
+    actions: list[tuple[float, ...]],
+    *,
+    ready_at: float,
+    action_rate_hz: float,
+    max_actions: int = HARD5_EXECUTION_HORIZON,
+) -> list[TimedAction]:
+    """Schedule only the checkpoint's configured five-action horizon."""
+
+    if action_rate_hz <= 0.0:
+        raise ValueError("action_rate_hz must be positive")
+    if max_actions <= 0:
+        raise ValueError("max_actions must be positive")
+    count = min(HARD5_EXECUTION_HORIZON, max_actions, len(actions))
+    if count == 0:
+        raise ValueError("hard5 requires at least one action")
+    return [
+        (actions[index], ready_at + index / action_rate_hz, index)
+        for index in range(count)
+    ]
+
+
+def hard5_hold_action(
+    last_policy_action: tuple[float, ...] | None,
+    *,
+    inference_pending: bool,
+    queue: deque[QueuedAction],
+) -> tuple[float, ...] | None:
+    """Hold the last absolute target while synchronous inference runs."""
+
+    if not inference_pending or queue or last_policy_action is None:
+        return None
+    return last_policy_action
+
+
 class RunnerPhase(str, Enum):
     RESET = "RESET"
     BASE_PREPOSITION = "BASE_PREPOSITION"
@@ -109,7 +145,7 @@ class RunnerPhase(str, Enum):
 @dataclass(frozen=True)
 class FreshnessConfig:
     camera_max_age_s: float = 0.65
-    camera_max_skew_s: float = 0.55
+    camera_max_skew_s: float = 0.10
     state_max_age_s: float = 0.15
     action_queue_max_age_s: float = 0.25
 
@@ -268,6 +304,7 @@ def freshness_metrics(
     *,
     now: float,
     camera_times: dict[str, float],
+    camera_capture_times: dict[str, float] | None = None,
     camera_sequences: dict[str, int],
     state_time: float,
     last_camera_sequences: dict[str, int],
@@ -289,11 +326,29 @@ def freshness_metrics(
     ages = {
         key: max(0.0, now - camera_times[key]) for key in ROBOT_CAMERA_KEYS
     }
-    skew = max(camera_times.values()) - min(camera_times.values())
+    capture_times = camera_capture_times or camera_times
+    missing_capture_times = [
+        key for key in ROBOT_CAMERA_KEYS if key not in capture_times
+    ]
+    if missing_capture_times:
+        raise FreshnessError(
+            f"missing robot camera capture times: {missing_capture_times}",
+            {
+                "offending_streams": missing_capture_times,
+                "missing_camera_capture_times": missing_capture_times,
+            },
+        )
+    arrival_skew = max(camera_times.values()) - min(camera_times.values())
+    skew = max(capture_times.values()) - min(capture_times.values())
     state_age = max(0.0, now - state_time)
     metrics = {
         "frame_age_s": ages,
         "inter_camera_skew_s": skew,
+        "inter_camera_capture_skew_s": skew,
+        "inter_camera_arrival_skew_s": arrival_skew,
+        "camera_capture_times_s": {
+            key: capture_times[key] for key in ROBOT_CAMERA_KEYS
+        },
         "state_age_s": state_age,
         "camera_sequences": dict(camera_sequences),
     }

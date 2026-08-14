@@ -65,6 +65,15 @@ RELATIVE_ACTION_STATE_INDICES: tuple[int | None, ...] = (
     28,
 )
 
+# V2 keeps the arm targets relative but learns the spine in the absolute
+# command space used by the simulator.  Keeping this separate from the V1
+# mapping is important: existing checkpoints were normalized with the V1
+# spine delta and must continue to decode that way.
+V2_RELATIVE_ACTION_STATE_INDICES: tuple[int | None, ...] = (
+    *RELATIVE_ACTION_STATE_INDICES[:19],
+    None,
+)
+
 ACTION_NAMES = (
     "base.vx",
     "base.vy",
@@ -249,6 +258,27 @@ def validate_relative_action_state_indices(
             )
         validated.append(state_index)
     return tuple(validated)
+
+
+def checkpoint_action_state_indices(config: object) -> tuple[int | None, ...]:
+    """Return the action mapping serialized with a PI0.5 checkpoint.
+
+    Older checkpoints without the patched field retain the V1 mapping.
+    """
+
+    mapping = getattr(config, "relative_action_state_indices", None)
+    if mapping is None:
+        return RELATIVE_ACTION_STATE_INDICES
+    validated = validate_relative_action_state_indices(mapping)
+    supported = {
+        RELATIVE_ACTION_STATE_INDICES,
+        V2_RELATIVE_ACTION_STATE_INDICES,
+    }
+    if validated not in supported:
+        raise ValueError(
+            "checkpoint uses an unsupported Task 2 relative action mapping"
+        )
+    return validated
 
 
 def to_relative_action(

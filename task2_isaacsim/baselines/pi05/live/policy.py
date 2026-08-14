@@ -11,7 +11,7 @@ from typing import Any
 from task2_isaacsim.baselines.pi05.contract import (
     ACTION_NAMES,
     POLICY_CAMERA_RENAME_MAP,
-    RELATIVE_ACTION_STATE_INDICES,
+    checkpoint_action_state_indices,
 )
 
 
@@ -47,6 +47,9 @@ class LivePi05Policy:
             rename_map=POLICY_CAMERA_RENAME_MAP,
         )
         self.policy.eval()
+        self.action_state_indices = checkpoint_action_state_indices(
+            self.policy.config
+        )
         self.preprocessor, self.postprocessor = make_pre_post_processors(
             policy_cfg=self.policy.config,
             pretrained_path=str(checkpoint),
@@ -68,7 +71,7 @@ class LivePi05Policy:
                     "enabled": True,
                     "exclude_joints": [],
                     "action_names": list(ACTION_NAMES),
-                    "state_indices": list(RELATIVE_ACTION_STATE_INDICES),
+                    "state_indices": list(self.action_state_indices),
                 },
             },
             postprocessor_overrides={

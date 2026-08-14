@@ -16,7 +16,7 @@ from typing import Any
 from .contract import (
     ACTION_SIZE,
     POLICY_CAMERA_RENAME_MAP,
-    RELATIVE_ACTION_STATE_INDICES,
+    checkpoint_action_state_indices,
     apply_fixed_mobile_axes,
     project_arm_action_bounds,
     validate_absolute_action_bounds,
@@ -87,6 +87,7 @@ def run_offline_inference(
         config, ds_meta=dataset.meta, rename_map=POLICY_CAMERA_RENAME_MAP
     )
     policy.eval()
+    action_state_indices = checkpoint_action_state_indices(policy.config)
 
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=policy.config,
@@ -111,7 +112,7 @@ def run_offline_inference(
                 "action_names": list(
                     dataset.meta.features["action"].get("names", [])
                 ),
-                "state_indices": list(RELATIVE_ACTION_STATE_INDICES),
+                "state_indices": list(action_state_indices),
             },
         },
         postprocessor_overrides={
@@ -206,7 +207,7 @@ def run_offline_inference(
         "checkpoint": str(checkpoint.resolve()),
         "dataset_root": str(dataset_root.resolve()),
         "episodes": episodes,
-        "relative_action_state_indices": list(RELATIVE_ACTION_STATE_INDICES),
+        "relative_action_state_indices": list(action_state_indices),
         "samples_per_episode": samples_per_episode,
         "seed": seed,
         "finite_20d_outputs": True,

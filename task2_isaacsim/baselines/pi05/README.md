@@ -17,7 +17,7 @@ PI05_CHECKPOINT=/absolute/path/to/checkpoints/030000/pretrained_model
 PI05_RELATIVE_DATASET=/absolute/path/to/relative_dataset
 ```
 
-The formal config pins:
+The original V1 formal config pins:
 
 - dataset `hermanprawiro/task2_fixpos_200` at revision
   `46ab41f16fe836ee8ca791c7afaade44783eefe6`;
@@ -50,9 +50,38 @@ base/spine variance. Optional success, orientation, and drop metadata is
 reported when present but is not required for technical eligibility.
 `task2_extras` is QA-only and is never a policy input.
 
-Relative action statistics use only the 180 training episodes. Task 2 keeps
-base velocity and grippers absolute; arm joints and spine use the explicit
+Relative action statistics use only the 180 training episodes. V1 keeps base
+velocity and grippers absolute while arm joints and spine use the explicit
 20-D action-to-37-D state mapping in `contract.py`.
+
+The V3 calibration profile initializes from the existing V1 30k task
+checkpoint, preserves its arm/gripper behavior with a low learning rate, and
+changes only the learned spine representation to the V2 absolute target
+contract. It runs 3000 phase-balanced steps and saves one final checkpoint:
+
+```bash
+PI05_V3_INIT_CHECKPOINT=/path/to/v1/checkpoints/030000/pretrained_model \
+  ./run_pi05.sh train --config configs/task2_fixpos_200_v3.yaml \
+  --run task2_pi05_v3_from_v1_3k
+```
+
+Phase-specific language is intentionally not used in this calibration run.
+Adding it would change both the training labels and live phase-transition
+contract, confounding the arm/spine representation test.
+
+PI0.5 V2 keeps the arms relative but learns spine as the absolute command used
+by the simulator. It also samples six physical event phases instead of uniform
+frames and stores only checkpoints 6k and 12k:
+
+```bash
+./run_pi05.sh train --config configs/task2_fixpos_200_v2.yaml \
+  --run task2_pi05_v2_12k
+```
+
+The V2 phase manifest is derived from recorded spine state, gripper commands,
+and thermal-pad motion. Held-out episodes are excluded from every sampler
+group. The selected relative-action mapping is serialized in the checkpoint;
+the live and offline processors retain V1 decoding for older checkpoints.
 
 Before a GUI run, one checkpoint shadow can exercise the real observation,
 postprocessing, action-bound, base-isolation, spine, and time-alignment
@@ -80,6 +109,7 @@ Use three terminals for a GUI run:
 
 # Terminal 2
 ./run_pi05.sh run-task \
+  --runtime-mode hard5 \
   --checkpoint /path/to/checkpoints/030000/pretrained_model \
   --max-actions 600
 
@@ -95,14 +125,18 @@ clamped to the demonstrated `0.0–0.6 m` range and published to the existing
 `/isaac/spine_target` bridge interface, so PI0.5 controls the spine together
 with both arms and grippers. The runner creates no base publisher.
 
-Observation capture and the 30 Hz publisher use the same host-monotonic clock.
-After inference, the runner discards the elapsed prefix of each 50-step chunk
-and enqueues only actions whose original control times remain in the future.
-Each replacement records capture-to-ready latency, discarded prefix length,
-first/last executed chunk index, and queue underflow status. Queue exhaustion
-stops safely; the two-second action-queue watchdog is unchanged.
-Reset, freshness, action bounds, command contention, and operator interrupt
-also stop publication.
+Frame and state age use the host-monotonic clock. Cross-camera skew uses the
+ROS image-header simulator timestamps, so transport/callback delay is not
+misreported as capture-time misalignment. The default `hard5` mode executes
+only chunk indices 0--4, matching checkpoint `n_action_steps: 5`, then holds
+the last legal absolute target while the next fresh observation is inferred.
+All policy and hold publications are paced by `/isaac/clock`, so low GUI
+real-time factor cannot consume the trajectory too quickly. The optional
+`legacy` mode retains asynchronous full-chunk replacement for diagnostics.
+The manifest records policy indices, hold publications, both capture and
+arrival skew, capture-to-ready latency, and measured spine trajectory. Reset,
+freshness, action bounds, command contention, and operator interrupt stop
+publication safely.
 
 Stop with `Ctrl-C` in the runner terminal or close all services with:
 

@@ -15,6 +15,7 @@ fi
 TASK2_PI05_ROOT="${TASK2_PI05_ROOT:-/scratch1/2026_ebim/allen_task2_pi05}"
 PI05_TRAIN_IMAGE="${PI05_TRAIN_IMAGE:-ebim-task2-pi05:200-submit-20260812}"
 PI05_LIVE_IMAGE="${PI05_LIVE_IMAGE:-ebim-task2-pi05-submit:local}"
+PI05_V3_INIT_CHECKPOINT="${PI05_V3_INIT_CHECKPOINT:-${TASK2_PI05_ROOT}/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model}"
 PI05_CHECKPOINT="${PI05_CHECKPOINT:-}"
 PI05_RELATIVE_DATASET="${PI05_RELATIVE_DATASET:-}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
@@ -29,7 +30,7 @@ Usage:
   ./run_pi05.sh dataset [--config PATH]
   ./run_pi05.sh train [--config PATH] [--run NAME]
   ./run_pi05.sh sim-up [--gui]
-  ./run_pi05.sh run-task [--checkpoint PATH] [--dataset-root PATH] [--shadow] [--max-actions N] [--max-duration-s S]
+  ./run_pi05.sh run-task [--runtime-mode hard5|legacy] [--checkpoint PATH] [--dataset-root PATH] [--shadow] [--max-actions N] [--max-duration-s S]
   ./run_pi05.sh replay-dataset [--dataset-root PATH] [--episode auto|N] [--summary-only|--align-only|--max-frames N]
   ./run_pi05.sh audit-initial-states [--dataset-root PATH] [--output-dir PATH]
   ./run_pi05.sh evaluate
@@ -81,7 +82,13 @@ training_base_args() {
     -e HF_HOME=/cache/huggingface
     -e EBIM_PI05_IMAGE="${PI05_TRAIN_IMAGE}"
     -v "${TASK2_PI05_ROOT}/cache:/cache"
+    -v "${REPO_ROOT}:/opt/ebim:ro"
   )
+  if [[ -d "${PI05_V3_INIT_CHECKPOINT}" ]]; then
+    TRAINING_ARGS+=(
+      -v "${PI05_V3_INIT_CHECKPOINT}:/data/init-checkpoint:ro"
+    )
+  fi
 }
 
 command_doctor() {
@@ -116,9 +123,10 @@ command_dataset() {
 
 command_train() {
   parse_config_run "$@"
-  local local_dir dataset_root audit output episodes
+  local local_dir dataset_root audit output episodes profile
   local_dir="$(config_value "${CONFIG}" dataset.local_dir)"
   RUN_NAME="${RUN_NAME:-$(config_value "${CONFIG}" training.run)}"
+  profile="$(config_value "${CONFIG}" training.profile)"
   dataset_root="${TASK2_PI05_ROOT}/datasets/${local_dir}"
   audit="${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/task2_fixpos_200_audit.json"
   output="${TASK2_PI05_ROOT}/outputs/${RUN_NAME}"
@@ -128,7 +136,7 @@ command_train() {
     -v "${dataset_root}:/data/dataset:ro" \
     -v "${TASK2_PI05_ROOT}/outputs:/data/outputs" \
     -v "$(dirname "${audit}"):/data/evidence:ro" \
-    "${PI05_TRAIN_IMAGE}" train --profile expert \
+    "${PI05_TRAIN_IMAGE}" train --profile "${profile}" \
     --dataset-root /data/dataset \
     --audit-report /data/evidence/$(basename "${audit}") \
     --output-dir "/data/outputs/${RUN_NAME}" \
@@ -152,12 +160,13 @@ command_sim_up() {
 command_run_task() {
   local checkpoint="${PI05_CHECKPOINT}" dataset="${PI05_RELATIVE_DATASET}"
   local base_target="2.100026845932007 3.0529046058654785 -1.5706931352615356"
-  local max_actions=600 max_duration_s=300 max_decisions shadow=false
+  local runtime_mode=hard5 max_actions=600 max_duration_s=300 max_decisions shadow=false
   local -a runner_mode=(--arm-simulator)
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --checkpoint) checkpoint="$(realpath "$2")"; shift 2 ;;
       --dataset-root) dataset="$(realpath "$2")"; shift 2 ;;
+      --runtime-mode) runtime_mode="$2"; shift 2 ;;
       --shadow) shadow=true; shift ;;
       --max-actions) max_actions="$2"; shift 2 ;;
       --max-duration-s) max_duration_s="$2"; shift 2 ;;
@@ -165,6 +174,10 @@ command_run_task() {
     esac
   done
   [[ -n "${checkpoint}" ]] || { echo "--checkpoint is required" >&2; exit 2; }
+  [[ "${runtime_mode}" = "hard5" || "${runtime_mode}" = "legacy" ]] || {
+    echo "--runtime-mode must be hard5 or legacy" >&2
+    exit 2
+  }
   checkpoint="$(realpath "${checkpoint}")"
   [[ -d "${checkpoint}" ]] || { echo "Checkpoint directory not found" >&2; exit 2; }
   [[ "${max_actions}" =~ ^[1-9][0-9]*$ ]] || {
@@ -175,9 +188,13 @@ command_run_task() {
     echo "--max-duration-s must be a non-negative number" >&2
     exit 2
   }
-  max_decisions=$(( (max_actions + 23) / 24 + 2 ))
-  if (( max_decisions < 40 )); then
-    max_decisions=40
+  if [[ "${runtime_mode}" = "hard5" ]]; then
+    max_decisions=$(( (max_actions + 4) / 5 ))
+  else
+    max_decisions=$(( (max_actions + 23) / 24 + 2 ))
+    if (( max_decisions < 40 )); then
+      max_decisions=40
+    fi
   fi
   if ${shadow}; then
     max_decisions=1
@@ -193,7 +210,7 @@ command_run_task() {
   output="${TASK2_PI05_ROOT}/outputs/live_submit_$(date +%Y%m%d_%H%M%S)"
   mkdir -p "${output}" "${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/launcher"
   live_shell "ros2 topic pub --once /isaac/task2/scene_reset_request std_msgs/msg/String '{data: reset}'"
-  live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_base.py --target ${base_target} --position-tolerance-m 0.015 --yaw-tolerance-rad 0.04 --output /data/evidence/task2_200_submit_20260812/launcher/fixed_base.json"
+  live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_base.py --target ${base_target} --position-tolerance-m 0.03 --yaw-tolerance-rad 0.04 --output /data/evidence/task2_200_submit_20260812/launcher/fixed_base.json"
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_spine.py --target-m 0.0 --measured-target-m 0.0 --output /data/evidence/task2_200_submit_20260812/launcher/initial_spine.json"
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/eval_camera_preflight.py --output /data/evidence/task2_200_submit_20260812/launcher/eval_preflight.json"
   exec docker run --rm --gpus all --network host --ipc=host \
@@ -213,7 +230,8 @@ command_run_task() {
     --output-dir /data/output --base-target ${base_target} \
     --base-coordinate-frame dataset_odom_world_verified_against_room_scene \
     --confirm-fixed-base-staging \
-    --position-tolerance-m 0.02 --yaw-tolerance-rad 0.04 \
+    --runtime-mode "${runtime_mode}" \
+    --position-tolerance-m 0.03 --yaw-tolerance-rad 0.04 \
     "${runner_mode[@]}" \
     --max-decisions "${max_decisions}" \
     --max-publish-actions "${max_actions}" \

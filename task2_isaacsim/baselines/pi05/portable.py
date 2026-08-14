@@ -25,6 +25,7 @@ from task2_isaacsim.baselines.pi05.contract import (  # noqa: E402
     PI05_ACTION_SIZE,
     PI05_MODEL_REVISION,
     RELATIVE_ACTION_STATE_INDICES,
+    V2_RELATIVE_ACTION_STATE_INDICES,
     to_absolute_action,
 )
 from task2_isaacsim.baselines.pi05.dataset_audit import (  # noqa: E402
@@ -38,6 +39,7 @@ from task2_isaacsim.baselines.pi05.heldout_evaluation import (  # noqa: E402
 from task2_isaacsim.baselines.pi05.loss_parity import (
     loss_parity_report,  # noqa: E402
 )
+from task2_isaacsim.baselines.pi05.phase_balance import build_phase_manifest
 from task2_isaacsim.baselines.pi05.offline_inference import (
     run_offline_inference,  # noqa: E402
 )
@@ -94,9 +96,19 @@ def _build_train_command(
     prepared_root: Path,
     train_episodes: list[int],
     training_root: Path,
+    phase_manifest: Path | None = None,
 ) -> list[str]:
+    executable = ["lerobot-train"]
+    if phase_manifest is not None:
+        executable = [
+            "env",
+            f"EBIM_PHASE_MANIFEST={phase_manifest}",
+            sys.executable,
+            "-m",
+            "task2_isaacsim.baselines.pi05.phase_train",
+        ]
     return [
-        "lerobot-train",
+        *executable,
         f"--config_path={profile_path}",
         f"--dataset.root={prepared_root}",
         "--dataset.episodes="
@@ -113,6 +125,10 @@ def _profile_path(name_or_path: str) -> Path:
         "smoke": "smoke_expert.yaml",
         "expert": "expert_finetune.yaml",
         "expert_finetune": "expert_finetune.yaml",
+        "v2": "expert_v2.yaml",
+        "expert_v2": "expert_v2.yaml",
+        "v3": "expert_v3.yaml",
+        "expert_v3": "expert_v3.yaml",
         "full": "full_finetune.yaml",
     }
     path = PROFILE_DIRECTORY / names.get(name_or_path, name_or_path)
@@ -139,20 +155,45 @@ def validate_profile(path: Path) -> dict[str, Any]:
     policy = profile.get("policy")
     if not isinstance(policy, dict):
         raise ValueError("profile.policy must be an object")
-    expected_mapping = list(RELATIVE_ACTION_STATE_INDICES)
     expected_modes = {
-        "smoke_expert.yaml": ("expert_smoke", False, True, True),
-        "expert_finetune.yaml": ("expert_finetune", True, True, True),
-        "full_finetune.yaml": ("full_finetune", True, False, False),
+        "smoke_expert.yaml": ("expert_smoke", False, True, True, False),
+        "expert_finetune.yaml": (
+            "expert_finetune",
+            True,
+            True,
+            True,
+            False,
+        ),
+        "expert_v2.yaml": (
+            "expert_v2_phase_absolute_spine",
+            True,
+            True,
+            True,
+            True,
+        ),
+        "expert_v3.yaml": (
+            "expert_v3_v1_calibrated_absolute_spine",
+            True,
+            True,
+            True,
+            True,
+        ),
+        "full_finetune.yaml": ("full_finetune", True, False, False, False),
     }
     if path.name not in expected_modes:
         raise ValueError(
             "profile filename must be smoke_expert.yaml, "
-            "expert_finetune.yaml, or full_finetune.yaml"
+            "expert_finetune.yaml, expert_v2.yaml, expert_v3.yaml, "
+            "or full_finetune.yaml"
         )
-    mode, formal, train_expert_only, freeze_vision_encoder = expected_modes[
-        path.name
-    ]
+    mode, formal, train_expert_only, freeze_vision_encoder, phase_balanced = (
+        expected_modes[path.name]
+    )
+    expected_mapping = list(
+        V2_RELATIVE_ACTION_STATE_INDICES
+        if phase_balanced
+        else RELATIVE_ACTION_STATE_INDICES
+    )
     required = {
         "dtype": "bfloat16",
         "gradient_checkpointing": True,
@@ -172,7 +213,12 @@ def validate_profile(path: Path) -> dict[str, Any]:
         )
     if policy.get("push_to_hub") is not False:
         raise ValueError("profile must keep policy.push_to_hub=false")
-    return {**profile, "_ebim_mode": mode, "_ebim_formal": formal}
+    return {
+        **profile,
+        "_ebim_mode": mode,
+        "_ebim_formal": formal,
+        "_ebim_phase_balanced": phase_balanced,
+    }
 
 
 def inspect_gpu() -> dict[str, Any]:
@@ -246,7 +292,8 @@ def parser_integration_gate(profile_path: Path) -> dict[str, Any]:
         state_indices=mapping,
     )
     processor_mapping = processor.get_config().get("state_indices")
-    expected = list(RELATIVE_ACTION_STATE_INDICES)
+    profile = validate_profile(profile_path)
+    expected = list(profile["task2_relative_action_state_indices"])
     errors = []
     if list(mapping or []) != expected:
         errors.append("active PI0.5 config did not receive the Task 2 mapping")
@@ -291,6 +338,10 @@ def doctor(profile_path: Path) -> tuple[dict[str, Any], list[str]]:
         "profile": str(profile_path),
         "mode": mode,
         "formal": profile["_ebim_formal"],
+        "_ebim_phase_balanced": profile["_ebim_phase_balanced"],
+        "task2_relative_action_state_indices": profile[
+            "task2_relative_action_state_indices"
+        ],
         "gpu": gpu,
         "video_runtime": video_runtime,
         "lerobot_source_commit": LEROBOT_SOURCE_COMMIT,
@@ -393,7 +444,13 @@ def _verify_parameter_mode(
             "expected approximately 4B"
         )
     if (
-        mode in {"expert_smoke", "expert_finetune"}
+        mode
+        in {
+            "expert_smoke",
+            "expert_finetune",
+            "expert_v2_phase_absolute_spine",
+            "expert_v3_v1_calibrated_absolute_spine",
+        }
         and not 500_000_000 <= trainable <= 1_000_000_000
     ):
         errors.append(
@@ -569,11 +626,17 @@ def command_train(args: argparse.Namespace) -> int:
         }
     prepared_root = output_dir / "relative_dataset"
     training_root = output_dir / "training"
+    phase_manifest_path = (
+        output_dir / "phase_manifest.json"
+        if environment["_ebim_phase_balanced"]
+        else None
+    )
     command = _build_train_command(
         profile_path,
         prepared_root,
         train_episodes,
         training_root,
+        phase_manifest_path,
     )
     for override in args.override:
         if not override.startswith("--"):
@@ -610,11 +673,21 @@ def command_train(args: argparse.Namespace) -> int:
 
     output_dir.mkdir(parents=True)
     try:
+        phase_manifest = None
+        if phase_manifest_path is not None:
+            phase_manifest = build_phase_manifest(
+                dataset_root=args.dataset_root.resolve(),
+                audit_report=args.audit_report.resolve(),
+            )
+            _write_json(phase_manifest_path, phase_manifest)
         relative_manifest = materialize_relative_dataset_view(
             args.dataset_root,
             prepared_root,
             included_episodes=train_episodes,
             chunk_size=50,
+            state_indices=environment[
+                "task2_relative_action_state_indices"
+            ],
         )
     except (OSError, RuntimeError, ValueError) as error:
         print(f"FAIL: relative dataset preparation: {error}")
@@ -627,7 +700,12 @@ def command_train(args: argparse.Namespace) -> int:
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "profile": environment,
         "relative_dataset": relative_manifest,
-        "relative_action_state_indices": list(RELATIVE_ACTION_STATE_INDICES),
+        "relative_action_state_indices": list(
+            environment["task2_relative_action_state_indices"]
+        ),
+        "phase_manifest": (
+            str(phase_manifest_path) if phase_manifest_path is not None else None
+        ),
         "selected_success_false_episodes": unsuccessful,
         "engineering_only": bool(unsuccessful),
         "dataset_audit": audit_evidence,

@@ -6,11 +6,12 @@ manipulation_only: true
 policy:
   chunk_size: 50
   n_action_steps: 5
+  runtime_mode: hard5
   warmup_decisions: 3
   seed: 1000
   time_alignment:
-    clock: host_monotonic
-    discard_elapsed_prefix: true
+    clock: simulator
+    discard_elapsed_prefix: false
 safety:
   position_tolerance_m: 0.05
   yaw_tolerance_rad: 0.10
@@ -18,6 +19,7 @@ safety:
   settle_duration_s: 1.0
   camera_max_age_s: 0.25
   camera_max_skew_s: 0.10
+  camera_skew_clock: ros_header_simulator
   state_max_age_s: 0.10
   action_queue_max_age_s: 2.0
   queue_refill_actions: 24

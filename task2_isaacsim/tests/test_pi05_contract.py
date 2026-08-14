@@ -22,8 +22,10 @@ from task2_isaacsim.baselines.pi05.contract import (
     ACTION_SIZE,
     PI05_ACTION_SIZE,
     RELATIVE_ACTION_STATE_INDICES,
+    V2_RELATIVE_ACTION_STATE_INDICES,
     STATE_NAMES,
     apply_fixed_mobile_axes,
+    checkpoint_action_state_indices,
     pad_action,
     to_absolute_action,
     to_relative_action,
@@ -46,6 +48,10 @@ from task2_isaacsim.baselines.pi05.heldout_evaluation import (
     deterministic_frame_indices,
 )
 from task2_isaacsim.baselines.pi05.loss_parity import loss_parity_report
+from task2_isaacsim.baselines.pi05.phase_balance import (
+    PHASE_RATIOS,
+    balanced_epoch_indices,
+)
 from task2_isaacsim.baselines.pi05.portable import (
     SOURCE_ROOT,
     _build_train_command,
@@ -210,6 +216,36 @@ class Pi05ContractTest(unittest.TestCase):
             RELATIVE_ACTION_STATE_INDICES[:4], (None, None, None, 14)
         )
 
+    def test_v2_keeps_arms_relative_and_spine_absolute(self) -> None:
+        action = tuple(100.0 + index for index in range(ACTION_SIZE))
+        state = tuple(10.0 + index for index in range(len(STATE_NAMES)))
+        relative = to_relative_action(
+            action, state, state_indices=V2_RELATIVE_ACTION_STATE_INDICES
+        )
+        self.assertEqual(relative[3], action[3] - state[14])
+        self.assertEqual(relative[19], action[19])
+        self.assertEqual(
+            to_absolute_action(
+                relative,
+                state,
+                state_indices=V2_RELATIVE_ACTION_STATE_INDICES,
+            ),
+            action,
+        )
+
+    def test_checkpoint_mapping_preserves_v1_and_selects_v2(self) -> None:
+        class Config:
+            relative_action_state_indices = V2_RELATIVE_ACTION_STATE_INDICES
+
+        self.assertEqual(
+            checkpoint_action_state_indices(object()),
+            RELATIVE_ACTION_STATE_INDICES,
+        )
+        self.assertEqual(
+            checkpoint_action_state_indices(Config()),
+            V2_RELATIVE_ACTION_STATE_INDICES,
+        )
+
     def test_relative_stats_use_current_state_for_each_chunk(self) -> None:
         actions = [
             [float(frame + index) for index in range(ACTION_SIZE)]
@@ -233,6 +269,46 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertEqual(stats["max"][0], 3.0)
         self.assertEqual(stats["min"][3], -29.0)
         self.assertEqual(stats["max"][3], -10.0)
+
+    def test_v2_relative_stats_leave_spine_absolute(self) -> None:
+        actions = [[0.0] * ACTION_SIZE for _ in range(2)]
+        states = [[0.0] * len(STATE_NAMES) for _ in range(2)]
+        actions[0][19], actions[1][19] = 0.4, 0.5
+        states[0][28], states[1][28] = 0.1, 0.2
+        stats, chunks = compute_relative_action_stats(
+            actions,
+            states,
+            [0, 0],
+            chunk_size=2,
+            included_episodes=[0],
+            state_indices=V2_RELATIVE_ACTION_STATE_INDICES,
+        )
+        self.assertEqual(chunks, 1)
+        self.assertEqual(stats["min"][19], 0.4)
+        self.assertEqual(stats["max"][19], 0.5)
+
+    def test_phase_balanced_epoch_is_deterministic_and_exact(self) -> None:
+        groups = {
+            name: list(range(offset * 10, offset * 10 + 5))
+            for offset, name in enumerate(PHASE_RATIOS)
+        }
+        manifest = {
+            "sampling_ratios_percent": PHASE_RATIOS,
+            "train_sampling_groups": groups,
+        }
+        first = balanced_epoch_indices(
+            manifest, length=100, seed=1000, epoch=0
+        )
+        second = balanced_epoch_indices(
+            manifest, length=100, seed=1000, epoch=0
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), 100)
+        for offset, name in enumerate(PHASE_RATIOS):
+            selected = sum(
+                offset * 10 <= value < offset * 10 + 5 for value in first
+            )
+            self.assertEqual(selected, PHASE_RATIOS[name])
 
     def test_vector_stats_include_pi05_quantiles(self) -> None:
         stats = compute_vector_stats([[0.0, 10.0], [2.0, 14.0]])
@@ -426,6 +502,8 @@ class Pi05ContractTest(unittest.TestCase):
             encoding="utf-8"
         )
         full = (profile_dir / "full_finetune.yaml").read_text(encoding="utf-8")
+        v2 = (profile_dir / "expert_v2.yaml").read_text(encoding="utf-8")
+        v3 = (profile_dir / "expert_v3.yaml").read_text(encoding="utf-8")
         self.assertNotIn("mode:", smoke)
         self.assertNotIn("formal:", expert)
         self.assertIn("train_expert_only: true", smoke)
@@ -440,6 +518,19 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn("task2_relative_action_state_indices:", smoke)
         self.assertIn("task2_relative_action_state_indices:", expert)
         self.assertIn("task2_relative_action_state_indices:", full)
+        self.assertIn("steps: 12000", v2)
+        self.assertIn("batch_size: 1", v2)
+        self.assertIn("save_freq: 6000", v2)
+        self.assertIn(
+            "21, 22, 23, 24, 25, 26, 27, null, null, null]", v2
+        )
+        self.assertIn("path: /data/init-checkpoint", v3)
+        self.assertIn("optimizer_lr: 5.0e-6", v3)
+        self.assertIn("steps: 3000", v3)
+        self.assertIn("save_freq: 3000", v3)
+        self.assertIn(
+            "21, 22, 23, 24, 25, 26, 27, null, null, null]", v3
+        )
 
     def test_portable_training_pins_task2_relative_mapping(self) -> None:
         command = _build_train_command(
@@ -478,6 +569,60 @@ class Pi05ContractTest(unittest.TestCase):
             profile["task2_relative_action_state_indices"],
             list(RELATIVE_ACTION_STATE_INDICES),
         )
+
+    def test_v2_training_uses_phase_entry_point(self) -> None:
+        command = _build_train_command(
+            Path("/profiles/expert_v2.yaml"),
+            Path("/output/relative_dataset"),
+            [2, 5],
+            Path("/output/training"),
+            Path("/output/phase_manifest.json"),
+        )
+        self.assertEqual(command[0], "env")
+        self.assertIn(
+            "EBIM_PHASE_MANIFEST=/output/phase_manifest.json", command
+        )
+        self.assertIn(
+            "task2_isaacsim.baselines.pi05.phase_train", command
+        )
+
+    def test_v2_profile_selects_absolute_spine_mapping(self) -> None:
+        profile = {
+            "task2_relative_action_state_indices": list(
+                V2_RELATIVE_ACTION_STATE_INDICES
+            ),
+            "policy": {
+                "dtype": "bfloat16",
+                "gradient_checkpointing": True,
+                "freeze_vision_encoder": True,
+                "train_expert_only": True,
+                "use_relative_actions": True,
+                "max_state_dim": 37,
+                "max_action_dim": 32,
+                "push_to_hub": False,
+            },
+        }
+        with patch(
+            "task2_isaacsim.baselines.pi05.portable._load_yaml",
+            return_value=profile,
+        ):
+            parsed = validate_profile(Path("expert_v2.yaml"))
+        self.assertTrue(parsed["_ebim_phase_balanced"])
+        self.assertEqual(
+            parsed["task2_relative_action_state_indices"],
+            list(V2_RELATIVE_ACTION_STATE_INDICES),
+        )
+
+        with patch(
+            "task2_isaacsim.baselines.pi05.portable._load_yaml",
+            return_value=profile,
+        ):
+            v3 = validate_profile(Path("expert_v3.yaml"))
+        self.assertEqual(
+            v3["_ebim_mode"],
+            "expert_v3_v1_calibrated_absolute_spine",
+        )
+        self.assertTrue(v3["_ebim_phase_balanced"])
 
     def test_full_profile_validation_requires_unfrozen_vision_encoder(
         self,
@@ -841,6 +986,46 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn("libpython3.12t64", dockerfile)
         self.assertIn(
             "from torchcodec.decoders import VideoDecoder", dockerfile
+        )
+
+    def test_live_runner_paces_actions_on_simulator_clock(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        runner = (
+            repository_root
+            / "task2_isaacsim"
+            / "baselines"
+            / "pi05"
+            / "live"
+            / "runner.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("from rosgraph_msgs.msg import Clock", runner)
+        self.assertIn('Clock,\n            TOPICS["clock"]', runner)
+        self.assertIn('capture_at=future_context["capture_sim_at"]', runner)
+        self.assertIn("completed_at=ready_sim_at", runner)
+        self.assertIn("and node.sim_time >= queue[0][1]", runner)
+        self.assertIn("node.sim_time - created_at", runner)
+        self.assertIn('"clock": "simulator"', runner)
+        self.assertIn('"freshness_clock": "host_monotonic"', runner)
+        self.assertIn('"observation_state": list(state)', runner)
+
+    def test_task_staging_and_runner_share_position_tolerance(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        launcher = (
+            repository_root
+            / "task2_isaacsim"
+            / "baselines"
+            / "pi05"
+            / "run_pi05.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "fixed_stage_base.py --target ${base_target} "
+            "--position-tolerance-m 0.03 --yaw-tolerance-rad 0.04",
+            launcher,
+        )
+        self.assertIn(
+            "--position-tolerance-m 0.03 --yaw-tolerance-rad 0.04",
+            launcher,
         )
 
 

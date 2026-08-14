@@ -99,6 +99,7 @@ def compute_relative_action_stats(
     *,
     chunk_size: int,
     included_episodes: Iterable[int] | None = None,
+    state_indices: Sequence[int | None] = RELATIVE_ACTION_STATE_INDICES,
 ) -> tuple[dict[str, list[float] | int], int]:
     """Compute stats over every valid same-episode action chunk."""
 
@@ -133,7 +134,9 @@ def compute_relative_action_stats(
         for offset in range(chunk_size):
             relative_rows.append(
                 to_relative_action(
-                    action_rows[start + offset], reference_state
+                    action_rows[start + offset],
+                    reference_state,
+                    state_indices=state_indices,
                 )
             )
 
@@ -212,6 +215,7 @@ def materialize_relative_dataset_view(
     *,
     included_episodes: Sequence[int],
     chunk_size: int = 50,
+    state_indices: Sequence[int | None] = RELATIVE_ACTION_STATE_INDICES,
 ) -> dict[str, Any]:
     """Hard-link/copy a dataset and replace only the view's action stats."""
 
@@ -242,6 +246,7 @@ def materialize_relative_dataset_view(
         episode_indices,
         chunk_size=chunk_size,
         included_episodes=included_episodes,
+        state_indices=state_indices,
     )
     derived_stats = dict(source_stats)
     derived_stats["action"] = relative_action_stats
@@ -265,7 +270,7 @@ def materialize_relative_dataset_view(
             "created_utc": datetime.now(timezone.utc).isoformat(),
             "source_dataset_root": str(source),
             "relative_action_state_indices": list(
-                RELATIVE_ACTION_STATE_INDICES
+                state_indices
             ),
             "included_episodes": sorted(
                 {int(value) for value in included_episodes}

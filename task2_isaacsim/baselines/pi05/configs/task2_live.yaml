@@ -2,13 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 base_target: [2.10, 3.05, -1.571]
 base_coordinate_frame: dataset_odom_world_verified_against_room_scene
-base_stage_position_tolerance_m: 0.015
+base_stage_position_tolerance_m: 0.03
 base_stage_yaw_tolerance_rad: 0.04
 initial_spine_max_abs_m: 0.01
 spine_policy_target_range_m: [0.0, 0.6]
 max_actions: 600
+runtime_mode: hard5
+execution_horizon: 5
 queue_refill_actions: 24
 action_queue_max_age_s: 2.0
 action_rate_hz: 30.0
-time_alignment_clock: host_monotonic
-discard_elapsed_action_prefix: true
+time_alignment_clock: simulator
+discard_elapsed_action_prefix: false
+camera_skew_clock: ros_header_simulator

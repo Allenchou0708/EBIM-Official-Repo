@@ -21,6 +21,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float64, String
 
@@ -34,6 +35,8 @@ from task2_isaacsim.baselines.pi05.live.core import (
     RunnerPhase,
     align_action_chunk,
     freshness_metrics,
+    hard5_action_window,
+    hard5_hold_action,
     policy_command_topics,
     replace_action_queue,
     safe_action,
@@ -80,6 +83,7 @@ class LiveObservationNode(Node):
         self.gate = gate
         self.images: dict[str, np.ndarray] = {}
         self.image_times: dict[str, float] = {}
+        self.image_capture_times: dict[str, float] = {}
         self.image_sequences: dict[str, int] = {}
         self.joints: dict[str, float] = {}
         self.ee_poses: dict[str, tuple[float, ...] | None] = {
@@ -88,6 +92,8 @@ class LiveObservationNode(Node):
         }
         self.odom: tuple[float, ...] | None = None
         self.state_time = -math.inf
+        self.sim_time: float | None = None
+        self.sim_clock_time = -math.inf
         self.reset_count = 0
         self.stop_requested = False
         self.base_input_count = 0
@@ -130,6 +136,12 @@ class LiveObservationNode(Node):
             self._on_reset,
             10,
         )
+        self.create_subscription(
+            Clock,
+            TOPICS["clock"],
+            self._on_clock,
+            qos_profile_sensor_data,
+        )
 
         if publish:
             conflicts = self.command_publisher_counts()
@@ -146,6 +158,7 @@ class LiveObservationNode(Node):
             )
 
     def _on_image(self, key: str, message: Image) -> None:
+        received_at = time.monotonic()
         try:
             image = _image_array(message)
             validate_rgb_frame(key, image)
@@ -153,7 +166,11 @@ class LiveObservationNode(Node):
             self.get_logger().error(str(error))
             return
         self.images[key] = image
-        self.image_times[key] = time.monotonic()
+        self.image_times[key] = received_at
+        self.image_capture_times[key] = (
+            float(message.header.stamp.sec)
+            + float(message.header.stamp.nanosec) * 1e-9
+        )
         self.image_sequences[key] = self.image_sequences.get(key, 0) + 1
 
     def _on_joints(self, message: JointState) -> None:
@@ -208,7 +225,13 @@ class LiveObservationNode(Node):
         self.reset_count += 1
         self.images.clear()
         self.image_times.clear()
+        self.image_capture_times.clear()
         self.gate.reset()
+
+    def _on_clock(self, message: Clock) -> None:
+        stamp = message.clock
+        self.sim_time = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+        self.sim_clock_time = time.monotonic()
 
     def snapshot(self) -> tuple[dict[str, np.ndarray], tuple[float, ...]]:
         state = assemble_state(
@@ -222,7 +245,7 @@ class LiveObservationNode(Node):
 
     def startup_status(self) -> dict[str, object]:
         _images, state = self.snapshot()
-        return startup_inventory(
+        status = startup_inventory(
             camera_sequences=self.image_sequences,
             joint_names=set(self.joints),
             ee_available={
@@ -231,6 +254,14 @@ class LiveObservationNode(Node):
             odom_available=self.odom is not None,
             state=state,
         )
+        status["sim_clock_sample"] = self.sim_time is not None
+        if self.sim_time is None:
+            status["all_required_samples"] = False
+            status["missing_inputs"] = [
+                *status["missing_inputs"],
+                TOPICS["clock"],
+            ]
+        return status
 
     def update_readiness(self, now: float) -> bool:
         if self.odom is None or SPINE_JOINT not in self.joints:
@@ -306,6 +337,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-coordinate-frame", required=True)
     parser.add_argument("--confirm-fixed-base-staging", action="store_true")
     parser.add_argument("--arm-simulator", action="store_true")
+    parser.add_argument(
+        "--runtime-mode", choices=("legacy", "hard5"), default="hard5"
+    )
     parser.add_argument("--warmup-decisions", type=int, default=3)
     parser.add_argument("--max-decisions", type=int, default=5)
     parser.add_argument("--max-publish-actions", type=int, default=50)
@@ -319,7 +353,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--settle-duration-s", type=float, default=1.0)
     parser.add_argument("--initial-spine-max-abs-m", type=float, default=0.01)
     parser.add_argument("--camera-max-age-s", type=float, default=0.65)
-    parser.add_argument("--camera-max-skew-s", type=float, default=0.55)
+    parser.add_argument("--camera-max-skew-s", type=float, default=0.10)
     parser.add_argument("--state-max-age-s", type=float, default=0.15)
     parser.add_argument("--action-queue-max-age-s", type=float, default=2.0)
     parser.add_argument("--action-rate-hz", type=float, default=30.0)
@@ -371,7 +405,9 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         signal.SIGINT, lambda *_: setattr(node, "stop_requested", True)
     )
     mode = "simulator_publish" if args.arm_simulator else "shadow"
+    hard5 = args.runtime_mode == "hard5"
     print(f"Mode: {mode}")
+    print(f"Runtime mode: {args.runtime_mode}")
     print(
         "Enabled command topics: "
         + (
@@ -412,7 +448,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
 
     if not startup_status["all_required_samples"]:
         failure = {
-            "schema_version": 4,
+            "schema_version": 5,
             "mode": mode,
             "completed": False,
             "decisions": 0,
@@ -464,7 +500,12 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     manipulation_latched = False
     last_freshness_rejection: dict | None = None
     initial_spine_position_m: float | None = None
+    last_policy_action: tuple[float, ...] | None = None
+    next_hold_sim_time: float | None = None
+    hold_action_publications = 0
     spine_trajectory: list[dict[str, float | int]] = []
+    first_published_sim_time: float | None = None
+    last_published_sim_time: float | None = None
     worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pi05")
 
     # Warm up CUDA/model kernels before steady-state measurements. No action is
@@ -486,6 +527,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             freshness_metrics(
                 now=now,
                 camera_times=node.image_times,
+                camera_capture_times=node.image_capture_times,
                 camera_sequences=node.image_sequences,
                 state_time=node.state_time,
                 last_camera_sequences={},
@@ -540,20 +582,43 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     chunk, latency = future.result()
                     latencies.append(latency)
                     created_at = time.monotonic()
+                    if node.sim_time is None:
+                        raise RuntimeError("simulator clock unavailable")
+                    ready_sim_at = node.sim_time
                     capture_to_ready_latency = (
                         created_at - future_context["capture_at"]
+                    )
+                    capture_to_ready_sim_s = max(
+                        0.0,
+                        ready_sim_at - future_context["capture_sim_at"],
                     )
                     capture_to_ready_latencies.append(capture_to_ready_latency)
                     validated = []
                     for validation_index, action in enumerate(chunk):
                         validated.append(safe_action(action))
-                    discarded, aligned = align_action_chunk(
-                        [effective for _, effective in validated],
-                        capture_at=future_context["capture_at"],
-                        ready_at=created_at,
-                        action_rate_hz=args.action_rate_hz,
-                        execution_started=published_actions > 0,
-                    )
+                    effective_actions = [
+                        effective for _, effective in validated
+                    ]
+                    if hard5:
+                        discarded = 0
+                        aligned = hard5_action_window(
+                            effective_actions,
+                            ready_at=ready_sim_at,
+                            action_rate_hz=args.action_rate_hz,
+                            max_actions=(
+                                args.max_publish_actions - published_actions
+                                if args.arm_simulator
+                                else 5
+                            ),
+                        )
+                    else:
+                        discarded, aligned = align_action_chunk(
+                            effective_actions,
+                            capture_at=future_context["capture_sim_at"],
+                            ready_at=ready_sim_at,
+                            action_rate_hz=args.action_rate_hz,
+                            execution_started=published_actions > 0,
+                        )
                     discarded_prefix_actions += discarded
                 except (RuntimeError, ValueError) as error:
                     invalid_actions += 1
@@ -580,13 +645,16 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 )
                 event = {
                     "decision": event_index,
+                    "runtime_mode": args.runtime_mode,
                     "valid": True,
                     "fixed_base_staging": True,
                     "policy_controlled_spine": True,
                     "readiness": future_context["readiness"],
                     "freshness": future_context["freshness"],
+                    "observation_state": list(state),
                     "inference_latency_s": latency,
                     "capture_to_ready_latency_s": capture_to_ready_latency,
+                    "capture_to_ready_sim_s": capture_to_ready_sim_s,
                     "discarded_prefix_actions": discarded,
                     "aligned_actions": len(aligned),
                     "first_aligned_chunk_index": (
@@ -597,9 +665,15 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     ),
                     "first_executed_chunk_index": None,
                     "last_executed_chunk_index": None,
+                    "policy_indices": [item[2] for item in aligned],
+                    "hold_action_publications": future_context[
+                        "hold_action_publications"
+                    ],
                     "queue_underflow": False,
                     "queue_refill_window_s": refill_window_s,
-                    "latency_within_refill_window": latency <= refill_window_s,
+                    "latency_within_refill_window": (
+                        capture_to_ready_sim_s <= refill_window_s
+                    ),
                     "raw_actions": [list(raw) for raw, _ in validated],
                     "effective_actions": [
                         list(effective) for _, effective in validated
@@ -640,17 +714,29 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     residual_actions = replace_action_queue(
                         queue,
                         aligned,
-                        completed_at=created_at,
+                        completed_at=ready_sim_at,
                         event_index=event_index,
                     )
                     if residual_actions:
                         queue_replacements += 1
                         replaced_residual_actions += residual_actions
                         event["replaced_residual_actions"] = residual_actions
+                    if hard5 and residual_actions:
+                        publish_blocked = "hard5_residual_queue"
+                        gate.stop(publish_blocked)
+                        queue.clear()
+                        future = None
+                        future_context = None
+                        break
                 future = None
                 future_context = None
 
-            if args.arm_simulator and queue and now >= queue[0][1]:
+            if (
+                args.arm_simulator
+                and queue
+                and node.sim_time is not None
+                and node.sim_time >= queue[0][1]
+            ):
                 if not ready:
                     gate.stop("readiness_revoked_before_publish")
                     publish_blocked = "readiness_revoked_before_publish"
@@ -666,7 +752,10 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     event_index,
                     chunk_index,
                 ) = queue.popleft()
-                if now - created_at > freshness.action_queue_max_age_s:
+                if (
+                    node.sim_time - created_at
+                    > freshness.action_queue_max_age_s
+                ):
                     publish_blocked = "action_queue_watchdog"
                 elif publish_blocked is None:
                     counts = node.command_publisher_counts()
@@ -675,6 +764,10 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     else:
                         node.publish_action(effective)
                         published_actions += 1
+                        last_policy_action = effective
+                        if first_published_sim_time is None:
+                            first_published_sim_time = node.sim_time
+                        last_published_sim_time = node.sim_time
                         event = events[event_index]
                         event["published_actions"] += 1
                         if event["first_executed_chunk_index"] is None:
@@ -683,6 +776,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                         spine_trajectory.append(
                             {
                                 "published_action": published_actions,
+                                "sim_time": float(node.sim_time),
                                 "measured_m": float(node.joints[SPINE_JOINT]),
                                 "target_m": effective[19],
                             }
@@ -694,9 +788,39 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     queue.clear()
                     break
                 if not queue:
-                    queue_underflow = True
-                    queue_pause_count += 1
-                    events[event_index]["queue_underflow"] = True
+                    if hard5:
+                        next_hold_sim_time = node.sim_time
+                    else:
+                        queue_underflow = True
+                        queue_pause_count += 1
+                        events[event_index]["queue_underflow"] = True
+
+            hold_target = hard5_hold_action(
+                last_policy_action,
+                inference_pending=hard5 and future is not None,
+                queue=queue,
+            )
+            if (
+                args.arm_simulator
+                and hold_target is not None
+                and node.sim_time is not None
+                and next_hold_sim_time is not None
+                and node.sim_time >= next_hold_sim_time
+            ):
+                if not ready:
+                    publish_blocked = "readiness_revoked_before_hold"
+                    gate.stop(publish_blocked)
+                    break
+                counts = node.command_publisher_counts()
+                if any(count > 1 for count in counts.values()):
+                    publish_blocked = f"command_contention:{counts}"
+                    gate.stop(publish_blocked)
+                    break
+                node.publish_action(hold_target)
+                hold_action_publications += 1
+                assert future_context is not None
+                future_context["hold_action_publications"] += 1
+                next_hold_sim_time += 1.0 / args.action_rate_hz
 
             decisions_started = len(events) + int(future is not None)
             needs_inference = (
@@ -705,17 +829,28 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 and ready
                 and (
                     not args.arm_simulator
-                    or len(queue) <= args.queue_refill_actions
+                    or (
+                        not queue
+                        if hard5
+                        else len(queue) <= args.queue_refill_actions
+                    )
                 )
             )
             if needs_inference:
                 try:
                     capture_at = time.monotonic()
+                    if node.sim_time is None:
+                        raise FreshnessError(
+                            "simulator clock unavailable",
+                            {"offending_streams": [TOPICS["clock"]]},
+                        )
+                    capture_sim_at = node.sim_time
                     images, state = node.snapshot()
                     validate_live_state(state)
                     metrics = freshness_metrics(
                         now=capture_at,
                         camera_times=node.image_times,
+                        camera_capture_times=node.image_capture_times,
                         camera_sequences=node.image_sequences,
                         state_time=node.state_time,
                         last_camera_sequences=last_sequences,
@@ -760,8 +895,10 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     future_context = {
                         "state": state,
                         "capture_at": capture_at,
+                        "capture_sim_at": capture_sim_at,
                         "readiness": dict(gate.last_evidence),
                         "freshness": metrics,
+                        "hold_action_publications": 0,
                     }
                     if args.arm_simulator and not manipulation_latched:
                         gate.arm()
@@ -789,8 +926,10 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         value <= refill_window_s for value in latencies
     )
     summary = {
-        "schema_version": 4,
+        "schema_version": 5,
         "mode": mode,
+        "runtime_mode": args.runtime_mode,
+        "execution_horizon": 5 if hard5 else "asynchronous_refill",
         "fixed_base_staging": True,
         "manipulation_only": True,
         "policy_controlled_groups": list(POLICY_COMMAND_TOPICS),
@@ -822,7 +961,18 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         "queue_replacements": queue_replacements,
         "replaced_residual_actions": replaced_residual_actions,
         "time_alignment": {
-            "clock": "host_monotonic",
+            "clock": "simulator",
+            "clock_topic": TOPICS["clock"],
+            "freshness_clock": "host_monotonic",
+            "action_queue_watchdog_clock": "simulator",
+            "first_published_sim_time": first_published_sim_time,
+            "last_published_sim_time": last_published_sim_time,
+            "published_sim_duration_s": (
+                last_published_sim_time - first_published_sim_time
+                if first_published_sim_time is not None
+                and last_published_sim_time is not None
+                else None
+            ),
             "capture_to_ready_latency_s": {
                 "p50": (
                     statistics.median(capture_to_ready_latencies)
@@ -861,6 +1011,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             "queue_pause_count": queue_pause_count,
         },
         "command_publications": node.publish_count,
+        "hold_action_publications": hold_action_publications,
         "published_actions": published_actions,
         "publish_blocked": publish_blocked,
         "freshness_stop_evidence": (

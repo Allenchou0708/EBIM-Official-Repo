@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from .contract import POLICY_CAMERA_RENAME_MAP, RELATIVE_ACTION_STATE_INDICES
+from .contract import POLICY_CAMERA_RENAME_MAP, checkpoint_action_state_indices
 from .offline_inference import run_offline_inference
 
 
@@ -72,6 +72,7 @@ def run_heldout_loss(
         rename_map=POLICY_CAMERA_RENAME_MAP,
     )
     policy.eval()
+    action_state_indices = checkpoint_action_state_indices(policy.config)
     preprocessor, _ = make_pre_post_processors(
         policy_cfg=policy.config,
         pretrained_path=str(checkpoint),
@@ -95,7 +96,7 @@ def run_heldout_loss(
                 "action_names": list(
                     dataset.meta.features["action"].get("names", [])
                 ),
-                "state_indices": list(RELATIVE_ACTION_STATE_INDICES),
+                "state_indices": list(action_state_indices),
             },
         },
     )

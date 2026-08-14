@@ -19,6 +19,8 @@ from task2_isaacsim.baselines.pi05.live.core import (
     RunnerPhase,
     align_action_chunk,
     freshness_metrics,
+    hard5_action_window,
+    hard5_hold_action,
     policy_command_topics,
     replace_action_queue,
     safe_action,
@@ -92,6 +94,40 @@ class StateContractTest(unittest.TestCase):
 
 
 class LiveSafetyTest(unittest.TestCase):
+    def test_hard5_two_decisions_execute_zero_to_four_and_hold_only(
+        self,
+    ) -> None:
+        actions = [safe_action(valid_action())[1] for _ in range(50)]
+        last_action = None
+        for decision in range(2):
+            window = hard5_action_window(
+                actions,
+                ready_at=100.0 + decision,
+                action_rate_hz=30.0,
+            )
+            self.assertEqual([item[2] for item in window], list(range(5)))
+            queue = deque(
+                (action, target, 100.0 + decision, decision, index)
+                for action, target, index in window
+            )
+            while queue:
+                last_action = queue.popleft()[0]
+            self.assertEqual(
+                hard5_hold_action(
+                    last_action,
+                    inference_pending=True,
+                    queue=queue,
+                ),
+                last_action,
+            )
+            self.assertIsNone(
+                hard5_hold_action(
+                    last_action,
+                    inference_pending=False,
+                    queue=queue,
+                )
+            )
+
     def test_startup_inventory_names_missing_real_inputs(self) -> None:
         state = [0.0] * 37
         state[7] = math.nan
@@ -224,6 +260,11 @@ class LiveSafetyTest(unittest.TestCase):
                 "wrist_right": 9.97,
             },
             camera_sequences={"head": 2, "wrist_left": 3, "wrist_right": 4},
+            camera_capture_times={
+                "head": 20.00,
+                "wrist_left": 20.02,
+                "wrist_right": 20.01,
+            },
             state_time=9.98,
             last_camera_sequences={
                 "head": 1,
@@ -233,6 +274,34 @@ class LiveSafetyTest(unittest.TestCase):
             config=FreshnessConfig(),
         )
         self.assertAlmostEqual(result["inter_camera_skew_s"], 0.02)
+        self.assertAlmostEqual(result["inter_camera_arrival_skew_s"], 0.02)
+        delayed_transport = freshness_metrics(
+            now=10.0,
+            camera_times={
+                "head": 9.45,
+                "wrist_left": 9.96,
+                "wrist_right": 9.97,
+            },
+            camera_capture_times={
+                "head": 30.00,
+                "wrist_left": 30.00,
+                "wrist_right": 30.02,
+            },
+            camera_sequences={"head": 2, "wrist_left": 3, "wrist_right": 4},
+            state_time=9.98,
+            last_camera_sequences={
+                "head": 1,
+                "wrist_left": 2,
+                "wrist_right": 3,
+            },
+            config=FreshnessConfig(),
+        )
+        self.assertAlmostEqual(
+            delayed_transport["inter_camera_capture_skew_s"], 0.02
+        )
+        self.assertAlmostEqual(
+            delayed_transport["inter_camera_arrival_skew_s"], 0.52
+        )
         with self.assertRaises(FreshnessError) as caught:
             freshness_metrics(
                 now=10.0,

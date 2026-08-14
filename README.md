@@ -69,15 +69,16 @@ Run all commands from `task2_isaacsim/baselines/pi05`:
 ./run_pi05.sh sim-up --gui
 
 # Terminal 2: reset, stage, validate health, and publish at most 600 actions
-./run_pi05.sh run-task --max-actions 600
+./run_pi05.sh run-task --runtime-mode hard5 --max-actions 600
 
 # Terminal 3, after Terminal 2 completes: capture the official local metric
 ./run_pi05.sh evaluate
 ```
 
 The runner keeps the base isolated, lets PI0.5 control both arms, grippers and
-spine, and aligns each action chunk to its observation-capture time on the host
-monotonic clock. Use `Ctrl-C` in Terminal 2 for the operator stop. To inspect
+spine, and executes the checkpoint's five-action receding horizon on simulator
+time. Camera age uses host monotonic time, while cross-camera synchronization
+uses ROS header simulator timestamps. Use `Ctrl-C` in Terminal 2 for the operator stop. To inspect
 the image contract without ROS control, run the documented checkpoint shadow
 command in [`task2_isaacsim/baselines/pi05/README.md`](task2_isaacsim/baselines/pi05/README.md).
 Container health can be checked at any time with:
@@ -107,15 +108,24 @@ The config pins the dataset and base-policy revisions, 180/20 episode split,
 expert-only frozen-vision profile, and 30,000 steps. Training data and outputs
 remain below `TASK2_PI05_ROOT`, outside Git and the runtime image.
 
+The phase-balanced absolute-spine V2 experiment uses the same audited split
+and base policy, with only two checkpoints:
+
+```bash
+./run_pi05.sh train --config configs/task2_fixpos_200_v2.yaml \
+  --run task2_pi05_v2_12k
+```
+
 ### Validated status and known limits
 
-The final authorized GUI run completed 600/600 actions with 24/24 valid policy
-decisions, 0 invalid actions, and no queue underflow. Capture-to-ready latency
-was 0.562–0.672 s; the runner discarded 17–21 expired actions per chunk and
-kept effective base output zero. The local official evaluator still returned
-**Pick 0 / Orientation 1 / IoU 0.0000**. This is a validated runtime baseline,
-not a task-success claim. No retraining or further cadence/rollout sweep was
-performed after that result.
+The V3 hard5 GUI run completed 600/600 actions with 120/120 valid policy
+decisions, 0 invalid actions, no queue replacement, and effective base output
+zero. Every decision executed exactly indices 0--4. Accepted three-camera
+capture skew was at most 0.0834 s. Spine reached the demonstrated range, but
+the right gripper never closed and right joint 4 eventually reached its lower
+bound; the pad was not grasped. This validates the runtime/input contract but
+is not a task-success claim. The remaining leading cause is policy phase
+progression and closed-loop robustness.
 
 ## Competition tasks
 
