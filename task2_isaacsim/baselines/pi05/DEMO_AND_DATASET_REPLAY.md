@@ -155,3 +155,4 @@ bash task2_isaacsim/baselines/pi05/run_pi05.sh down
 - staging timeout、clock reset/stall、skew/freshness、bounds 或 publisher contention 失敗即停止。
 - 不降低 `0.10 s` skew 門檻，不增加猜測式 IK。
 - runner 使用 `/isaac/clock`；host monotonic 只用於 watchdog/診斷。
+- 不要重用 `live_submit_v1-030000-shadow_20260814_235643`；它是修正前的 staging startup failure evidence。

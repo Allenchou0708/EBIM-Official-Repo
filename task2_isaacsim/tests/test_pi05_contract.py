@@ -1211,6 +1211,8 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertIn(
             '"command_header_clock": "simulator"', manipulation_stager
         )
+        self.assertIn("self.command_publishers", manipulation_stager)
+        self.assertNotIn("self.publishers", manipulation_stager)
 
     def test_task_staging_runs_after_policy_load_with_shared_tolerance(
         self,

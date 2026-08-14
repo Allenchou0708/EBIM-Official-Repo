@@ -53,11 +53,11 @@ class ManipulationStager(Node):
         self.ee: dict[str, tuple[float, ...]] = {}
         self.stop_requested = False
         self.publish_count = 0
-        self.publishers: dict[str, Any] = {
+        self.command_publishers: dict[str, Any] = {
             group: self.create_publisher(JointState, entry["command"], 10)
             for group, entry in COMMAND_ENTRIES.items()
         }
-        self.publishers["spine"] = self.create_publisher(
+        self.command_publishers["spine"] = self.create_publisher(
             Float64, SPINE_COMMAND_TOPIC, 10
         )
         self.create_subscription(
@@ -155,8 +155,10 @@ class ManipulationStager(Node):
             message.header.stamp = stamp
             message.name = list(names)
             message.position = list(positions)
-            self.publishers[group].publish(message)
-        self.publishers["spine"].publish(Float64(data=command[16]))
+            self.command_publishers[group].publish(message)
+        self.command_publishers["spine"].publish(
+            Float64(data=command[16])
+        )
         self.publish_count += 5
 
     def measured_command(self) -> tuple[float, ...]:
