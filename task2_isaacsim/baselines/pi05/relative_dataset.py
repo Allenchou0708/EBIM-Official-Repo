@@ -186,8 +186,11 @@ def _canonical_json_bytes(payload: object) -> bytes:
     )
 
 
-def _copy_dataset_tree(source: Path, destination: Path) -> tuple[int, int]:
+def _copy_dataset_tree(
+    source: Path, destination: Path
+) -> tuple[int, int, int]:
     linked = 0
+    symlinked_videos = 0
     copied = 0
     for source_path in source.rglob("*"):
         relative = source_path.relative_to(source)
@@ -204,9 +207,16 @@ def _copy_dataset_tree(source: Path, destination: Path) -> tuple[int, int]:
             os.link(source_path, destination_path)
             linked += 1
         except OSError:
-            shutil.copy2(source_path, destination_path, follow_symlinks=True)
-            copied += 1
-    return linked, copied
+            if relative.parts and relative.parts[0] == "videos":
+                target = os.path.relpath(source_path, destination_path.parent)
+                os.symlink(target, destination_path)
+                symlinked_videos += 1
+            else:
+                shutil.copy2(
+                    source_path, destination_path, follow_symlinks=True
+                )
+                copied += 1
+    return linked, symlinked_videos, copied
 
 
 def materialize_relative_dataset_view(
@@ -217,7 +227,7 @@ def materialize_relative_dataset_view(
     chunk_size: int = 50,
     state_indices: Sequence[int | None] = RELATIVE_ACTION_STATE_INDICES,
 ) -> dict[str, Any]:
-    """Hard-link/copy a dataset and replace only the view's action stats."""
+    """Link a dataset view and replace only its action statistics."""
 
     source = source_root.resolve()
     destination = destination_root.resolve()
@@ -259,7 +269,7 @@ def materialize_relative_dataset_view(
         raise ValueError(f"staging destination already exists: {staging}")
     staging.mkdir(parents=True)
     try:
-        linked, copied = _copy_dataset_tree(source, staging)
+        linked, symlinked_videos, copied = _copy_dataset_tree(source, staging)
         (staging / "meta").mkdir(parents=True, exist_ok=True)
         (staging / "meta" / "stats.json").write_bytes(stats_bytes)
         (staging / "task2_relative_stats.json").write_bytes(
@@ -279,6 +289,7 @@ def materialize_relative_dataset_view(
             "valid_chunks": valid_chunks,
             "relative_rows": int(relative_action_stats["count"][0]),
             "hardlinked_files": linked,
+            "symlinked_video_files": symlinked_videos,
             "copied_files": copied,
             "raw_dataset_modified": False,
         }

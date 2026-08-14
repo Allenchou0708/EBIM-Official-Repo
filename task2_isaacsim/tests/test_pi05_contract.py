@@ -73,6 +73,7 @@ from task2_isaacsim.baselines.pi05.pregrasp_pose_audit import (
     quaternion_angle_deg,
 )
 from task2_isaacsim.baselines.pi05.relative_dataset import (
+    _copy_dataset_tree,
     compute_relative_action_stats,
     compute_vector_stats,
 )
@@ -639,6 +640,34 @@ class Pi05ContractTest(unittest.TestCase):
             profile["task2_relative_action_state_indices"],
             list(RELATIVE_ACTION_STATE_INDICES),
         )
+
+    def test_relative_view_symlinks_video_when_hardlink_is_forbidden(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "datasets" / "raw"
+            destination = root / "outputs" / "view"
+            video = source / "videos" / "camera" / "file-000.mp4"
+            info = source / "meta" / "info.json"
+            video.parent.mkdir(parents=True)
+            info.parent.mkdir(parents=True)
+            video.write_bytes(b"video")
+            info.write_text("{}\n", encoding="utf-8")
+            with patch(
+                "task2_isaacsim.baselines.pi05.relative_dataset.os.link",
+                side_effect=PermissionError,
+            ):
+                linked, symlinked, copied = _copy_dataset_tree(
+                    source, destination
+                )
+            self.assertEqual((linked, symlinked, copied), (0, 1, 1))
+            destination_video = (
+                destination / "videos" / "camera" / "file-000.mp4"
+            )
+            self.assertTrue(destination_video.is_symlink())
+            self.assertEqual(destination_video.read_bytes(), b"video")
+            self.assertFalse((destination / "meta" / "info.json").is_symlink())
 
     def test_v2_training_uses_phase_entry_point(self) -> None:
         command = _build_train_command(

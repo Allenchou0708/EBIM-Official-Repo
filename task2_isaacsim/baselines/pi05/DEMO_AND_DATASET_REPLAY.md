@@ -18,7 +18,7 @@ cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
 export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
 export PI05_CONFIG=configs/task2_fixpos_200_v2_full_30k.yaml
 export PI05_RUN=task2_pi05_v2_full_30k
-export PI05_SMOKE_RUN=task2_pi05_v2_full_30k_smoke_1step
+export PI05_SMOKE_RUN=task2_pi05_v2_full_30k_smoke_retry1
 export PI05_RUN_ROOT="$TASK2_PI05_ROOT/outputs/$PI05_RUN"
 export PI05_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
 export PI05_STAGING_AUDIT="$TASK2_PI05_ROOT/evidence/task2_pi05_v2_full_30k_preflight/startup_staging_audit.json"
@@ -100,6 +100,13 @@ same-contract one-step smoke succeeds. Do not bypass this with expert-only,
 LoRA, smaller data, or an unfrozen vision encoder.
 
 ## One-step VRAM gate and 30k training
+
+The first operator attempt named `task2_pi05_v2_full_30k_smoke_1step` was
+interrupted while copying the relative dataset view. It never created
+`run_manifest.json`, constructed the model, or ran an optimizer step; this was
+not an OOM result. Do not use that run as a smoke gate. The launcher now mounts
+the bulk root once, copies only the small data/metadata fallback, and uses
+relative symlinks for immutable videos when protected hardlinks are unavailable.
 
 The smoke uses the full train split and identical model/data contract, but
 runs one optimizer step, logs that step, and saves no checkpoint:

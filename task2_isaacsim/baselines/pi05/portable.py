@@ -683,7 +683,12 @@ def command_train(args: argparse.Namespace) -> int:
             return 2
         try:
             audit = _load_formal_audit(
-                args.audit_report.resolve(), args.dataset_root.resolve()
+                args.audit_report.resolve(),
+                (
+                    args.audit_dataset_root.resolve()
+                    if args.audit_dataset_root is not None
+                    else args.dataset_root.resolve()
+                ),
             )
         except (OSError, ValueError) as error:
             print(f"FAIL: formal dataset audit: {error}")
@@ -712,6 +717,8 @@ def command_train(args: argparse.Namespace) -> int:
             return 2
         audit_evidence = {
             "report": str(args.audit_report.resolve()),
+            "audited_dataset_root": audit["dataset_root"],
+            "runtime_dataset_root": str(args.dataset_root.resolve()),
             "dataset_repo_id": audit["dataset_repo_id"],
             "dataset_revision": audit["dataset_revision"],
             "eligible_episodes": sorted(eligible),
@@ -1079,6 +1086,7 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--output-dir", type=Path, required=True)
     train_parser.add_argument("--episodes", required=True)
     train_parser.add_argument("--audit-report", type=Path)
+    train_parser.add_argument("--audit-dataset-root", type=Path)
     train_parser.add_argument("--allow-train-subset", action="store_true")
     train_parser.add_argument(
         "--require-loss-improvement", action="store_true"

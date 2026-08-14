@@ -159,13 +159,23 @@ command_dataset() {
 
 command_train() {
   parse_config_run "$@"
-  local local_dir dataset_root audit output episodes profile
+  local local_dir dataset_root audit output episodes profile container_root
+  local dataset_container audit_container output_container
   local_dir="$(config_value "${CONFIG}" dataset.local_dir)"
   RUN_NAME="${RUN_NAME:-$(config_value "${CONFIG}" training.run)}"
   profile="$(config_value "${CONFIG}" training.profile)"
   dataset_root="${TASK2_PI05_ROOT}/datasets/${local_dir}"
   audit="${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/task2_fixpos_200_audit.json"
   output="${TASK2_PI05_ROOT}/outputs/${RUN_NAME}"
+  container_root="/data/task2_pi05"
+  case "${dataset_root}" in
+    "${TASK2_PI05_ROOT}"/*)
+      dataset_container="${container_root}/${dataset_root#"${TASK2_PI05_ROOT}"/}"
+      ;;
+    *) echo "Dataset must be below TASK2_PI05_ROOT" >&2; exit 2 ;;
+  esac
+  audit_container="${container_root}/${audit#"${TASK2_PI05_ROOT}"/}"
+  output_container="${container_root}/${output#"${TASK2_PI05_ROOT}"/}"
   episodes="$(python3 -c 'import json,sys; print(",".join(map(str,json.load(open(sys.argv[1]))["split"]["train"])))' "${audit}")"
   training_base_args
   local -a smoke_args=()
@@ -182,17 +192,16 @@ command_train() {
   if [[ -n "${VRAM_SMOKE_RUN}" ]]; then
     smoke_args+=(
       --vram-smoke-report
-      "/data/outputs/${VRAM_SMOKE_RUN}/run_manifest.json"
+      "${container_root}/outputs/${VRAM_SMOKE_RUN}/run_manifest.json"
     )
   fi
   docker run "${TRAINING_ARGS[@]}" \
-    -v "${dataset_root}:/data/dataset:ro" \
-    -v "${TASK2_PI05_ROOT}/outputs:/data/outputs" \
-    -v "$(dirname "${audit}"):/data/evidence:ro" \
+    -v "${TASK2_PI05_ROOT}:${container_root}" \
     "${PI05_TRAIN_IMAGE}" train --profile "${profile}" \
-    --dataset-root /data/dataset \
-    --audit-report /data/evidence/$(basename "${audit}") \
-    --output-dir "/data/outputs/${RUN_NAME}" \
+    --dataset-root "${dataset_container}" \
+    --audit-report "${audit_container}" \
+    --audit-dataset-root /data/dataset \
+    --output-dir "${output_container}" \
     --episodes "${episodes}" "${smoke_args[@]}" "${execute_args[@]}"
 }
 

@@ -2,9 +2,11 @@
 
 ## Outcome
 
-**READY for the operator-run one-step VRAM smoke; 30k remains NO-GO until that
-smoke passes.** No training optimizer step, checkpoint continuation, Isaac Sim,
-shadow, GUI, V3, or V4 run was started in this implementation pass.
+**READY to retry the operator-run one-step VRAM smoke; 30k remains NO-GO until
+that smoke passes.** The first operator attempt was interrupted during relative
+dataset view creation and never reached model construction or an optimizer
+step. No checkpoint continuation, Isaac Sim, shadow, GUI, V3, or V4 run was
+started.
 
 The new run preserves the V2 data/action contract and phase-balanced sampler,
 starts from `lerobot/pi05_base`, changes `train_expert_only` to `false`, keeps
@@ -60,6 +62,33 @@ Current estimates, pending smoke measurement:
 The formal launcher accepts the low-VRAM device only when the named smoke
 `run_manifest.json` proves the identical mode, `steps=1`, no checkpoint save,
 full parameter count, finite loss, memory metric, and zero return code.
+
+## Interrupted smoke diagnosis and correction
+
+The operator attempt `task2_pi05_v2_full_30k_smoke_1step` stopped after 3.7 GB
+of a relative dataset partial view had been created. Its log shows `os.link`
+first failing across separate container bind mounts, followed by `copy2` of a
+video, then an operator `Ctrl-C`. There is no `run_manifest.json`, model load,
+parameter count, loss, memory metric, or optimizer step, so this attempt says
+nothing about full-mode VRAM viability. The later `verify-smoke` failure is the
+expected missing-manifest consequence, not a second training failure.
+
+The launcher now exposes the dataset, audit, output, and smoke manifest through
+one `/data/task2_pi05` mount. Dataset files are owned by `nobody`, so Linux
+protected-hardlink rules can still reject a hardlink from the non-root training
+user. The relative-view builder therefore falls back to relative symlinks for
+immutable videos and copies only small data/metadata files; it never modifies
+the raw dataset. The retry uses the new name
+`task2_pi05_v2_full_30k_smoke_retry1`, leaving the interrupted evidence intact.
+
+A no-training mechanical probe is preserved at
+`evidence/task2_pi05_v2_full_30k_preflight/relative_view_symlink_probe`. It
+completed in about 9 seconds with 40 video symlinks, 207 copied non-video
+files, zero hardlinks, and `raw_dataset_modified=false`; the resulting view is
+about 532 MB rather than another video copy. TorchCodec decoded its first
+symlinked frame successfully (`5637` frames, shape `3x720x1280`). This probe
+uses episode 176 and exists only to test the filesystem/view mechanism; it is
+not a training dataset or a substitute for the V2 parser/smoke contract.
 
 ## Startup/pre-grasp dataset audit
 
@@ -158,7 +187,7 @@ watchdog gates on host monotonic time. Complete capture skew stays at or below
 - Dataset-derived staging audit and legal final target: PASS.
 - One-step command dry-run through the phase entry point: PASS; no dataset
   view, optimizer step, or checkpoint created.
-- Focused contract/live/staging tests in the pinned image: 70/70 PASS.
+- Focused contract/live/staging tests in the pinned image: 71/71 PASS.
 - Python compile, shell syntax, and `git diff --check`: PASS.
 - GPU doctor: expected NO-GO at 31.35 GiB pending one-step smoke.
 
