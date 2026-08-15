@@ -21,7 +21,7 @@ export PI05_V2_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_pi05_v2_expert_30k"
 export PI05_V2_30K_CKPT="$PI05_V2_30K_ROOT/training/checkpoints/030000/pretrained_model"
 export PI05_V2_DATASET="$PI05_V2_30K_ROOT/relative_dataset"
 
-export PI05_STAGING_AUDIT="$TASK2_PI05_ROOT/evidence/task2_pi05_v2_full_30k_preflight/startup_staging_audit.json"
+export PI05_STAGING_AUDIT="$TASK2_PI05_ROOT/evidence/task2_pi05_camera_ready_pad_relative_20260815/startup_staging_audit.json"
 export PI05_TEST_EVIDENCE="$TASK2_PI05_ROOT/evidence/task2_pi05_v1_v2_30k"
 ```
 
@@ -30,7 +30,7 @@ export PI05_TEST_EVIDENCE="$TASK2_PI05_ROOT/evidence/task2_pi05_v1_v2_30k"
 - `PI05_V2_30K_CKPT` 才是本輪新完成的 V2 expert-only 30k model。
 - `configs/task2_fixpos_200_v2.yaml` 與 output `task2_pi05_v2_12k` 是舊 12k V2，這輪不要使用。
 - `PI05_LIVE_IMAGE` 名稱中的 `v3-hard5` 只是 runtime image tag，不是 V3 model。
-- `PI05_STAGING_AUDIT` 是共用的 dataset-derived staging evidence，不是 model checkpoint。
+- `PI05_STAGING_AUDIT` 使用較早的 camera-ready joint target；右手位置以 live thermalpad 相對座標檢查，不使用猜測式 IK。
 
 ## 30k checkpoint 與 offline gate
 
@@ -41,6 +41,7 @@ git status --short --branch
 
 test -d "$PI05_V1_30K_CKPT"
 test -d "$PI05_V2_30K_CKPT"
+test -f "$PI05_STAGING_AUDIT"
 test ! "$PI05_V2_30K_CKPT" -ef \
   "$TASK2_PI05_ROOT/outputs/task2_pi05_v2_12k/training_12k/checkpoints/006000/pretrained_model"
 
@@ -156,3 +157,4 @@ bash task2_isaacsim/baselines/pi05/run_pi05.sh down
 - 不降低 `0.10 s` skew 門檻，不增加猜測式 IK。
 - runner 使用 `/isaac/clock`；host monotonic 只用於 watchdog/診斷。
 - 不要重用 `live_submit_v1-030000-shadow_20260814_235643`；它是修正前的 staging startup failure evidence。
+- 不要重用 `live_submit_v1-030000-camera-ready-shadow_20260815_003412`；它是 entry calibration 順序修正前中止的診斷 run。

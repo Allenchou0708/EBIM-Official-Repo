@@ -37,6 +37,7 @@ from task2_isaacsim.baselines.pi05.live.core import (
 from task2_isaacsim.baselines.pi05.live.policy import LivePi05Policy
 from task2_isaacsim.baselines.pi05.live.staging import (
     interpolate_staging_command,
+    staging_command_within_tolerance,
     staging_entry_duration_s,
     staging_feedback,
     validate_staging_audit,
@@ -113,7 +114,9 @@ class LiveSafetyTest(unittest.TestCase):
         right = [0.8, -1.6, -1.8, -2.4, -0.7, 3.8, -0.5]
         left_ee = [2.45, 2.2, 0.91, 0.0, 0.0, 0.0, 1.0]
         right_ee = [1.75, 2.14, 0.87, 0.0, 0.7071, -0.7071, 0.0]
+        thermalpad_position = [1.5, 1.5, 0.8]
         return {
+            "schema_version": 2,
             "guessed_ik_used": False,
             "selection": {"episode": 176, "frame": 408},
             "final_target": {
@@ -130,6 +133,23 @@ class LiveSafetyTest(unittest.TestCase):
                     "right_gripper_open_fraction": 1.0,
                     "left_ee": left_ee,
                     "right_ee": right_ee,
+                    "thermalpad_position_m": thermalpad_position,
+                    "right_ee_relative_to_thermalpad_m": [
+                        actual - pad
+                        for actual, pad in zip(
+                            right_ee[:3], thermalpad_position, strict=True
+                        )
+                    ],
+                },
+                "entry_calibration_reference": {
+                    "right_ee": right_ee,
+                    "thermalpad_position_m": thermalpad_position,
+                    "right_ee_relative_to_thermalpad_m": [
+                        actual - pad
+                        for actual, pad in zip(
+                            right_ee[:3], thermalpad_position, strict=True
+                        )
+                    ],
                 },
             },
             "tolerances": {
@@ -137,7 +157,7 @@ class LiveSafetyTest(unittest.TestCase):
                 "spine_abs_m": 0.02,
                 "gripper_open_fraction": 0.05,
                 "left_ee_z_m": 0.04,
-                "right_ee_position_m": 0.04,
+                "right_ee_relative_to_thermalpad_m": 0.04,
                 "right_ee_orientation_deg": 12.0,
                 "stable_dwell_sim_s": 1.0,
             },
@@ -168,6 +188,12 @@ class LiveSafetyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "guessed IK"):
             validate_staging_audit(audit)
 
+    def test_dataset_staging_rejects_world_only_v1_audit(self) -> None:
+        audit = self._staging_audit()
+        audit["schema_version"] = 1
+        with self.assertRaisesRegex(ValueError, "pad-relative schema"):
+            validate_staging_audit(audit)
+
     def test_dataset_staging_rejects_unsafe_intermediate_command(self) -> None:
         audit = self._staging_audit()
         audit["trajectory"][0]["command"][0] = 99.0
@@ -182,6 +208,8 @@ class LiveSafetyTest(unittest.TestCase):
         self.assertEqual(duration, 10.0)
         midpoint = interpolate_staging_command(current, target, 0.5)
         self.assertAlmostEqual(midpoint[16], 0.25)
+        self.assertFalse(staging_command_within_tolerance(audit, current, target))
+        self.assertTrue(staging_command_within_tolerance(audit, target, target))
 
     def test_dataset_staging_feedback_covers_every_required_group(self) -> None:
         audit = self._staging_audit()
@@ -195,6 +223,8 @@ class LiveSafetyTest(unittest.TestCase):
             right_gripper_open=1.0,
             left_ee=tuple(reference["left_ee"]),
             right_ee=tuple(reference["right_ee"]),
+            thermalpad_position_m=tuple(reference["thermalpad_position_m"]),
+            right_ee_pad_relative_calibration_m=(0.0, 0.0, 0.0),
         )
         self.assertTrue(feedback["within_tolerance"])
         self.assertTrue(all(feedback["groups"].values()))
@@ -207,9 +237,41 @@ class LiveSafetyTest(unittest.TestCase):
             right_gripper_open=1.0,
             left_ee=tuple(reference["left_ee"]),
             right_ee=tuple(reference["right_ee"]),
+            thermalpad_position_m=tuple(reference["thermalpad_position_m"]),
+            right_ee_pad_relative_calibration_m=(0.0, 0.0, 0.0),
         )
         self.assertFalse(failed["groups"]["spine"])
         self.assertFalse(failed["within_tolerance"])
+
+        shifted_right_ee = tuple(
+            value + offset
+            for value, offset in zip(
+                reference["right_ee"][:3], (0.1, -0.03, 0.0), strict=True
+            )
+        ) + tuple(reference["right_ee"][3:])
+        shifted_pad = tuple(
+            value + offset
+            for value, offset in zip(
+                reference["thermalpad_position_m"],
+                (0.1, -0.03, 0.0),
+                strict=True,
+            )
+        )
+        translated = staging_feedback(
+            audit=audit,
+            left_arm=tuple(reference["left_arm_rad"]),
+            right_arm=tuple(reference["right_arm_rad"]),
+            spine_m=reference["spine_m"],
+            left_gripper_open=1.0,
+            right_gripper_open=1.0,
+            left_ee=tuple(reference["left_ee"]),
+            right_ee=shifted_right_ee,
+            thermalpad_position_m=shifted_pad,
+            right_ee_pad_relative_calibration_m=(0.0, 0.0, 0.0),
+        )
+        self.assertTrue(
+            translated["groups"]["right_camera_ready_pad_relative_position"]
+        )
 
     def test_hard5_two_decisions_execute_zero_to_four_and_hold_only(
         self,
@@ -255,8 +317,8 @@ class LiveSafetyTest(unittest.TestCase):
                 "left_gripper",
                 "right_gripper",
                 "left_ee_height",
-                "right_pregrasp_position",
-                "right_pregrasp_orientation",
+                "right_camera_ready_pad_relative_position",
+                "right_camera_ready_orientation",
             )
         }
         with tempfile.TemporaryDirectory() as directory:

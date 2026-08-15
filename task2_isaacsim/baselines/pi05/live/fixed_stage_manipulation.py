@@ -20,10 +20,11 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64
+from std_msgs.msg import Float64, String
 
 from task2_isaacsim.baselines.pi05.live.staging import (
     interpolate_staging_command,
+    staging_command_within_tolerance,
     staging_entry_duration_s,
     staging_feedback,
     validate_staging_audit,
@@ -51,6 +52,9 @@ class ManipulationStager(Node):
         self.sim_time: float | None = None
         self.joints: dict[str, float] = {}
         self.ee: dict[str, tuple[float, ...]] = {}
+        self.thermalpad_position_m: tuple[float, ...] | None = None
+        self.object_pose_sim_time: float | None = None
+        self.right_ee_pad_relative_calibration_m: tuple[float, ...] | None = None
         self.stop_requested = False
         self.publish_count = 0
         self.command_publishers: dict[str, Any] = {
@@ -76,6 +80,12 @@ class ManipulationStager(Node):
                 lambda message, side=side: self._on_ee(side, message),
                 10,
             )
+        self.create_subscription(
+            String,
+            TOPICS["ground_truth"]["object_poses"],
+            self._on_object_poses,
+            10,
+        )
 
     def _on_clock(self, message: Clock) -> None:
         self.sim_time = (
@@ -100,6 +110,18 @@ class ManipulationStager(Node):
             pose.orientation.w,
         )
 
+    def _on_object_poses(self, message: String) -> None:
+        try:
+            payload = json.loads(message.data)
+            position = payload["objects"]["thermalpad"][:3]
+            sim_time = float(payload["sim_time"])
+            parsed = tuple(float(value) for value in position)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return
+        if len(parsed) == 3 and all(math.isfinite(value) for value in parsed):
+            self.thermalpad_position_m = parsed
+            self.object_pose_sim_time = sim_time
+
     def publisher_conflicts(self) -> dict[str, int]:
         topics = {
             **{
@@ -123,6 +145,9 @@ class ManipulationStager(Node):
         )
         return (
             self.sim_time is not None
+            and self.object_pose_sim_time is not None
+            and abs(self.sim_time - self.object_pose_sim_time) <= 0.10
+            and self.thermalpad_position_m is not None
             and all(math.isfinite(resolve_joint(self.joints, name)) for name in names)
             and all(
                 side in self.ee
@@ -174,7 +199,30 @@ class ManipulationStager(Node):
             resolve_joint(self.joints, SPINE_JOINT),
         )
 
+    def calibrate_pad_relative_entry(self, audit: dict[str, Any]) -> None:
+        if self.thermalpad_position_m is None:
+            raise RuntimeError("thermalpad ground-truth pose unavailable")
+        dataset_entry = audit["final_target"]["entry_calibration_reference"][
+            "right_ee_relative_to_thermalpad_m"
+        ]
+        live_entry = tuple(
+            ee - pad
+            for ee, pad in zip(
+                self.ee["right"][:3],
+                self.thermalpad_position_m,
+                strict=True,
+            )
+        )
+        self.right_ee_pad_relative_calibration_m = tuple(
+            live - float(dataset)
+            for live, dataset in zip(live_entry, dataset_entry, strict=True)
+        )
+
     def feedback(self, audit: dict[str, Any]) -> dict[str, Any]:
+        if self.thermalpad_position_m is None:
+            raise RuntimeError("thermalpad ground-truth pose unavailable")
+        if self.right_ee_pad_relative_calibration_m is None:
+            raise RuntimeError("pad-relative entry calibration unavailable")
         return staging_feedback(
             audit=audit,
             left_arm=tuple(resolve_joint(self.joints, name) for name in LEFT_JOINTS),
@@ -190,6 +238,10 @@ class ManipulationStager(Node):
             ),
             left_ee=self.ee["left"],
             right_ee=self.ee["right"],
+            thermalpad_position_m=self.thermalpad_position_m,
+            right_ee_pad_relative_calibration_m=(
+                self.right_ee_pad_relative_calibration_m
+            ),
         )
 
 
@@ -223,8 +275,11 @@ def main() -> int:
     initial_command: tuple[float, ...] | None = None
     entry_duration_s: float | None = None
     stable_since: float | None = None
+    entry_stable_since: float | None = None
+    route_started_sim: float | None = None
     route_index = 0
     feedback: dict[str, Any] | None = None
+    feedback_reported = False
     reason = "host_watchdog_timeout"
     try:
         while (
@@ -252,7 +307,7 @@ def main() -> int:
                     entry_duration_s = staging_entry_duration_s(
                         audit, initial_command, tuple(route[0]["command"])
                     )
-                except (KeyError, TypeError, ValueError) as error:
+                except (KeyError, RuntimeError, TypeError, ValueError) as error:
                     reason = f"invalid_measured_entry:{error}"
                     break
             elapsed_sim = node.sim_time - sim_started
@@ -270,7 +325,32 @@ def main() -> int:
                     )
                 )
                 continue
-            route_elapsed_sim = elapsed_sim - entry_duration_s
+            if node.right_ee_pad_relative_calibration_m is None:
+                node.publish_command(route[0]["command"])
+                try:
+                    entry_ready = staging_command_within_tolerance(
+                        audit,
+                        node.measured_command(),
+                        tuple(route[0]["command"]),
+                    )
+                except (KeyError, TypeError, ValueError) as error:
+                    reason = f"invalid_entry_feedback:{error}"
+                    break
+                if not entry_ready:
+                    entry_stable_since = None
+                elif entry_stable_since is None:
+                    entry_stable_since = node.sim_time
+                elif node.sim_time - entry_stable_since >= dwell_s:
+                    try:
+                        node.calibrate_pad_relative_entry(audit)
+                    except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                        reason = f"invalid_pad_relative_calibration:{error}"
+                        break
+                    route_started_sim = node.sim_time
+                    route_index = 1
+                continue
+            assert route_started_sim is not None
+            route_elapsed_sim = node.sim_time - route_started_sim
             if route_index < len(route):
                 row = route[route_index]
                 if route_elapsed_sim >= float(row["scheduled_at_s"]):
@@ -279,15 +359,21 @@ def main() -> int:
                 continue
             node.publish_command(route[-1]["command"])
             feedback = node.feedback(audit)
+            if not feedback_reported:
+                print(
+                    json.dumps({"staging_feedback": feedback}, sort_keys=True),
+                    flush=True,
+                )
+                feedback_reported = True
             if not feedback["within_tolerance"]:
                 stable_since = None
             elif stable_since is None:
                 stable_since = node.sim_time
             elif node.sim_time - stable_since >= dwell_s:
-                reason = "stable_dataset_pregrasp"
+                reason = "stable_dataset_camera_ready"
                 break
     finally:
-        success = reason == "stable_dataset_pregrasp"
+        success = reason == "stable_dataset_camera_ready"
         result = {
             "schema_version": 1,
             "success": success,
@@ -296,6 +382,13 @@ def main() -> int:
             "clock_topic": TOPICS["clock"],
             "host_clock_use": "process_watchdog_only",
             "command_header_clock": "simulator",
+            "pad_relative_feedback_topic": TOPICS["ground_truth"][
+                "object_poses"
+            ],
+            "object_pose_max_skew_s": 0.10,
+            "entry_pad_relative_calibration_m": (
+                node.right_ee_pad_relative_calibration_m
+            ),
             "selection": audit["selection"],
             "final_target": audit["final_target"],
             "tolerances": audit["tolerances"],
@@ -303,6 +396,8 @@ def main() -> int:
             "route_frames_total": len(route),
             "measured_entry_command": initial_command,
             "entry_transition_duration_sim_s": entry_duration_s,
+            "entry_stable_since_sim_s": entry_stable_since,
+            "route_started_sim_s": route_started_sim,
             "scheduled_duration_sim_s": route[-1]["scheduled_at_s"],
             "elapsed_sim_s": (
                 node.sim_time - sim_started

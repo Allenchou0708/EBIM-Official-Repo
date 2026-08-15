@@ -211,7 +211,7 @@ command_train() {
 command_audit_staging() {
   local dataset="${TASK2_PI05_ROOT}/datasets/task2_fixpos_200_46ab41f"
   local audit="${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/task2_fixpos_200_audit.json"
-  local output="${TASK2_PI05_ROOT}/evidence/task2_pi05_v2_full_30k_preflight"
+  local output="${TASK2_PI05_ROOT}/evidence/task2_pi05_camera_ready_pad_relative_20260815"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dataset-root) dataset="$(realpath "$2")"; shift 2 ;;
@@ -511,7 +511,7 @@ command_sim_up() {
 
 command_run_task() {
   local checkpoint="${PI05_CHECKPOINT}" dataset="${PI05_RELATIVE_DATASET}"
-  local staging_audit="${TASK2_PI05_ROOT}/evidence/task2_pi05_v2_full_30k_preflight/startup_staging_audit.json"
+  local staging_audit="${TASK2_PI05_ROOT}/evidence/task2_pi05_camera_ready_pad_relative_20260815/startup_staging_audit.json"
   local base_target="2.100026845932007 3.0529046058654785 -1.5706931352615356"
   local runtime_mode=hard5 max_actions=600 max_duration_s=300 max_decisions shadow=false
   local run_label="unlabeled" confirm_right_wrist_pad_visible=false

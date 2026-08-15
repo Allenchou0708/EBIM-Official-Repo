@@ -75,7 +75,29 @@ def interpolate_staging_command(
     ]
 
 
+def staging_command_within_tolerance(
+    audit: dict[str, Any],
+    current: tuple[float, ...],
+    target: tuple[float, ...],
+) -> bool:
+    """Check measured joint-space feedback before entry calibration."""
+
+    _validate_command(current, context="measured staging command")
+    _validate_command(target, context="dataset staging command")
+    tolerance = audit["tolerances"]
+    return bool(
+        max(abs(a - b) for a, b in zip(current[:14], target[:14]))
+        <= float(tolerance["arm_max_abs_rad"])
+        and max(abs(a - b) for a, b in zip(current[14:16], target[14:16]))
+        <= float(tolerance["gripper_open_fraction"])
+        and abs(current[16] - target[16])
+        <= float(tolerance["spine_abs_m"])
+    )
+
+
 def validate_staging_audit(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("schema_version") != 2:
+        raise ValueError("staging audit must use pad-relative schema version 2")
     if payload.get("guessed_ik_used") is not False:
         raise ValueError("staging audit must explicitly forbid guessed IK")
     selection = payload.get("selection", {})
@@ -104,6 +126,37 @@ def validate_staging_audit(payload: dict[str, Any]) -> dict[str, Any]:
     spine = float(target["spine_command_m"])
     if not 0.0 <= spine <= 0.6:
         raise ValueError("staging spine target must be within [0, 0.6] m")
+    reference = target.get("measured_reference", {})
+    pad_offset = tuple(
+        float(value)
+        for value in reference.get("right_ee_relative_to_thermalpad_m", [])
+    )
+    if len(pad_offset) != 3 or not all(math.isfinite(v) for v in pad_offset):
+        raise ValueError(
+            "staging audit must contain a finite right-EE-to-pad offset"
+        )
+    entry_reference = target.get("entry_calibration_reference", {})
+    entry_pad_offset = tuple(
+        float(value)
+        for value in entry_reference.get(
+            "right_ee_relative_to_thermalpad_m", []
+        )
+    )
+    if len(entry_pad_offset) != 3 or not all(
+        math.isfinite(v) for v in entry_pad_offset
+    ):
+        raise ValueError(
+            "staging audit must contain a finite entry right-EE-to-pad offset"
+        )
+    pad_tolerance = float(
+        payload.get("tolerances", {}).get(
+            "right_ee_relative_to_thermalpad_m", math.nan
+        )
+    )
+    if not math.isfinite(pad_tolerance) or pad_tolerance <= 0.0:
+        raise ValueError(
+            "staging audit must contain a positive pad-relative tolerance"
+        )
     route = payload.get("trajectory", [])
     if not route:
         raise ValueError("staging trajectory is empty")
@@ -131,6 +184,8 @@ def staging_feedback(
     right_gripper_open: float,
     left_ee: tuple[float, ...],
     right_ee: tuple[float, ...],
+    thermalpad_position_m: tuple[float, ...],
+    right_ee_pad_relative_calibration_m: tuple[float, ...],
 ) -> dict[str, Any]:
     reference = audit["final_target"]["measured_reference"]
     tolerance = audit["tolerances"]
@@ -154,11 +209,27 @@ def staging_feedback(
         right_gripper_open - float(reference["right_gripper_open_fraction"])
     )
     left_ee_z_error = abs(left_ee[2] - float(reference["left_ee"][2]))
-    right_position_error = math.sqrt(
+    actual_right_ee_relative_to_thermalpad = tuple(
+        actual - pad
+        for actual, pad in zip(
+            right_ee[:3], thermalpad_position_m, strict=True
+        )
+    )
+    expected_right_ee_relative_to_thermalpad = tuple(
+        float(expected) + calibration
+        for expected, calibration in zip(
+            reference["right_ee_relative_to_thermalpad_m"],
+            right_ee_pad_relative_calibration_m,
+            strict=True,
+        )
+    )
+    right_pad_relative_error = math.sqrt(
         sum(
             (actual - float(expected)) ** 2
             for actual, expected in zip(
-                right_ee[:3], reference["right_ee"][:3], strict=True
+                actual_right_ee_relative_to_thermalpad,
+                expected_right_ee_relative_to_thermalpad,
+                strict=True,
             )
         )
     )
@@ -176,10 +247,11 @@ def staging_feedback(
             right_gripper_error <= tolerance["gripper_open_fraction"]
         ),
         "left_ee_height": left_ee_z_error <= tolerance["left_ee_z_m"],
-        "right_pregrasp_position": (
-            right_position_error <= tolerance["right_ee_position_m"]
+        "right_camera_ready_pad_relative_position": (
+            right_pad_relative_error
+            <= tolerance["right_ee_relative_to_thermalpad_m"]
         ),
-        "right_pregrasp_orientation": (
+        "right_camera_ready_orientation": (
             right_orientation_error <= tolerance["right_ee_orientation_deg"]
         ),
     }
@@ -193,7 +265,16 @@ def staging_feedback(
             "left_gripper_open_fraction": left_gripper_error,
             "right_gripper_open_fraction": right_gripper_error,
             "left_ee_z_m": left_ee_z_error,
-            "right_ee_position_m": right_position_error,
+            "right_ee_relative_to_thermalpad_m": right_pad_relative_error,
             "right_ee_orientation_deg": right_orientation_error,
         },
+        "actual_right_ee_relative_to_thermalpad_m": list(
+            actual_right_ee_relative_to_thermalpad
+        ),
+        "expected_right_ee_relative_to_thermalpad_m": list(
+            expected_right_ee_relative_to_thermalpad
+        ),
+        "entry_pad_relative_calibration_m": list(
+            right_ee_pad_relative_calibration_m
+        ),
     }

@@ -49,8 +49,8 @@ def verify_shadow_run(run_dir: Path, *, contract: str) -> dict[str, object]:
         "left_gripper",
         "right_gripper",
         "left_ee_height",
-        "right_pregrasp_position",
-        "right_pregrasp_orientation",
+        "right_camera_ready_pad_relative_position",
+        "right_camera_ready_orientation",
     }
     checks = {
         "completed": manifest.get("completed") is True,

@@ -33,6 +33,7 @@ ARM_VELOCITY_LIMITS_RAD_S = (
 ARM_STAGING_VELOCITY_FRACTION = 0.50
 SPINE_STAGING_VELOCITY_M_S = 0.05
 GRIPPER_STAGING_VELOCITY_FRACTION_S = 1.0
+CAMERA_READY_AFTER_ORIENTATION_FRAMES = 30
 
 
 def _quantiles(values: Any) -> dict[str, Any]:
@@ -141,7 +142,32 @@ def build_startup_staging_audit(
         spine_high = int(events["spine_high"])
         orientation_entry = int(pose_record["orientation_entry_frame"])
         right_close = int(events["right_close"])
-        preclose = right_close - 1
+        camera_ready = min(
+            orientation_entry + CAMERA_READY_AFTER_ORIENTATION_FRAMES,
+            right_close - 1,
+        )
+        extras_path = root / "task2_extras" / f"episode_{episode:06d}.npz"
+        if not extras_path.is_file():
+            raise ValueError(f"missing Task 2 extras for episode {episode}")
+        with np.load(extras_path) as extras:
+            object_names = [
+                str(value) for value in extras["object_names"].tolist()
+            ]
+            if "thermalpad" not in object_names:
+                raise ValueError(f"episode {episode} extras omit thermalpad")
+            object_poses = np.asarray(
+                extras["object_poses"], dtype=np.float64
+            )
+            if camera_ready >= len(object_poses):
+                raise ValueError(
+                    f"episode {episode} extras are shorter than frames"
+                )
+            thermalpad_position = object_poses[
+                camera_ready, object_names.index("thermalpad"), :3
+            ]
+            initial_thermalpad_position = object_poses[
+                0, object_names.index("thermalpad"), :3
+            ]
         segments["startup_action"].append(
             episode_actions[: spine_high + 1, 3:20]
         )
@@ -154,23 +180,37 @@ def build_startup_staging_audit(
         segments["pregrasp_state"].append(
             episode_states[orientation_entry:right_close, 14:31]
         )
-        final_state = episode_states[preclose]
-        final_action = episode_actions[preclose]
+        final_state = episode_states[camera_ready]
+        final_action = episode_actions[camera_ready]
+        right_ee_relative_to_thermalpad = (
+            final_state[7:10] - thermalpad_position
+        )
         candidate_rows.append(
             {
                 "episode": episode,
                 "split": pose_record["split"],
-                "frame": int(frame_column[positions[preclose]]),
-                "local_index": preclose,
+                "frame": int(frame_column[positions[camera_ready]]),
+                "local_index": camera_ready,
                 "feature": [
                     *final_state[14:31].tolist(),
                     float(final_state[2]),
-                    *final_state[7:10].tolist(),
+                    *right_ee_relative_to_thermalpad.tolist(),
                 ],
                 "right_quaternion": final_state[10:14].tolist(),
+                "thermalpad_position_m": thermalpad_position.tolist(),
+                "right_ee_relative_to_thermalpad_m": (
+                    right_ee_relative_to_thermalpad.tolist()
+                ),
+                "initial_right_ee": episode_states[0, 7:14].tolist(),
+                "initial_thermalpad_position_m": (
+                    initial_thermalpad_position.tolist()
+                ),
+                "initial_right_ee_relative_to_thermalpad_m": (
+                    episode_states[0, 7:10] - initial_thermalpad_position
+                ).tolist(),
                 "action": final_action.tolist(),
                 "state": final_state.tolist(),
-                "timestamp": float(episode_times[preclose]),
+                "timestamp": float(episode_times[camera_ready]),
             }
         )
         for name, start, end in (
@@ -295,7 +335,7 @@ def build_startup_staging_audit(
     ]
     episode_scores.sort(key=lambda row: row["robust_distance_score"], reverse=True)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "dataset_root": str(root),
         "pregrasp_audit": str(pregrasp_audit.resolve()),
         "selection": {
@@ -304,9 +344,13 @@ def build_startup_staging_audit(
             "frame": int(selected["frame"]),
             "episode_time_s": float(selected["timestamp"]),
             "reason": (
-                "train-split pre-close frame nearest the robust multivariate "
+                "train-split camera-ready frame 30 frames after audited "
+                "orientation entry, nearest the robust multivariate "
                 "median of both arms, spine, grippers, left wrist height, "
-                "right EE position, and audited vertical orientation"
+                "right-EE-to-pad offset, and audited vertical orientation"
+            ),
+            "camera_ready_after_orientation_frames": (
+                CAMERA_READY_AFTER_ORIENTATION_FRAMES
             ),
             "robust_distance_score": selected["robust_distance_score"],
             "global_orientation_error_deg": selected[
@@ -328,9 +372,22 @@ def build_startup_staging_audit(
                 "right_gripper_open_fraction": final_state[30],
                 "left_ee": final_state[0:7],
                 "right_ee": final_state[7:14],
+                "thermalpad_position_m": selected["thermalpad_position_m"],
+                "right_ee_relative_to_thermalpad_m": selected[
+                    "right_ee_relative_to_thermalpad_m"
+                ],
+            },
+            "entry_calibration_reference": {
+                "right_ee": selected["initial_right_ee"],
+                "thermalpad_position_m": selected[
+                    "initial_thermalpad_position_m"
+                ],
+                "right_ee_relative_to_thermalpad_m": selected[
+                    "initial_right_ee_relative_to_thermalpad_m"
+                ],
             },
             "arm_joint_bounds_ok": arm_bounds_ok,
-            "right_pregrasp_vertical_axis": pose_audit["aggregate"][
+            "right_camera_ready_vertical_axis": pose_audit["aggregate"][
                 "dominant_preclose_vertical_axis"
             ],
         },
@@ -339,7 +396,7 @@ def build_startup_staging_audit(
             "spine_abs_m": 0.02,
             "gripper_open_fraction": 0.05,
             "left_ee_z_m": 0.04,
-            "right_ee_position_m": 0.04,
+            "right_ee_relative_to_thermalpad_m": 0.04,
             "right_ee_orientation_deg": 12.0,
             "stable_dwell_sim_s": 1.0,
         },
