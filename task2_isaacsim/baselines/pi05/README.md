@@ -119,6 +119,26 @@ docker run --rm --gpus all --ipc=host \
 
 ## Simulator and evaluator terminals
 
+The live path uses a dataset-derived ROS staging trajectory before every
+policy rollout. It restores the demonstrated base, both arms, grippers, and
+spine state, then verifies the right end effector relative to the thermal pad.
+Restoring the complete recorded state is intentional: moving only the right
+arm would still leave PI0.5 with an out-of-distribution left-arm/spine state.
+No guessed inverse-kinematics target is used.
+
+To inspect this initialization without running PI0.5, start the simulator and
+run the standalone staging command in another terminal:
+
+```bash
+./run_pi05.sh sim-up --gui
+./run_pi05.sh stage-init
+```
+
+Success is recorded as `success: true` with reason
+`stable_dataset_camera_ready` in the generated `stage_init_manifest.json`.
+Stop other teleoperation/policy publishers first; staging intentionally fails
+when another process is publishing arm commands.
+
 Use three terminals for a GUI run:
 
 ```bash
