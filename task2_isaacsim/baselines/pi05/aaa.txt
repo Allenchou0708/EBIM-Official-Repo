@@ -1,0 +1,1000 @@
+  954  iou_files = sorted(
+  955      out.glob("eval_camera_iou_*.json"),
+  956      key=lambda path: path.stat().st_mtime,
+  957  )[-5:]
+  958  for iou_path in iou_files:
+  959      tag = iou_path.stem.removeprefix("eval_camera_iou_")
+  960      bbox_path = out / f"eval_camera_bbox2d_tight_{tag}.json"
+  961      seg_path = out / f"eval_camera_semantic_segmentation_{tag}.npy"
+  962      iou = json.loads(iou_path.read_text())
+  963      bbox = json.loads(bbox_path.read_text())
+  964      segmentation = np.load(seg_path)
+  965      classes = []
+  966      for detection in bbox["detections"]:
+  967          classes.extend(
+  968              str(result["class_id"])
+  969              for result in detection.get("results", [])
+  970          )
+  971      raw_counts = {
+  972          int(raw_id): int(np.count_nonzero(segmentation == raw_id))
+  973          for raw_id in np.unique(segmentation)
+  974      }
+  975      print(
+  976          tag,
+  977          "case=" + str(iou.get("orientation_case")),
+  978          "target_bbox=" + str(iou.get("target_bbox")),
+  979          "bbox_classes=" + str(classes),
+  980          "target_bbox_detections=" + str(classes.count("3")),
+  981          "raw_target_id4_pixels=" + str(raw_counts.get(4, 0)),
+  982          "raw_counts=" + str(raw_counts),
+  983      )
+  984  PY
+  985  clear
+  986  docker exec -i eval_task2 python3 - <<'PY'
+  987  from pathlib import Path
+  988  import json
+  989  out = Path("/output/evaluate")
+  990  iou_files = sorted(
+  991      out.glob("eval_camera_iou_*.json"),
+  992      key=lambda path: path.stat().st_mtime,
+  993  )[-5:]
+  994  for iou_path in iou_files:
+  995      tag = iou_path.stem.removeprefix("eval_camera_iou_")
+  996      labels_path = out / f"eval_camera_semantic_labels_{tag}.txt"
+  997      iou = json.loads(iou_path.read_text())
+  998      labels = json.loads(labels_path.read_text())
+  999      print(
+ 1000          tag,
+ 1001          "case=" + str(iou.get("orientation_case")),
+ 1002          "liner_id=" + str(iou.get("liner_label_id")),
+ 1003          "thermalpad_id=" + str(iou.get("thermalpad_label_id")),
+ 1004          "target_id=" + str(iou.get("target_label_id")),
+ 1005          "labels=" + json.dumps(labels, sort_keys=True),
+ 1006      )
+ 1007  PY
+ 1008  clear
+ 1009  docker exec eval_task2 bash -lc   'source /opt/ros/jazzy/setup.bash && ros2 topic list | grep "^/isaac/eval_camera/.*labels" | sort'
+ 1010  for i in 1 2 3 4 5; do   bash scripts/evaluation/task2/run.sh evaluate; done
+ 1011  clear
+ 1012  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1013  task2_isaacsim/scripts/run_recorder.sh record -- --max_episodes 1
+ 1014  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc/task2_isaacsim
+ 1015  export HOST_UID="$(id -u)"
+ 1016  export HOST_GID="$(id -g)"
+ 1017  docker compose   -f docker-compose.yml   -f docker-compose.nvenc.yml   --profile record   run --rm   --entrypoint python3   lerobot_recorder   services/recording/validate_task2_dataset.py   dataset/task2_thermalpad_v2
+ 1018  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1019  git fetch origin main
+ 1020  git rev-parse origin/main
+ 1021  git rev-list --left-right --count HEAD...origin/main
+ 1022  git log --oneline 8ce27d1..origin/main
+ 1023  git status --short
+ 1024  clear
+ 1025  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1026  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   down
+ 1027  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1028  export HOST_UID="$(id -u)"
+ 1029  export HOST_GID="$(id -g)"
+ 1030  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   up -d isaac-sim-5-1-0
+ 1031  docker ps -a   --filter "name=isaac-sim-5-1-0-workshop"   --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+ 1032  docker inspect isaac-sim-5-1-0-workshop   --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+ 1033  docker exec isaac-sim-5-1-0-workshop   bash -lc 'cd /workspace/EBiM_Challenge && git rev-parse --short HEAD && git status --short'
+ 1034  clear
+ 1035  docker ps   --filter "name=task2_"   --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+ 1036  docker exec task2_teleop_adapters bash -lc   'source /opt/ros/jazzy/setup.bash &&
+ 1037     ros2 topic list -t |
+ 1038     grep "^/isaac/eval_camera/" |
+ 1039     sort'
+ 1040  docker exec task2_teleop_adapters bash -lc '
+ 1041    source /opt/ros/jazzy/setup.bash
+ 1042    for topic in image_raw depth camera_info; do
+ 1043      echo "=== /isaac/eval_camera/${topic} ==="
+ 1044      timeout 12s ros2 topic hz "/isaac/eval_camera/${topic}"
+ 1045    done
+ 1046  '
+ 1047  docker ps   --filter "name=task2_"   --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+ 1048  docker exec task2_teleop_adapters bash -lc   'source /opt/ros/jazzy/setup.bash &&
+ 1049     ros2 topic list -t |
+ 1050     grep "^/isaac/eval_camera/" |
+ 1051     sort'
+ 1052  docker exec task2_teleop_adapters bash -lc '
+ 1053    source /opt/ros/jazzy/setup.bash
+ 1054    for topic in image_raw depth camera_info; do
+ 1055      echo "=== /isaac/eval_camera/${topic} ==="
+ 1056      timeout 12s ros2 topic hz "/isaac/eval_camera/${topic}"
+ 1057    done
+ 1058  '
+ 1059  docker exec task2_ros_republisher bash -lc   'source /opt/ros/jazzy/setup.bash &&
+ 1060     ros2 topic list -t |
+ 1061     grep "^/isaac/eval_camera/" |
+ 1062     sort'
+ 1063  docker exec task2_ros_republisher bash -lc '
+ 1064    source /opt/ros/jazzy/setup.bash
+ 1065    for topic in image_raw depth camera_info; do
+ 1066      echo "=== /isaac/eval_camera/${topic} ==="
+ 1067      timeout 12s ros2 topic hz "/isaac/eval_camera/${topic}"
+ 1068    done
+ 1069  '
+ 1070  clear
+ 1071  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1072  bash scripts/evaluation/task2/run.sh up
+ 1073  bash scripts/evaluation/task2/run.sh status
+ 1074  for i in 1 2 3 4 5; do   echo "=== capture $i ===";   bash scripts/evaluation/task2/run.sh evaluate; done
+ 1075  python3 - <<'PY'
+ 1076  from pathlib import Path
+ 1077  import json
+ 1078  out = Path.home() / "docker/ebim-challenge/eval-task2/evaluate"
+ 1079  files = sorted(
+ 1080      out.glob("eval_camera_iou_*.json"),
+ 1081      key=lambda path: path.stat().st_mtime,
+ 1082  )[-5:]
+ 1083  missing = 0
+ 1084  correct = 0
+ 1085  for path in files:
+ 1086      data = json.loads(path.read_text())
+ 1087      bbox = data.get("target_bbox")
+ 1088      case = data.get("orientation_case")
+ 1089      orientation_ok = data.get("is_orientation_correct")
+ 1090      missing += bbox is None
+ 1091      correct += orientation_ok is True
+ 1092      print(
+ 1093          path.name,
+ 1094          "case=" + str(case),
+ 1095          "orientation_ok=" + str(orientation_ok),
+ 1096          "target_bbox=" + str(bbox),
+ 1097          "iou=" + str(data.get("iou_thermalpad_vs_target_current")),
+ 1098      )
+ 1099  print(
+ 1100      f"summary: captures={len(files)}, "
+ 1101      f"orientation_correct={correct}/5, "
+ 1102      f"missing_target_bbox={missing}/5"
+ 1103  )
+ 1104  PY
+ 1105  clear
+ 1106  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1107  bash scripts/evaluation/task2/run.sh down
+ 1108  task2_isaacsim/scripts/run_recorder.sh record --   --repo_name task2_regression_591def2   --max_episodes 1
+ 1109  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2/task2_isaacsim
+ 1110  export HOST_UID="$(id -u)"
+ 1111  export HOST_GID="$(id -g)"
+ 1112  docker compose   -f docker-compose.yml   -f docker-compose.nvenc.yml   --profile record   run --rm   --entrypoint python3   lerobot_recorder   services/recording/validate_task2_dataset.py   dataset/task2_regression_591def2_v1
+ 1113  clear
+ 1114  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2/task2_isaacsim
+ 1115  export HOST_UID="$(id -u)"
+ 1116  export HOST_GID="$(id -g)"
+ 1117  evidence_dir="/home/robot/2026_ebim_ssd/ebim_evidence/task2_591def2_465c08c"
+ 1118  mkdir -p "$evidence_dir"
+ 1119  docker compose   -f docker-compose.yml   -f docker-compose.nvenc.yml   --profile record   run --rm   --entrypoint python3   lerobot_recorder   -c '
+ 1120  import importlib.metadata as m
+ 1121  for package in ("lerobot", "torch", "torchvision", "numpy"):
+ 1122      print(f"{package}={m.version(package)}")
+ 1123  ' | tee "$evidence_dir/core_versions.txt"
+ 1124  docker compose   -f docker-compose.yml   -f docker-compose.nvenc.yml   --profile record   run --rm   --entrypoint pip3   lerobot_recorder   freeze > "$evidence_dir/pip_freeze.txt"
+ 1125  echo "=== selected packages ==="
+ 1126  grep -Ei   '^(lerobot|torch|torchvision|numpy|transformers|accelerate|safetensors|huggingface[-_]hub)=='   "$evidence_dir/pip_freeze.txt" || true
+ 1127  echo "=== evidence files ==="
+ 1128  wc -l "$evidence_dir/pip_freeze.txt"
+ 1129  sha256sum   "$evidence_dir/core_versions.txt"   "$evidence_dir/pip_freeze.txt"
+ 1130  clear
+ 1131  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1132  bash scripts/evaluation/task2/run.sh up
+ 1133  bash scripts/evaluation/task2/run.sh status
+ 1134  echo "=== ATTEMPT 1 PRE-SAVE EVALUATION ==="
+ 1135  bash scripts/evaluation/task2/run.sh evaluate
+ 1136  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1137  bash scripts/evaluation/task2/run.sh down
+ 1138  clear
+ 1139  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1140  bash scripts/evaluation/task2/run.sh up
+ 1141  bash scripts/evaluation/task2/run.sh status
+ 1142  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1143  bash scripts/evaluation/task2/run.sh down
+ 1144  clear
+ 1145  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1146  bash scripts/evaluation/task2/run.sh up
+ 1147  bash scripts/evaluation/task2/run.sh status
+ 1148  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1149  echo "=== PRE-SAVE EVALUATION ==="
+ 1150  bash scripts/evaluation/task2/run.sh evaluate
+ 1151  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1152  echo "=== PRE-SAVE EVALUATION ==="
+ 1153  bash scripts/evaluation/task2/run.sh evaluate
+ 1154  clear
+ 1155  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1156  bash scripts/evaluation/task2/run.sh down
+ 1157  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1158  bash scripts/evaluation/task2/run.sh up
+ 1159  bash scripts/evaluation/task2/run.sh status
+ 1160  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1161  echo "=== PRE-SAVE EVALUATION ==="
+ 1162  bash scripts/evaluation/task2/run.sh evaluate
+ 1163  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1164  bash scripts/evaluation/task2/run.sh down
+ 1165  clear
+ 1166  docker ps
+ 1167  clear
+ 1168  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1169  bash scripts/evaluation/task2/run.sh up
+ 1170  bash scripts/evaluation/task2/run.sh status
+ 1171  bash scripts/evaluation/task2/run.sh evaluate
+ 1172  clear
+ 1173  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1174  bash scripts/evaluation/task2/run.sh up
+ 1175  bash scripts/evaluation/task2/run.sh status
+ 1176  bash scripts/evaluation/task2/run.sh evaluate
+ 1177  clear
+ 1178  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1179  bash scripts/evaluation/task2/run.sh down
+ 1180  clear
+ 1181  cd ..
+ 1182  cd /scratch1/2026_ebim/benchmark
+ 1183  git restore --staged .
+ 1184  git restore .
+ 1185  git status --short
+ 1186  git lfs status
+ 1187  git status --short
+ 1188  docker stop eval_task2 2>/dev/null || true
+ 1189  docker stop isaac-sim-5-1-0-workshop 2>/dev/null || true
+ 1190  docker stop $(docker ps -q --filter ancestor=duo-teleop-eval:latest) 2>/dev/null || true
+ 1191  docker ps | grep -E "isaac|eval|duo" || true
+ 1192  nvidia-smi
+ 1193  docker ps
+ 1194  docker ps =a
+ 1195  docker ps -a
+ 1196  clear
+ 1197  cd /scratch1/2026_ebim/benchmark
+ 1198  git restore --staged .
+ 1199  git restore .
+ 1200  git clean -fd
+ 1201  git status --short
+ 1202  cd ~
+ 1203  df -h .
+ 1204  docker ps -a
+ 1205  docker image ls
+ 1206  docker info | grep -i "Docker Root Dir"
+ 1207  pwd
+ 1208  ls
+ 1209  cd Documents/
+ 1210  ls
+ 1211  cd 
+ 1212  cd Downloads/
+ 1213  ls
+ 1214  cd ../
+ 1215  ls
+ 1216  clear
+ 1217  pwd
+ 1218  mkdir -p /home/robot/2026_ebim_ssd
+ 1219  cd /home/robot/2026_ebim_ssd
+ 1220  git clone --recurse-submodules https://github.com/EBiM-Benchmark/benchmark.git
+ 1221  cd benchmark
+ 1222  git submodule update --init --recursive
+ 1223  git lfs pull
+ 1224  git status --short
+ 1225  cd /home/robot/2026_ebim_ssd/benchmark/task1_mujoco
+ 1226  chmod +x start.sh eval.sh docker-run.sh
+ 1227  ./start.sh --no-viewer
+ 1228  ./start.sh
+ 1229  cd /home/robot/2026_ebim_ssd/benchmark/task1_mujoco
+ 1230  xhost +local:docker
+ 1231  ./eval.sh sim
+ 1232  clear
+ 1233  ./eval.sh sim
+ 1234  clear
+ 1235  cd /home/robot/2026_ebim_ssd/benchmark/task1_mujoco
+ 1236  cp robotiq_duo_full_scene_minimal_core/teleop/mnet_bridge.py    robotiq_duo_full_scene_minimal_core/teleop/mnet_bridge.py.bak_timing
+ 1237  python3 - <<'PY'
+ 1238  from pathlib import Path
+ 1239  p = Path("robotiq_duo_full_scene_minimal_core/teleop/mnet_bridge.py")
+ 1240  s = p.read_text()
+ 1241  # make sure time is imported
+ 1242  if "import time" not in s:
+ 1243      if "from __future__ import annotations" in s:
+ 1244          s = s.replace(
+ 1245              "from __future__ import annotations\n",
+ 1246              "from __future__ import annotations\n\nimport time\n",
+ 1247              1,
+ 1248          )
+ 1249      else:
+ 1250          s = "import time\n" + s
+ 1251  old_a = """        self.ensure_renderer()
+ 1252          self._renderer.update_scene(data, camera=camera, scene_option=self._scene_opt)
+ 1253          rgb = self._renderer.render()
+ 1254  """
+ 1255  new_a = """        _mnet_t0 = time.perf_counter()
+ 1256          self.ensure_renderer()
+ 1257          _mnet_t1 = time.perf_counter()
+ 1258          self._renderer.update_scene(data, camera=camera, scene_option=self._scene_opt)
+ 1259          _mnet_t2 = time.perf_counter()
+ 1260          rgb = self._renderer.render()
+ 1261          _mnet_t3 = time.perf_counter()
+ 1262  """
+ 1263  old_b = """        msg.data = np.ascontiguousarray(rgb).tobytes()
+ 1264          self._image_pub.publish(msg)
+ 1265          # camera_info is latched-ish by repetition; publish at image rate for simplicity.
+ 1266          self._info_pub.publish(self._info_msg)
+ 1267  """
+ 1268  new_b = """        _mnet_t4 = time.perf_counter()
+ 1269          msg.data = np.ascontiguousarray(rgb).tobytes()
+ 1270          _mnet_t5 = time.perf_counter()
+ 1271          self._image_pub.publish(msg)
+ 1272          _mnet_t6 = time.perf_counter()
+ 1273          # camera_info is latched-ish by repetition; publish at image rate for simplicity.
+ 1274          self._info_pub.publish(self._info_msg)
+ 1275          _mnet_t7 = time.perf_counter()
+ 1276          self._mnet_prof_n = getattr(self, "_mnet_prof_n", 0) + 1
+ 1277          if self._mnet_prof_n % 30 == 0:
+ 1278              print(
+ 1279                  "[mnet-prof] "
+ 1280                  f"ensure={(_mnet_t1-_mnet_t0)*1000:.2f}ms "
+ 1281                  f"update={(_mnet_t2-_mnet_t1)*1000:.2f}ms "
+ 1282                  f"render={(_mnet_t3-_mnet_t2)*1000:.2f}ms "
+ 1283                  f"tobytes={(_mnet_t5-_mnet_t4)*1000:.2f}ms "
+ 1284                  f"img_pub={(_mnet_t6-_mnet_t5)*1000:.2f}ms "
+ 1285                  f"info_pub={(_mnet_t7-_mnet_t6)*1000:.2f}ms "
+ 1286                  f"total={(_mnet_t7-_mnet_t0)*1000:.2f}ms",
+ 1287                  flush=True,
+ 1288              )
+ 1289  """
+ 1290  if old_a not in s:
+ 1291      raise SystemExit("target block A not found")
+ 1292  if old_b not in s:
+ 1293      raise SystemExit("target block B not found")
+ 1294  s = s.replace(old_a, new_a, 1)
+ 1295  s = s.replace(old_b, new_b, 1)
+ 1296  p.write_text(s)
+ 1297  print("patched:", p)
+ 1298  PY
+ 1299  ls
+ 1300  cd /home/robot/2026_ebim_ssd/benchmark/task1_mujoco
+ 1301  cp robotiq_duo_full_scene_minimal_core/teleop/mnet_bridge.py.bak_timing    robotiq_duo_full_scene_minimal_core/teleop/mnet_bridge.py
+ 1302  python3 - <<'PY'
+ 1303  from pathlib import Path
+ 1304  p = Path("robotiq_duo_full_scene_minimal_core/teleop/mnet_bridge.py")
+ 1305  s = p.read_text()
+ 1306  # backup once
+ 1307  bak = p.with_suffix(p.suffix + ".bak_timing2")
+ 1308  if not bak.exists():
+ 1309      bak.write_text(s)
+ 1310  # import time
+ 1311  if "import time\n" not in s:
+ 1312      if "from __future__ import annotations\n" in s:
+ 1313          s = s.replace(
+ 1314              "from __future__ import annotations\n",
+ 1315              "from __future__ import annotations\n\nimport time\n",
+ 1316              1,
+ 1317          )
+ 1318      else:
+ 1319          s = "import time\n" + s
+ 1320  repls = [
+ 1321      (
+ 1322          "        self.ensure_renderer()\n",
+ 1323          "        _mnet_t0 = time.perf_counter()\n"
+ 1324          "        self.ensure_renderer()\n"
+ 1325          "        _mnet_t1 = time.perf_counter()\n",
+ 1326      ),
+ 1327      (
+ 1328          "        self._renderer.update_scene(data, camera=camera, scene_option=self._scene_opt)\n",
+ 1329          "        self._renderer.update_scene(data, camera=camera, scene_option=self._scene_opt)\n"
+ 1330          "        _mnet_t2 = time.perf_counter()\n",
+ 1331      ),
+ 1332      (
+ 1333          "        rgb = self._renderer.render()\n",
+ 1334          "        rgb = self._renderer.render()\n"
+ 1335          "        _mnet_t3 = time.perf_counter()\n",
+ 1336      ),
+ 1337      (
+ 1338          "        msg.data = np.ascontiguousarray(rgb).tobytes()\n",
+ 1339          "        _mnet_t4 = time.perf_counter()\n"
+ 1340          "        msg.data = np.ascontiguousarray(rgb).tobytes()\n"
+ 1341          "        _mnet_t5 = time.perf_counter()\n",
+ 1342      ),
+ 1343      (
+ 1344          "        self._image_pub.publish(msg)\n",
+ 1345          "        self._image_pub.publish(msg)\n"
+ 1346          "        _mnet_t6 = time.perf_counter()\n",
+ 1347      ),
+ 1348      (
+ 1349          "        self._info_pub.publish(self._info_msg)\n",
+ 1350          "        self._info_pub.publish(self._info_msg)\n"
+ 1351          "        _mnet_t7 = time.perf_counter()\n\n"
+ 1352          "        self._mnet_prof_n = getattr(self, '_mnet_prof_n', 0) + 1\n"
+ 1353          "        if self._mnet_prof_n % 30 == 0:\n"
+ 1354          "            print(\n"
+ 1355          "                '[mnet-prof] '\n"
+ 1356          "                f'ensure={(_mnet_t1-_mnet_t0)*1000:.2f}ms '\n"
+ 1357          "                f'update={(_mnet_t2-_mnet_t1)*1000:.2f}ms '\n"
+ 1358          "                f'render={(_mnet_t3-_mnet_t2)*1000:.2f}ms '\n"
+ 1359          "                f'tobytes={(_mnet_t5-_mnet_t4)*1000:.2f}ms '\n"
+ 1360          "                f'img_pub={(_mnet_t6-_mnet_t5)*1000:.2f}ms '\n"
+ 1361          "                f'info_pub={(_mnet_t7-_mnet_t6)*1000:.2f}ms '\n"
+ 1362          "                f'total={(_mnet_t7-_mnet_t0)*1000:.2f}ms',\n"
+ 1363          "                flush=True,\n"
+ 1364          "            )\n",
+ 1365      ),
+ 1366  ]
+ 1367  for old, new in repls:
+ 1368      if old not in s:
+ 1369          raise SystemExit(f"anchor not found:\n{old}")
+ 1370      s = s.replace(old, new, 1)
+ 1371  p.write_text(s)
+ 1372  print("patched:", p)
+ 1373  PY
+ 1374  grep -n "mnet-prof\|_mnet_t" robotiq_duo_full_scene_minimal_core/teleop/mnet_bridge.py
+ 1375  ./eval.sh sim
+ 1376  cd /home/robot/2026_ebim_ssd/benchmark/task1_mujoco
+ 1377  python3 - <<'PY'
+ 1378  from pathlib import Path
+ 1379  p = Path("robotiq_duo_full_scene_minimal_core/teleop/mnet_bridge.py")
+ 1380  s = p.read_text()
+ 1381  # backup
+ 1382  bak = p.with_suffix(p.suffix + ".bak_array_patch")
+ 1383  if not bak.exists():
+ 1384      bak.write_text(s)
+ 1385  # add import array
+ 1386  if "import array\n" not in s:
+ 1387      if "from __future__ import annotations\n" in s:
+ 1388          s = s.replace(
+ 1389              "from __future__ import annotations\n",
+ 1390              "from __future__ import annotations\n\nimport array\n",
+ 1391              1,
+ 1392          )
+ 1393      else:
+ 1394          s = "import array\n" + s
+ 1395  old = "msg.data = np.ascontiguousarray(rgb).tobytes()"
+ 1396  new = "msg.data = array.array('B', np.ascontiguousarray(rgb).tobytes())"
+ 1397  if old not in s:
+ 1398      raise SystemExit("target line not found")
+ 1399  s = s.replace(old, new, 1)
+ 1400  p.write_text(s)
+ 1401  print("patched array.array fast path")
+ 1402  PY
+ 1403  grep -n "import array\|msg.data" robotiq_duo_full_scene_minimal_core/teleop/mnet_bridge.py
+ 1404  ./eval.sh sim
+ 1405  clear
+ 1406  cd /home/robot/2026_ebim_ssd/benchmark/task1_mujoco
+ 1407  git restore robotiq_duo_full_scene_minimal_core/teleop/mnet_bridge.py
+ 1408  python3 - <<'PY'
+ 1409  from pathlib import Path
+ 1410  p = Path("robotiq_duo_full_scene_minimal_core/teleop/mnet_bridge.py")
+ 1411  s = p.read_text()
+ 1412  if "import array\n" not in s:
+ 1413      if "from __future__ import annotations\n" in s:
+ 1414          s = s.replace(
+ 1415              "from __future__ import annotations\n",
+ 1416              "from __future__ import annotations\n\nimport array\n",
+ 1417              1,
+ 1418          )
+ 1419      else:
+ 1420          s = "import array\n" + s
+ 1421  old = "msg.data = np.ascontiguousarray(rgb).tobytes()"
+ 1422  new = "msg.data = array.array('B', np.ascontiguousarray(rgb).tobytes())"
+ 1423  if old not in s:
+ 1424      raise SystemExit("target line not found")
+ 1425  s = s.replace(old, new, 1)
+ 1426  p.write_text(s)
+ 1427  print("applied array.array Image.data patch")
+ 1428  PY
+ 1429  grep -n "import array\|msg.data\|mnet-prof\|_mnet_t"   robotiq_duo_full_scene_minimal_core/teleop/mnet_bridge.py
+ 1430  grep -n "profile\|render-hz\|mnet-width\|mnet-height"   robotiq_duo_full_scene_minimal_core/release/compose.yaml
+ 1431  code .
+ 1432  ./eval.sh sim
+ 1433  clear
+ 1434  ./eval.sh sim
+ 1435  xhost +local:docker
+ 1436  ./eval.sh sim
+ 1437  cd /home/robot/2026_ebim_ssd/benchmark/task1_mujoco
+ 1438  grep -R "VideoWriter\|fourcc\|H264\|avc1\|mp4v" -n . | head -80
+ 1439  docker ps -a --format "table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}" | grep -E "duo|eval|mnet"
+ 1440  df -h .
+ 1441  clear
+ 1442  cd /home/robot/2026_ebim_ssd/benchmark
+ 1443  pwd
+ 1444  git rev-parse --show-toplevel
+ 1445  git rev-parse HEAD
+ 1446  git log -1 --date=iso --format='%H%n%ad%n%s'
+ 1447  git branch --show-current
+ 1448  git status --short --branch
+ 1449  git remote -v
+ 1450  git diff --stat
+ 1451  git diff --name-status
+ 1452  git submodule status --recursive
+ 1453  git fetch --prune origin
+ 1454  git rev-parse origin/main
+ 1455  git rev-list --left-right --count HEAD...origin/main
+ 1456  git log --oneline --decorate HEAD..origin/main -n 30
+ 1457  git log --oneline --decorate origin/main..HEAD -n 30
+ 1458  git diff --stat HEAD..origin/main
+ 1459  git diff --name-status HEAD..origin/main
+ 1460  clear
+ 1461  cd /home/robot/2026_ebim_ssd/benchmark
+ 1462  git diff --cached --stat
+ 1463  git diff --cached --name-status
+ 1464  git lfs status
+ 1465  df -h /home/robot/2026_ebim_ssd
+ 1466  git worktree list
+ 1467  git worktree add --detach /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc origin/main
+ 1468  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1469  git rev-parse HEAD
+ 1470  git status --short --branch
+ 1471  git lfs status
+ 1472  clear
+ 1473  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1474  ls -lh task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1475  file task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1476  ls -lh assets/task2_objects/task2_objects_base.usda
+ 1477  docker --version
+ 1478  docker compose version
+ 1479  nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+ 1480  docker compose --env-file docker/.env.base -f docker/docker-compose.yaml config --profiles
+ 1481  docker compose --env-file docker/.env.base -f docker/docker-compose.yaml config --services
+ 1482  docker ps -a --filter "name=isaac-sim-5-1-0-workshop" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+ 1483  docker image inspect isaac-sim-5.1.0:ebim2026 --format "{{.Id}} {{.Created}}"
+ 1484  docker inspect isaac-sim-5-1-0-workshop --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+ 1485  clear
+ 1486  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1487  realpath .
+ 1488  docker compose --env-file docker/.env.base -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0 config --services
+ 1489  docker inspect isaac-sim-5-1-0-workshop   --format 'OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}} Error={{.State.Error}} FinishedAt={{.State.FinishedAt}}'
+ 1490  task1_isaacsim/scripts/download_large_assets.sh
+ 1491  ls -lh task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1492  ls -lh task1_isaacsim/cable_world/assets/table_board_fixture/Assets/board_segment.usd
+ 1493  ls -lh task1_isaacsim/cable_world/assets/table_board_fixture/Assets/board_segment_upper_right.usd
+ 1494  git status --short
+ 1495  clear
+ 1496  ls -lh /home/robot/2026_ebim_ssd/benchmark/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1497  file /home/robot/2026_ebim_ssd/benchmark/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1498  sha256sum /home/robot/2026_ebim_ssd/benchmark/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1499  clear
+ 1500  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1501  git rev-parse origin/Robotiq_DEMO
+ 1502  git cat-file -s   origin/Robotiq_DEMO:DEMO/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1503  git show   origin/Robotiq_DEMO:DEMO/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd   > task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1504  ls -lh task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1505  file task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1506  sha256sum task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1507  git status --short
+ 1508  clear
+ 1509  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1510  xhost +local:docker
+ 1511  export DISPLAY="${DISPLAY:-:0}"
+ 1512  export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+ 1513  touch "$XAUTHORITY"
+ 1514  docker compose --env-file docker/.env.base -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0 up -d --force-recreate isaac-sim-5-1-0
+ 1515  docker ps --filter "name=isaac-sim-5-1-0-workshop"   --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+ 1516  docker inspect isaac-sim-5-1-0-workshop   --format 'Status={{.State.Status}} OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}}'
+ 1517  docker inspect isaac-sim-5-1-0-workshop   --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+ 1518  docker exec isaac-sim-5-1-0-workshop   test -f /workspace/EBiM_Challenge/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1519  docker exec isaac-sim-5-1-0-workshop   ls -lh /workspace/EBiM_Challenge/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1520  docker exec isaac-sim-5-1-0-workshop   nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+ 1521  clear
+ 1522  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1523  bash task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene barebone   --with-keyboard-teleop   --with-arm-keyboard-teleop   --controller-mode none   --no-republisher   --no-browser
+ 1524  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1525  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1526  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1527  git fetch origin main
+ 1528  git rev-parse HEAD
+ 1529  git rev-parse origin/main
+ 1530  git status --short
+ 1531  git log --oneline HEAD..origin/main
+ 1532  git diff --name-status HEAD..origin/main
+ 1533  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1534  docker exec isaac-sim-5-1-0-workshop   bash -lc "pgrep -af '[s]cene_(barebone|room)\.py|[i]saacsim_fr3duo_teleop' || true"
+ 1535  docker ps --filter "name=task2_"   --format "table {{.Names}}\t{{.Status}}"
+ 1536  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1537  bash task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room   --with-keyboard-teleop   --with-arm-keyboard-teleop   --controller-mode none   --no-republisher   --no-browser   -- --enable-scene-cameras
+ 1538  clear
+ 1539  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1540  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1541  task2_isaacsim/scripts/run_recorder.sh build
+ 1542  bash task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room   --with-keyboard-teleop   --with-arm-keyboard-teleop   --controller-mode none   --no-republisher   --no-browser   -- --record
+ 1543  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1544  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1545  docker ps --filter "name=task2_"   --format "table {{.Names}}\t{{.Status}}"
+ 1546  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1547  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room   --controller-mode none   --no-browser   --no-republisher   -- --record
+ 1548  docker ps
+ 1549  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1550  clear
+ 1551  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1552  scene="scripts/scenes/scene_robot_room_keyboard.py"
+ 1553  if ! grep -q 'SemanticPublish.inputs:semanticLabelsTopicName' "$scene"; then   perl -0pi -e     's/(                \("SemanticPublish\.inputs:enableSemanticLabels", True\),\n)/$1                (\n                    "SemanticPublish.inputs:semanticLabelsTopicName",\n                    "semantic_segmentation_labels",\n                ),\n/'     "$scene"; fi
+ 1554  if ! grep -q 'Bbox2dTightPublish.inputs:semanticLabelsTopicName' "$scene"; then   perl -0pi -e     's/(                \("Bbox2dTightPublish\.inputs:enableSemanticLabels", True\),\n)/$1                (\n                    "Bbox2dTightPublish.inputs:semanticLabelsTopicName",\n                    "semantic_labels",\n                ),\n/'     "$scene"; fi
+ 1555  git diff --check
+ 1556  git status --short
+ 1557  git diff -- "$scene"
+ 1558  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room   --controller-mode none   --no-browser   --no-republisher   -- --record
+ 1559  bash scripts/evaluation/task2/run.sh down
+ 1560  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1561  docker ps
+ 1562  bash scripts/evaluation/task2/run.sh down
+ 1563  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1564  docker ps
+ 1565  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1566  git status --short
+ 1567  git diff --check
+ 1568  git diff --stat
+ 1569  git diff --   task2_isaacsim/docker-compose.yml   scripts/evaluation/task2/docker-compose.yml   scripts/scenes/scene_robot_room_keyboard.py
+ 1570  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1571  git switch -c task2-fixes-20260724
+ 1572  git add --   scripts/evaluation/task2/docker-compose.yml   scripts/scenes/scene_robot_room_keyboard.py   task2_isaacsim/docker-compose.yml
+ 1573  git diff --cached --check
+ 1574  git diff --cached --stat
+ 1575  git commit -m "Fix Task 2 recorder and evaluation runtime"
+ 1576  git status --short
+ 1577  git log -1 --oneline
+ 1578  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1579  git config --local user.name "Allen_HZL"
+ 1580  git config --local user.email "hungzilun@gmail.com"
+ 1581  git commit -m "Fix Task 2 recorder and evaluation runtime"
+ 1582  git status --short
+ 1583  git log -1 --format='%h %an <%ae> %s'
+ 1584  clear
+ 1585  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1586  git fetch origin main
+ 1587  git worktree list
+ 1588  git branch --list task2-pilot-591def2
+ 1589  if [[ -e /home/robot/2026_ebim_ssd/benchmark_task2_591def2 ]]; then   echo "Target worktree path already exists; stop and inspect it.";   exit 1; fi
+ 1590  if git show-ref --verify --quiet refs/heads/task2-pilot-591def2; then   echo "Branch task2-pilot-591def2 already exists; stop and inspect it.";   exit 1; fi
+ 1591  git worktree add   -b task2-pilot-591def2   /home/robot/2026_ebim_ssd/benchmark_task2_591def2   591def249a04bddb022b9bcf87f74f3a0cd9174a
+ 1592  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1593  if ! git cherry-pick 72c0319b38f2bef62aa4353113027e4eff2b0947; then   git status --short;   git diff --name-only --diff-filter=U;   exit 1; fi
+ 1594  git status --short
+ 1595  git log -3 --oneline --decorate
+ 1596  git diff --check 591def2..HEAD
+ 1597  git diff --stat 591def2..HEAD
+ 1598  git diff 591def2..HEAD --   scripts/evaluation/task2/docker-compose.yml   scripts/scenes/scene_robot_room_keyboard.py   task2_isaacsim/docker-compose.yml
+ 1599  docker inspect isaac-sim-5-1-0-workshop   --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+ 1600  clear
+ 1601  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1602  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1603  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1604  old_asset="/home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd"
+ 1605  new_asset="/home/robot/2026_ebim_ssd/benchmark_task2_591def2/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd"
+ 1606  expected_sha="aa1a833de48cc543c73957461dab82fe0979320b7c0b6a0a113d24b500075e5c"
+ 1607  if [[ ! -f "$old_asset" ]]; then   echo "Verified source asset is missing; stop.";   exit 1; fi
+ 1608  source_sha="$(sha256sum "$old_asset" | awk '{print $1}')"
+ 1609  echo "source_sha=$source_sha"
+ 1610  if [[ "$source_sha" != "$expected_sha" ]]; then   echo "Source checksum mismatch; stop.";   exit 1; fi
+ 1611  if [[ -e "$new_asset" ]]; then   new_sha="$(sha256sum "$new_asset" | awk '{print $1}')";   if [[ "$new_sha" != "$expected_sha" ]]; then     echo "Destination exists with unexpected checksum; stop.";     exit 1;   fi; else   install -D -m 0664 "$old_asset" "$new_asset"; fi
+ 1612  ls -lh "$new_asset"
+ 1613  file "$new_asset"
+ 1614  sha256sum "$new_asset"
+ 1615  git check-ignore -v   task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd || true
+ 1616  git status --short
+ 1617  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1618  clear
+ 1619  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1620  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room   --with-arm-keyboard-teleop   -- --record
+ 1621  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1622  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1623  docker ps --format "table {{.Names}}\t{{.Status}}"
+ 1624  clear
+ 1625  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1626  export HOST_UID="$(id -u)"
+ 1627  export HOST_GID="$(id -g)"
+ 1628  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   up -d isaac-sim-5-1-0
+ 1629  docker ps   --filter "name=isaac-sim-5-1-0-workshop"   --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+ 1630  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1631  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1632  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1633  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   down
+ 1634  clear
+ 1635  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1636  export HOST_UID="$(id -u)"
+ 1637  export HOST_GID="$(id -g)"
+ 1638  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   up -d isaac-sim-5-1-0
+ 1639  docker ps   --filter "name=isaac-sim-5-1-0-workshop"   --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+ 1640  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1641  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1642  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1643  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   down
+ 1644  clear
+ 1645  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1646  export HOST_UID="$(id -u)"
+ 1647  export HOST_GID="$(id -g)"
+ 1648  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   up -d isaac-sim-5-1-0
+ 1649  docker ps   --filter "name=isaac-sim-5-1-0-workshop"   --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+ 1650  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1651  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1652  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1653  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1654  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   down
+ 1655  clear
+ 1656  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1657  export HOST_UID="$(id -u)"
+ 1658  export HOST_GID="$(id -g)"
+ 1659  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   up -d isaac-sim-5-1-0
+ 1660  docker ps   --filter "name=isaac-sim-5-1-0-workshop"   --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+ 1661  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1662  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1663  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1664  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1665  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   down
+ 1666  clear
+ 1667  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1668  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1669  clear
+ 1670  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1671  git status
+ 1672  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1673  clear
+ 1674  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1675  bash scripts/evaluation/task2/run.sh down
+ 1676  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1677  docker restart isaac-sim-5-1-0-workshop
+ 1678  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room   --with-arm-keyboard-teleop   -- --record
+ 1679  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1680  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1681  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   down
+ 1682  clear
+ 1683  docker ps -a
+ 1684  df -h .
+ 1685  clear
+ 1686  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --checkpoint "$PI05_CHECKPOINT"   --dataset-root "$PI05_RELATIVE_DATASET"   --max-actions 100   --max-duration-s 300
+ 1687  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1688  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1689  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1690  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1691  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1692  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:first-chunk-fix-20260812
+ 1693  export ROS_DOMAIN_ID=61
+ 1694  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --checkpoint "$PI05_CHECKPOINT"   --dataset-root "$PI05_RELATIVE_DATASET"   --max-actions 100   --max-duration-s 300
+ 1695  cd /scratch1/2026_ebim/
+ 1696  code .
+ 1697  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1698  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1699  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1700  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1701  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1702  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:first-chunk-fix-20260812
+ 1703  export ROS_DOMAIN_ID=61
+ 1704  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --summary-only
+ 1705  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --align-only
+ 1706  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --max-frames 30
+ 1707  clear
+ 1708  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET"
+ 1709  clear
+ 1710  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1711  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1712  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1713  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1714  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1715  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:hard5-20260813
+ 1716  export ROS_DOMAIN_ID=62
+ 1717  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --episode 9
+ 1718  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --checkpoint "$PI05_CHECKPOINT"   --dataset-root "$PI05_RELATIVE_DATASET"   --max-actions 25   --max-duration-s 60
+ 1719  cd /scratch1/2026_ebim/
+ 1720  ls
+ 1721  cd allen_task2_pi05/
+ 1722  ls
+ 1723  cd evidence/
+ 1724  ls
+ 1725  cd ..
+ 1726  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1727  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1728  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1729  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1730  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1731  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:first-chunk-fix-20260812
+ 1732  export ROS_DOMAIN_ID=61
+ 1733  bash task2_isaacsim/baselines/pi05/run_pi05.sh sim-up --gui
+ 1734  clear
+ 1735  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1736  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1737  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1738  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1739  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1740  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:hard5-20260813
+ 1741  export ROS_DOMAIN_ID=62
+ 1742  bash task2_isaacsim/baselines/pi05/run_pi05.sh sim-up --gui
+ 1743  clear
+ 1744  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1745  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1746  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1747  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1748  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1749  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:hard5-20260813
+ 1750  export ROS_DOMAIN_ID=62
+ 1751  bash task2_isaacsim/baselines/pi05/run_pi05.sh sim-up --gui
+ 1752  clear
+ 1753  df -h .
+ 1754  bash task2_isaacsim/baselines/pi05/run_pi05.sh down
+ 1755  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --episode 9
+ 1756  clear
+ 1757  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1758  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1759  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1760  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1761  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1762  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:hard5-20260813
+ 1763  export ROS_DOMAIN_ID=62
+ 1764  bash task2_isaacsim/baselines/pi05/run_pi05.sh down
+ 1765  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --episode 9
+ 1766  clear
+ 1767  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1768  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1769  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1770  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1771  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1772  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:hard5-20260813
+ 1773  export ROS_DOMAIN_ID=62
+ 1774  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --episode 9
+ 1775  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --checkpoint "$PI05_CHECKPOINT" --dataset-root "$PI05_RELATIVE_DATASET"   --max-actions 600 --max-duration-s 60
+ 1776  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --checkpoint "$PI05_CHECKPOINT" --dataset-root "$PI05_RELATIVE_DATASET"   --max-actions 600 --max-duration-s 120
+ 1777  clear
+ 1778  bash task2_isaacsim/baselines/pi05/run_pi05.sh down
+ 1779  clear
+ 1780  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1781  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1782  export PI05_V1_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1783  export PI05_V1_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1784  export PI05_V3_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/training/checkpoints/003000/pretrained_model"
+ 1785  export PI05_V3_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/relative_dataset"
+ 1786  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1787  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1788  export ROS_DOMAIN_ID=62
+ 1789  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_CHECKPOINT"   --dataset-root "$PI05_V1_RELATIVE_DATASET"   --max-actions 600   --max-duration-s 300
+ 1790  clear
+ 1791  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V3_CHECKPOINT"   --dataset-root "$PI05_V3_RELATIVE_DATASET"   --max-actions 600   --max-duration-s 300
+ 1792  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task down
+ 1793  bash task2_isaacsim/baselines/pi05/run_pi05.sh down
+ 1794  clear
+ 1795  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1796  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1797  export PI05_V1_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1798  export PI05_V1_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1799  export PI05_V3_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/training/checkpoints/003000/pretrained_model"
+ 1800  export PI05_V3_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/relative_dataset"
+ 1801  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1802  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1803  export ROS_DOMAIN_ID=62
+ 1804  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_CHECKPOINT"   --dataset-root "$PI05_V1_RELATIVE_DATASET"   --shadow --max-actions 5 --max-duration-s 60
+ 1805  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V3_CHECKPOINT"   --dataset-root "$PI05_V3_RELATIVE_DATASET"   --max-actions 600   --max-duration-s 300
+ 1806  bash task2_isaacsim/baselines/pi05/run_pi05.sh down
+ 1807  clear
+ 1808  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1809  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1810  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1811  export ROS_DOMAIN_ID=62
+ 1812  export PI05_V1_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1813  export PI05_V1_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1814  export PI05_V3_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/training/checkpoints/003000/pretrained_model"
+ 1815  export PI05_V3_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/relative_dataset"
+ 1816  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_CHECKPOINT"   --dataset-root "$PI05_V1_RELATIVE_DATASET"   --shadow   --max-actions 5   --max-duration-s 60
+ 1817  PI05_LAST_RUN="$(ls -dt "$TASK2_PI05_ROOT"/outputs/live_submit_* | head -1)"
+ 1818  python3 - "$PI05_LAST_RUN/live_runner_manifest.json" <<'PY'
+ 1819  import json
+ 1820  import sys
+ 1821  m = json.load(open(sys.argv[1], encoding="utf-8"))
+ 1822  e = m["events"][0]
+ 1823  f = e["freshness"]
+ 1824  print("manifest:", sys.argv[1])
+ 1825  print("valid:", e["valid"])
+ 1826  print("camera stamps:", f["camera_capture_times_s"])
+ 1827  print("state stamps:", f["state_capture_times_s"])
+ 1828  print("camera skew:", f["inter_camera_capture_skew_s"])
+ 1829  print("camera/state skew:", f["observation_capture_skew_s"])
+ 1830  print("capture-to-ready sim:", e["capture_to_ready_sim_s"])
+ 1831  print("commands:", m["command_publications"])
+ 1832  assert e["valid"]
+ 1833  assert len(f["state_capture_times_s"]) == 4
+ 1834  assert f["observation_capture_skew_s"] <= 0.10
+ 1835  assert m["command_publications"] == 0
+ 1836  print("CLOCK ALIGNMENT SHADOW PASS")
+ 1837  PY
+ 1838  PI05_LAST_RUN="$(ls -dt "$TASK2_PI05_ROOT"/outputs/live_submit_* | head -1)"
+ 1839  python3 - "$PI05_LAST_RUN/live_runner_manifest.json" <<'PY'
+ 1840  import json
+ 1841  import sys
+ 1842  m = json.load(open(sys.argv[1], encoding="utf-8"))
+ 1843  e = m["events"][0]
+ 1844  f = e["freshness"]
+ 1845  print("manifest:", sys.argv[1])
+ 1846  print("valid:", e["valid"])
+ 1847  print("camera stamps:", f["camera_capture_times_s"])
+ 1848  print("state stamps:", f["state_capture_times_s"])
+ 1849  print("camera skew:", f["inter_camera_capture_skew_s"])
+ 1850  print("camera/state skew:", f["observation_capture_skew_s"])
+ 1851  print("capture-to-ready sim:", e["capture_to_ready_sim_s"])
+ 1852  print("commands:", m["command_publications"])
+ 1853  assert e["valid"]
+ 1854  assert len(f["state_capture_times_s"]) == 4
+ 1855  assert f["observation_capture_skew_s"] <= 0.10
+ 1856  assert m["command_publications"] == 0
+ 1857  print("CLOCK ALIGNMENT SHADOW PASS")
+ 1858  PY
+ 1859  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V3_CHECKPOINT"   --dataset-root "$PI05_V3_RELATIVE_DATASET"   --shadow   --max-actions 5   --max-duration-s 60
+ 1860  bash task2_isaacsim/baselines/pi05/run_pi05.sh down
+ 1861  df -h .
+ 1862  docker ps
+ 1863  clear
+ 1864  watch -n 5 nvidia-smi
+ 1865  clear
+ 1866  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1867  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1868  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1869  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1870  export ROS_DOMAIN_ID=62
+ 1871  export PI05_V1_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1"
+ 1872  export PI05_V1_30K_CKPT="$PI05_V1_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1873  export PI05_V1_DATASET="$PI05_V1_30K_ROOT/relative_dataset"
+ 1874  export PI05_V2_30K_CONFIG=configs/task2_fixpos_200_v2_expert_30k.yaml
+ 1875  export PI05_V2_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_pi05_v2_expert_30k"
+ 1876  export PI05_V2_30K_CKPT="$PI05_V2_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1877  export PI05_V2_DATASET="$PI05_V2_30K_ROOT/relative_dataset"
+ 1878  export PI05_STAGING_AUDIT="$TASK2_PI05_ROOT/evidence/task2_pi05_v2_full_30k_preflight/startup_staging_audit.json"
+ 1879  export PI05_TEST_EVIDENCE="$TASK2_PI05_ROOT/evidence/task2_pi05_v1_v2_30k"
+ 1880  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_30K_CKPT"   --dataset-root "$PI05_V1_DATASET"   --staging-audit "$PI05_STAGING_AUDIT"   --run-label v1-030000-shadow   --shadow --max-actions 5 --max-duration-s 60
+ 1881  export PI05_V1_SHADOW="$(ls -dt "$TASK2_PI05_ROOT"/outputs/live_submit_v1-030000-shadow_* | head -1)"
+ 1882  bash task2_isaacsim/baselines/pi05/run_pi05.sh verify-shadow   --run-dir "$PI05_V1_SHADOW" --contract v1
+ 1883  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_30K_CKPT"   --dataset-root "$PI05_V1_DATASET"   --staging-audit "$PI05_STAGING_AUDIT"   --run-label v1-030000-shadow   --shadow --max-actions 5 --max-duration-s 60
+ 1884  export PI05_V1_SHADOW="$(ls -dt "$TASK2_PI05_ROOT"/outputs/live_submit_v1-030000-shadow_* | head -1)"
+ 1885  bash task2_isaacsim/baselines/pi05/run_pi05.sh verify-shadow   --run-dir "$PI05_V1_SHADOW" --contract v1
+ 1886  clear
+ 1887  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_30K_CKPT"   --dataset-root "$PI05_V1_DATASET"   --staging-audit "$PI05_STAGING_AUDIT"   --run-label v1-030000-camera-ready-shadow-final   --shadow --max-actions 5 --max-duration-s 60
+ 1888  export PI05_V1_SHADOW="$(ls -dt "$TASK2_PI05_ROOT"/outputs/live_submit_v1-030000-camera-ready-shadow-final_* | head -1)"
+ 1889  bash task2_isaacsim/baselines/pi05/run_pi05.sh verify-shadow   --run-dir "$PI05_V1_SHADOW" --contract v1
+ 1890  clear
+ 1891  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1892  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1893  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1894  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1895  export ROS_DOMAIN_ID=62
+ 1896  export PI05_V1_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1"
+ 1897  export PI05_V1_30K_CKPT="$PI05_V1_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1898  export PI05_V1_DATASET="$PI05_V1_30K_ROOT/relative_dataset"
+ 1899  export PI05_V2_30K_CONFIG=configs/task2_fixpos_200_v2_expert_30k.yaml
+ 1900  export PI05_V2_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_pi05_v2_expert_30k"
+ 1901  export PI05_V2_30K_CKPT="$PI05_V2_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1902  export PI05_V2_DATASET="$PI05_V2_30K_ROOT/relative_dataset"
+ 1903  export PI05_STAGING_AUDIT="$TASK2_PI05_ROOT/evidence/task2_pi05_camera_ready_pad_relative_20260815/startup_staging_audit.json"
+ 1904  export PI05_TEST_EVIDENCE="$TASK2_PI05_ROOT/evidence/task2_pi05_v1_v2_30k"
+ 1905  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_30K_CKPT"   --dataset-root "$PI05_V1_DATASET"   --staging-audit "$PI05_STAGING_AUDIT"   --run-label v1-030000-camera-ready-shadow-final   --shadow --max-actions 5 --max-duration-s 60
+ 1906  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1907  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1908  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1909  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1910  export ROS_DOMAIN_ID=62
+ 1911  export PI05_V1_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1"
+ 1912  export PI05_V1_30K_CKPT="$PI05_V1_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1913  export PI05_V1_DATASET="$PI05_V1_30K_ROOT/relative_dataset"
+ 1914  export PI05_V2_30K_CONFIG=configs/task2_fixpos_200_v2_expert_30k.yaml
+ 1915  export PI05_V2_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_pi05_v2_expert_30k"
+ 1916  export PI05_V2_30K_CKPT="$PI05_V2_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1917  export PI05_V2_DATASET="$PI05_V2_30K_ROOT/relative_dataset"
+ 1918  export PI05_STAGING_AUDIT="$TASK2_PI05_ROOT/evidence/task2_pi05_camera_ready_pad_relative_20260815/startup_staging_audit.json"
+ 1919  export PI05_TEST_EVIDENCE="$TASK2_PI05_ROOT/evidence/task2_pi05_v1_v2_30k"
+ 1920  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_30K_CKPT"   --dataset-root "$PI05_V1_DATASET"   --staging-audit "$PI05_STAGING_AUDIT"   --run-label v1-030000-hard5   --confirm-right-wrist-pad-visible   --max-actions 600 --max-duration-s 300
+ 1921  git remote
+ 1922  git remote -v
+ 1923  git branch
+ 1924  git branch -vv
+ 1925  git status
+ 1926  git add .
+ 1927  git commit -m "HZL v1 v2 30000 steps"
+ 1928  git push
+ 1929  git branch
+ 1930  git fetch collab 30033allen_submit
+ 1931  git switch -c 30033allen_submit --track collab/30033allen_submit
+ 1932  git branch
+ 1933  git log
+ 1934  git pull
+ 1935  ls
+ 1936  cd task2_isaacsim/baselines/pi05
+ 1937  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1938  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1939  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1940  ./run_pi05.sh doctor --profile expert
+ 1941  ./run_pi05.sh dataset --config configs/task2_fixpos_200_v2_expert_30k.yaml
+ 1942  ./run_pi05.sh train --config configs/task2_fixpos_200_v2_expert_30k.yaml --run task2_pi05_fixed_init_30k
+ 1943  LS
+ 1944  git branch
+ 1945  git remote -v
+ 1946  git checkout main
+ 1947  git log
+ 1948  git status
+ 1949  git push
+ 1950  git checkout main
+ 1951  git branch
+ 1952  history
+ 1953  history > aaa.txt
