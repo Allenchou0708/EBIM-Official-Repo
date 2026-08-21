@@ -1,130 +1,99 @@
 # Task 2 Phase I ground-truth controller
 
-## Why this path is being used
+## Submission status
 
-The EBiM Competition organizing committee's announcement forwarded on
-2026-08-19 explicitly relaxed the Phase I simulation rule.  For Phase I
-only, a submission may use object positions and states published directly
-by the simulator.  The announcement explains that Phase I is intended to
-familiarize teams with the tasks and prepare them for real-world evaluation,
-not to require every team to solve the complete perception problem first.
+The organizer email received on 2026-08-19 permits simulator ground-truth
+positions and states in Phase I when their use is declared truthfully.  The
+reopened deadline is Aug 22, 2026 AoE (Aug 23 11:59 UTC / 19:59 Taipei).
+Ground truth is not permitted as a replacement for onboard perception in the
+Phase II physical evaluation.
 
-This repository is therefore testing a deterministic ground-truth controller
-as a legal Phase I recovery path.  The earlier PI0.5 policy pipeline remains
-useful technical work, but its live safety gate stopped on the first shadow
-decision because the raw gripper action was outside its contract and
-inference was slower than the five-step action horizon.  Ground truth removes
-the perception/model-output variables while the simulator manipulation,
-controller, safety gates, packaging, and evidence path are debugged.
+Recommended submission choice: **Option A, policy with disclosed simulator
+ground truth**.  Do not also submit the supporting report as an Option B entry;
+the email allows one option per team and task.  The extension weight stated in
+the email is 0.90 for a ground-truth policy, 0.95 for a policy using the team's
+own perception, and 0.65 for a Technical Report.
 
-This is not a claim that ground truth is valid for Phase II.  The organizer
-announcement says that real-world evaluation must use sensing available on
-the physical platform.  A submission must also declare whether it uses ground
-truth or its own perception; a declaration inconsistent with the submitted
-code may lead to disqualification.
+## Current controller
 
-The same announcement gives the following Phase I weights:
+[`live/ground_truth_joint_lift.py`](live/ground_truth_joint_lift.py) uses the
+simulator's `thermalpad`, `board_target`, deformed pad vertices, joint state,
+and right end-effector pose.  Episode 19 supplies the grasp and transport
+landmarks.  Placement then follows a contact-first sequence:
 
-- policy with ground truth submitted during the extension: `0.90`;
-- policy with own perception submitted during the extension: `0.95`;
-- Technical Report: `0.65`.
+1. carry the pad above the target without over-constraining Z;
+2. move to a calibrated pre-contact XY point while preserving the grasp;
+3. descend until the pad edge lightly contacts the table;
+4. immediately rotate the wrist inward to the demonstrated downward pose;
+5. release, wait for the deformable pad to settle, and retract vertically.
 
-The reopened deadline is Aug 22, 2026 AoE, which the announcement states is
-Aug 23, 2026 11:59 UTC / 19:59 Taipei.  Policy evaluation uses three runs and
-takes their mean.  These facts make a disclosed, tested ground-truth policy a
-reasonable Phase I target, while retaining the perception work for Phase II.
+The controller does not continue descending to improve XY after contact.  It
+also does not claim success merely because a command was sent: lift, contact,
+wrist orientation, release, retract, target height, and deformed-mesh flatness
+are measured from simulator feedback.
 
-Source material is the organizer email titled “The EBiM Competition — Phase I
-reopened until Aug 22 (AoE), new submission options, Phase II dates.”  The
-forwarded `.eml` is reference material and is not copied into Git.
+Two explicit evaluation contracts are implemented:
 
-## Controller contract
+- `nominal`: the unperturbed scene must overlap the target RAM, release, lie
+  on the table, and survive gripper retraction.  The bounded center-distance
+  gate is 55 mm; the final verified run achieved 28.38 mm.
+- `randomized-flat`: object perturbations are treated as a controller
+  generalization diagnostic.  Target XY is not a success gate, but contact,
+  inward wrist rotation, release, table height, mesh flatness, and retraction
+  remain mandatory.
 
-The current implementation uses:
+The pad is accepted as flat when its deformed vertices span no more than 20 mm
+in world Z after release.  This threshold distinguishes the upright/contact
+shape (roughly 100 mm Z span) from a released pad while allowing the visible
+elastic curl in Isaac Sim.  The eval-camera image remains the human audit.
 
-- simulator ground-truth `thermalpad` and `board_target` poses plus pad points;
-- dataset episode 19 link8 landmarks with live translation/yaw anchoring;
-- stamped world-frame end-effector and gripper commands;
-- simulator-clock freshness and skew checks;
-- publisher-contention, base, spine, and gripper gates;
-- measured link8 feedback with bounded position/orientation correction;
-- physical pad-height and target-distance gates before phase advancement;
-- JSON manifests and camera captures as run evidence.
+## Verified nominal result
 
-The controller must not report success merely because a target command was
-published or an arm reached its pose.  Lift, transport, place, release, and
-retract advance only when the measured pad state satisfies their physical
-conditions.
+On 2026-08-21 a fresh reset reported `randomized: false`, and the nominal
+trial ended with `stable_target_place_release_and_retract`:
 
-## Live status on 2026-08-21
+| measurement | result | gate |
+| --- | ---: | ---: |
+| maximum lift above target | 167.84 mm | at least 130 mm |
+| release/final target XY error | 28.38 mm | at most 55 mm |
+| final target Z error | 2.10 mm | at most 12 mm |
+| final pad mesh Z span | 13.84 mm | at most 20 mm |
+| wrist orientation error at release | 0.53 deg | at most 3 deg |
+| release and retract | completed | required |
 
-Current result: **GO for a disclosed Phase I ground-truth submission**.
-
-The physical simulator gate now completes grasp, lift, transport, Cartesian
-alignment, release, and post-release stability.  In addition to a nominal
-success, three independent runs were started from fresh simulator processes,
-received one ROS scene-reset request each, and reported `randomized 6 objects`
-before execution.  All three finished with `stable_place_and_release`:
-
-| evidence | max lift above target | final XY error | final Z error |
-| --- | ---: | ---: | ---: |
-| `run55_random_rmp530_damped/task.json` | 17.21 cm | 5.33 cm | 0.52 mm |
-| `run56_random_success2/retry_yaw_clamp_task.json` | 17.80 cm | 4.66 cm | 3.02 mm |
-| `run58_random_success3_tight/task.json` | 16.83 cm | 4.34 cm | 1.18 mm |
-
-The corresponding SHA-256 values, in table order, are:
-
-- `2b0e0b48f1617b5c3cc03f9c1849418932acf7be24a47efeb92a9e61642228ec`;
-- `43f9e2a0b3d047358c54c6a6f695ab0fd98c4e6cfdf6ce5ac9478c9c60944c95`;
-- `c33910fe6beff862be00f0f4170a78a2355f56cc54f984e451bec17f4eaa5cd3`.
-
-The controller uses these conservative physical gates:
-
-- at least 13 cm maximum lift;
-- a frame-520 checkpoint requiring the pad to remain at least 12 cm above the
-  target and to have moved at least 15 cm in the table plane;
-- final pad-to-target XY and Z errors no greater than 6 cm;
-- an open gripper and a 0.5 s post-release stability dwell.
-
-The randomized recovery path clamps grasp-base yaw compensation to ±5 degrees
-to prevent a long base-offset rotation from colliding with the room, stages
-q399 directly at the live GT-aligned base, uses the canonical Robotiq drive
-gains, replays the dense episode-19 trajectory at 40 Hz, and hands off at
-frame 530 to bounded RMPflow alignment.  Cartesian motion stops integrating as
-soon as release begins, preventing a released pad from driving the target out
-of the workspace.
-
-Primary evidence root:
+Evidence is intentionally outside Git:
 
 ```text
-/scratch1/2026_ebim/allen_task2_pi05/evidence/task2_ground_truth_controller_20260820
+/scratch1/2026_ebim/allen_task2_pi05/evidence/phase1_gt_contact_place_20260821/nominal/
+  controller_result.json
+  final_eval_camera.png
 ```
 
-Nominal reference evidence is
-`run49_release_gate_rmp550/task.json` (`stable_place_and_release`, 3.91 cm XY,
-3.04 mm Z).  Failed exploratory runs remain under the same evidence root and
-must not be mixed with the three successful randomized manifests above.
+The image shows the released pad overlapping the red-outlined target RAM and
+the gripper retracted.  Earlier randomized runs and calibration failures are
+diagnostic only.  In particular, the three older runs documented before this
+revision passed loose XY/Z checks but used the wrong pad orientation; they are
+not valid evidence for the contact-first controller.
 
-## Reproduction
+A fresh perturbed scene also passed `randomized-flat` with
+`stable_flat_place_release_and_retract`: 167.88 mm maximum lift, 58.03 mm
+reported (but ungated) target XY error, 0.73 mm target Z error, 12.32 mm mesh Z
+span, and 1.33 deg wrist orientation error.  Its JSON and image are under
+`randomized_attempt3/` beside the nominal evidence.  Two preceding diagnostics
+were not counted: one spine-staging timeout before manipulation and one
+`pad_lost_during_xy_alignment` stop.
 
-Launch Isaac Sim with ground truth, pose control, reset support, and recording:
+## Known limitations
 
-```bash
-task2_isaacsim/scripts/run_isaacsim_teleop.sh \
-  --scene room --controller-mode none --no-browser --no-republisher -- \
-  --arm-pose-command-control --publish-recording-topics \
-  --publish-ground-truth --scene-reset-hotkey --randomize-objects
-```
+- Open-loop joint landmarks and pre-contact compensation have poor
+  generalization.  A perturbed grasp can slip before placement.
+- Contact friction makes center placement vary by centimeters even in the
+  nominal scene.  The verified result is overlapping and task-successful, not
+  millimeter-accurate pose estimation.
+- The method consumes privileged simulator state and cannot be used unchanged
+  in Phase II.  Replace object poses and pad vertices with onboard RGB/depth
+  perception and retain the measured contact/release safety state machine.
 
-For an evaluation sample, publish exactly one reset request, wait for
-`Scene reset #1 done (randomized 6 objects)`, stage the spine with
-`fixed_stage_spine.py`, then run:
-
-```bash
-python3 task2_isaacsim/baselines/pi05/live/ground_truth_joint_lift.py \
-  --output /data/evidence/task.json
-```
-
-The successful settings are now defaults.  The ROS process must use domain 0,
-Fast DDS, UDPv4 transport, the repository on `PYTHONPATH`, and the same host
-network as Isaac Sim.  Evidence paths are intentionally outside Git.
+See [`PHASE1_POLICY_REPORT.md`](PHASE1_POLICY_REPORT.md) for the supporting
+report and [`PHASE1_SUBMISSION_RUNBOOK.md`](PHASE1_SUBMISSION_RUNBOOK.md) for
+the clean-build and evaluation procedure.

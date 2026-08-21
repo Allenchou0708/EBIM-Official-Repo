@@ -20,6 +20,12 @@ from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray, String
 
+from task2_isaacsim.baselines.pi05.live.ground_truth_pregrasp import (
+    _normalize_quaternion,
+    _quaternion_multiply_xyzw,
+    _slerp,
+    _yaw_from_wxyz,
+)
 from task2_isaacsim.common.state_contract import RIGHT_JOINTS
 from task2_isaacsim.scripts.topics import load_topics
 
@@ -41,7 +47,19 @@ REFERENCE_BASE_XYYAW = (
 )
 REFERENCE_BASE_Z = -0.001785
 GRASP_DEPTH_BIAS_M = 0.0
-
+REFERENCE_PRECONTACT_QUATERNION_XYZW = (
+    -0.04021255299448967,
+    0.9086313843727112,
+    -0.4156099557876587,
+    -0.006350508891046047,
+)
+REFERENCE_PLACE_QUATERNION_XYZW = (
+    -0.03955800458788872,
+    0.9875929951667786,
+    -0.15194131433963776,
+    0.003020714968442917,
+)
+REFERENCE_CONTACT_SWEEP_XY = (0.050, 0.010)
 # Post-arbitration targets from successful dataset episode 19.  Runtime uses
 # only their deltas from frame 399, added to the live GT-aligned joint state.
 JOINT_LANDMARKS = (
@@ -169,12 +187,90 @@ def interpolate_landmark(frame: float) -> tuple[tuple[float, ...], float]:
     return JOINT_LANDMARKS[-1][1], JOINT_LANDMARKS[-1][2]
 
 
+def bounded_axis_step(error: float, speed: float, elapsed: float) -> float:
+    """Return a signed Cartesian correction bounded by speed and elapsed."""
+    maximum = max(0.0, speed) * max(0.0, elapsed)
+    return max(-maximum, min(maximum, error))
+
+
+def bounded_planar_offset(
+    x: float, y: float, maximum_distance: float
+) -> tuple[float, float]:
+    """Clamp a planar offset to a circular displacement envelope."""
+    distance = math.hypot(x, y)
+    limit = max(0.0, maximum_distance)
+    if distance <= limit or distance <= 1.0e-9:
+        return x, y
+    scale = limit / distance
+    return scale * x, scale * y
+
+
+def quaternion_error_deg(
+    first: tuple[float, ...], second: tuple[float, ...]
+) -> float:
+    first = _normalize_quaternion(first)
+    second = _normalize_quaternion(second)
+    dot = abs(sum(a * b for a, b in zip(first, second, strict=True)))
+    return math.degrees(2.0 * math.acos(max(-1.0, min(1.0, dot))))
+
+
+def bounded_orientation_step(
+    current: tuple[float, ...],
+    target: tuple[float, ...],
+    speed_deg_s: float,
+    elapsed: float,
+) -> tuple[float, ...]:
+    """Slerp toward target without exceeding an angular-speed bound."""
+    error_deg = quaternion_error_deg(current, target)
+    if error_deg <= 1.0e-9:
+        return _normalize_quaternion(target)
+    maximum_step_deg = max(0.0, speed_deg_s) * max(0.0, elapsed)
+    return _slerp(current, target, min(1.0, maximum_step_deg / error_deg))
+
+
+def yaw_rotated_reference_quaternion(
+    reference: tuple[float, ...], yaw_delta: float
+) -> tuple[float, ...]:
+    yaw = (0.0, 0.0, math.sin(yaw_delta / 2.0), math.cos(yaw_delta / 2.0))
+    return _quaternion_multiply_xyzw(yaw, reference)
+
+
+def yaw_rotated_planar_offset(
+    offset: tuple[float, float], yaw_delta: float
+) -> tuple[float, float]:
+    cosine, sine = math.cos(yaw_delta), math.sin(yaw_delta)
+    return (
+        cosine * offset[0] - sine * offset[1],
+        sine * offset[0] + cosine * offset[1],
+    )
+
+
+def placement_release_ready(
+    *,
+    xy_error_m: float,
+    pad_height_m: float,
+    orientation_error_deg: float,
+    release_xy_m: float,
+    release_height_m: float,
+    release_height_tolerance_m: float,
+    orientation_tolerance_deg: float,
+    require_target_xy: bool = True,
+) -> bool:
+    return (
+        (not require_target_xy or xy_error_m <= release_xy_m)
+        and abs(pad_height_m - release_height_m)
+        <= release_height_tolerance_m
+        and orientation_error_deg <= orientation_tolerance_deg
+    )
+
+
 class JointLiftNode(Node):
     def __init__(self) -> None:
         super().__init__("task2_ground_truth_joint_lift")
         self.sim_time: float | None = None
         self.joints: tuple[float, ...] | None = None
         self.pad_centroid: tuple[float, float, float] | None = None
+        self.pad_z_span_m: float | None = None
         self.objects: dict[str, tuple[float, ...]] = {}
         self.right_ee: tuple[float, ...] | None = None
         self.publish_count = 0
@@ -226,6 +322,8 @@ class JointLiftNode(Node):
             return
         values = data[2:]
         self.pad_centroid = tuple(sum(values[axis::3]) / count for axis in range(3))
+        z_values = values[2::3]
+        self.pad_z_span_m = max(z_values) - min(z_values)
 
     def _on_objects(self, message: String) -> None:
         try:
@@ -325,6 +423,16 @@ def main() -> int:
     )
     parser.add_argument("--transport-base-speed-mps", type=float, default=0.10)
     parser.add_argument(
+        "--transport-base-alignment-max-initial-xy-m",
+        type=float,
+        default=0.28,
+    )
+    parser.add_argument(
+        "--transport-base-alignment-max-displacement-m",
+        type=float,
+        default=0.28,
+    )
+    parser.add_argument(
         "--feedback-release-frame",
         type=float,
         default=0.0,
@@ -332,9 +440,57 @@ def main() -> int:
     )
     parser.add_argument("--cartesian-handoff-frame", type=float, default=530.0)
     parser.add_argument("--cartesian-speed-mps", type=float, default=0.30)
+    parser.add_argument("--cartesian-max-xy-displacement-m", type=float, default=0.16)
+    parser.add_argument("--cartesian-descent-start-xy-m", type=float, default=0.040)
+    parser.add_argument("--cartesian-descent-speed-mps", type=float, default=0.080)
+    parser.add_argument(
+        "--precontact-lift-m",
+        type=float,
+        default=0.105,
+        help="Pad-centroid height above the table when its lower edge first touches while held upright.",
+    )
+    parser.add_argument("--precontact-lift-speed-mps", type=float, default=0.080)
+    parser.add_argument("--precontact-angular-speed-deg-s", type=float, default=45.0)
+    parser.add_argument("--precontact-orientation-tolerance-deg", type=float, default=3.0)
+    parser.add_argument("--contact-height-tolerance-m", type=float, default=0.006)
+    parser.add_argument("--contact-angular-speed-deg-s", type=float, default=25.0)
+    parser.add_argument("--contact-height-correction-speed-mps", type=float, default=0.015)
+    parser.add_argument("--contact-wrist-z-drop-m", type=float, default=0.005)
+    parser.add_argument(
+        "--contact-sweep-x-m", type=float, default=REFERENCE_CONTACT_SWEEP_XY[0]
+    )
+    parser.add_argument(
+        "--contact-sweep-y-m", type=float, default=REFERENCE_CONTACT_SWEEP_XY[1]
+    )
+    parser.add_argument("--place-orientation-tolerance-deg", type=float, default=3.0)
     parser.add_argument("--cartesian-handoff-settle-s", type=float, default=0.05)
-    parser.add_argument("--alignment-release-xy-m", type=float, default=0.035)
+    parser.add_argument("--alignment-release-xy-m", type=float, default=0.025)
+    parser.add_argument("--alignment-release-height-m", type=float, default=0.006)
+    parser.add_argument(
+        "--alignment-release-height-tolerance-m", type=float, default=0.008
+    )
     parser.add_argument("--alignment-stable-s", type=float, default=0.50)
+    parser.add_argument("--post-release-settle-s", type=float, default=0.20)
+    parser.add_argument("--post-release-retract-m", type=float, default=0.080)
+    parser.add_argument("--post-release-retract-speed-mps", type=float, default=0.10)
+    parser.add_argument("--post-release-retract-tolerance-m", type=float, default=0.010)
+    parser.add_argument("--success-xy-m", type=float, default=0.020)
+    parser.add_argument("--success-z-m", type=float, default=0.012)
+    parser.add_argument(
+        "--placement-contract",
+        choices=("nominal", "randomized-flat"),
+        default="nominal",
+        help=(
+            "nominal requires target XY overlap; randomized-flat accepts the "
+            "same contact/rotate/release motion anywhere near the table"
+        ),
+    )
+    parser.add_argument(
+        "--flat-pad-z-span-m",
+        type=float,
+        default=0.010,
+        help="Maximum GT pad-mesh Z span accepted as flat after release.",
+    )
     args = parser.parse_args()
     rclpy.init()
     node = JointLiftNode()
@@ -368,7 +524,25 @@ def main() -> int:
     grasp_dwell_completed_sim: float | None = None
     cartesian_handoff_started_wall: float | None = None
     cartesian_target: tuple[float, ...] | None = None
+    cartesian_handoff_target: tuple[float, ...] | None = None
+    cartesian_phase: str | None = None
+    precontact_target_quaternion: tuple[float, ...] | None = None
+    place_target_quaternion: tuple[float, ...] | None = None
+    precontact_goal_z_m: float | None = None
+    precontact_goal_xy_m: tuple[float, float] | None = None
+    contact_started_sim: float | None = None
+    contact_ee_z_m: float | None = None
+    contact_rotation_completed_sim: float | None = None
+    contact_pad_centroid_m: tuple[float, float, float] | None = None
     cartesian_stable_since: float | None = None
+    release_pad_height_m: float | None = None
+    release_xy_error_m: float | None = None
+    release_ee_z_m: float | None = None
+    release_orientation_error_deg: float | None = None
+    retract_goal_z_m: float | None = None
+    retract_started_sim: float | None = None
+    retract_completed_sim: float | None = None
+    retract_stable_since: float | None = None
     transport_checkpoint_passed = False
     transport_alignment_started_sim: float | None = None
     transport_alignment_completed_sim: float | None = None
@@ -522,7 +696,8 @@ def main() -> int:
                 error_y = target_pose[1] - node.pad_centroid[1]
                 xy_error = math.hypot(error_x, error_y)
                 if (
-                    xy_error > 0.20
+                    xy_error
+                    > args.transport_base_alignment_max_initial_xy_m
                     or node.pad_centroid[2] - target_pose[2] < 0.10
                 ):
                     reason = "transport_base_alignment_gate_failed"
@@ -541,7 +716,7 @@ def main() -> int:
                 if math.hypot(
                     placement_base[0] - grasp_base[0],
                     placement_base[1] - grasp_base[1],
-                ) > 0.18:
+                ) > args.transport_base_alignment_max_displacement_m:
                     reason = "transport_base_alignment_exceeded_limit"
                     break
                 if xy_error <= 0.012:
@@ -654,6 +829,12 @@ def main() -> int:
                         maximum_pad_height < args.lift_height_m
                         or current_height < minimum_handoff_height
                         or (
+                            table_servo
+                            and current_height < 0.02
+                            and current_xy_error
+                            > args.cartesian_descent_start_xy_m
+                        )
+                        or (
                             table_servo and current_xy_error > 0.15
                         )
                     ):
@@ -661,7 +842,48 @@ def main() -> int:
                         break
                     cartesian_handoff_started_wall = time.monotonic()
                     cartesian_target = node.right_ee
+                    cartesian_handoff_target = node.right_ee
+                    target_yaw_delta = _wrap_angle(
+                        _yaw_from_wxyz(
+                            node.objects["board_target"][3:7]
+                        )
+                        - REFERENCE_TARGET_XYYAW[2]
+                    )
+                    precontact_target_quaternion = (
+                        yaw_rotated_reference_quaternion(
+                            REFERENCE_PRECONTACT_QUATERNION_XYZW,
+                            target_yaw_delta,
+                        )
+                    )
+                    place_target_quaternion = (
+                        yaw_rotated_reference_quaternion(
+                            REFERENCE_PLACE_QUATERNION_XYZW,
+                            target_yaw_delta,
+                        )
+                    )
+                    contact_sweep = yaw_rotated_planar_offset(
+                        (args.contact_sweep_x_m, args.contact_sweep_y_m),
+                        target_yaw_delta,
+                    )
+                    # Compensate before contact because the deformable pad
+                    # can slip out as soon as the inward wrist sweep lays it
+                    # on the table; post-contact EE motion then cannot move it.
+                    precontact_goal_xy_m = (
+                        node.objects["board_target"][0] - contact_sweep[0],
+                        node.objects["board_target"][1] - contact_sweep[1],
+                    )
+                    precontact_goal_z_m = (
+                        cartesian_target[2]
+                        + args.precontact_lift_m
+                        - current_height
+                    )
+                    cartesian_phase = "align_xy"
                 assert cartesian_target is not None
+                assert cartesian_handoff_target is not None
+                assert cartesian_phase is not None
+                assert precontact_target_quaternion is not None
+                assert place_target_quaternion is not None
+                assert precontact_goal_xy_m is not None
                 node.publish_ee(cartesian_target)
                 cartesian_active = (
                     time.monotonic() - cartesian_handoff_started_wall
@@ -672,23 +894,164 @@ def main() -> int:
                     error_x = target_pose[0] - node.pad_centroid[0]
                     error_y = target_pose[1] - node.pad_centroid[1]
                     xy_error = math.hypot(error_x, error_y)
+                    alignment_error_x = (
+                        precontact_goal_xy_m[0] - node.pad_centroid[0]
+                    )
+                    alignment_error_y = (
+                        precontact_goal_xy_m[1] - node.pad_centroid[1]
+                    )
+                    alignment_xy_error = math.hypot(
+                        alignment_error_x, alignment_error_y
+                    )
+                    pad_height = node.pad_centroid[2] - target_pose[2]
                     if release_started_sim is None:
                         delta_sim = max(
                             0.0,
                             node.sim_time - (last_active_sim or node.sim_time),
                         )
-                        maximum_step = args.cartesian_speed_mps * delta_sim
-                        scale = min(
-                            1.0,
-                            maximum_step / max(xy_error, 1.0e-9),
-                        )
-                        cartesian_target = (
-                            cartesian_target[0] + scale * error_x,
-                            cartesian_target[1] + scale * error_y,
-                            *cartesian_target[2:],
-                        )
+                        release_ready = False
+                        if cartesian_phase == "align_xy":
+                            if pad_height < 0.08:
+                                reason = "pad_lost_during_xy_alignment"
+                                break
+                            maximum_step = args.cartesian_speed_mps * delta_sim
+                            scale = min(
+                                1.0,
+                                maximum_step
+                                / max(alignment_xy_error, 1.0e-9),
+                            )
+                            offset_x, offset_y = bounded_planar_offset(
+                                cartesian_target[0]
+                                + scale * alignment_error_x
+                                - cartesian_handoff_target[0],
+                                cartesian_target[1]
+                                + scale * alignment_error_y
+                                - cartesian_handoff_target[1],
+                                args.cartesian_max_xy_displacement_m,
+                            )
+                            cartesian_target = (
+                                cartesian_handoff_target[0] + offset_x,
+                                cartesian_handoff_target[1] + offset_y,
+                                *cartesian_target[2:],
+                            )
+                            if (
+                                alignment_xy_error
+                                <= args.cartesian_descent_start_xy_m
+                            ):
+                                cartesian_phase = "precontact"
+                        elif cartesian_phase == "precontact":
+                            maximum_step = args.cartesian_speed_mps * delta_sim
+                            scale = min(
+                                1.0,
+                                maximum_step
+                                / max(alignment_xy_error, 1.0e-9),
+                            )
+                            offset_x, offset_y = bounded_planar_offset(
+                                cartesian_target[0]
+                                + scale * alignment_error_x
+                                - cartesian_handoff_target[0],
+                                cartesian_target[1]
+                                + scale * alignment_error_y
+                                - cartesian_handoff_target[1],
+                                args.cartesian_max_xy_displacement_m,
+                            )
+                            z_step = bounded_axis_step(
+                                args.precontact_lift_m - pad_height,
+                                args.precontact_lift_speed_mps,
+                                delta_sim,
+                            )
+                            cartesian_target = (
+                                cartesian_handoff_target[0] + offset_x,
+                                cartesian_handoff_target[1] + offset_y,
+                                cartesian_target[2] + z_step,
+                                *cartesian_handoff_target[3:7],
+                            )
+                            precontact_ready = (
+                                pad_height <= args.precontact_lift_m
+                                + args.contact_height_tolerance_m
+                            )
+                            if precontact_ready:
+                                contact_started_sim = node.sim_time
+                                contact_ee_z_m = cartesian_target[2]
+                                contact_pad_centroid_m = node.pad_centroid
+                                cartesian_phase = "contact_rotate_precontact"
+                        elif cartesian_phase == "contact_rotate_precontact":
+                            orientation = bounded_orientation_step(
+                                cartesian_target[3:7],
+                                precontact_target_quaternion,
+                                args.precontact_angular_speed_deg_s,
+                                delta_sim,
+                            )
+                            cartesian_target = (
+                                cartesian_target[0],
+                                cartesian_target[1],
+                                cartesian_target[2],
+                                *orientation,
+                            )
+                            if (
+                                quaternion_error_deg(
+                                    node.right_ee[3:7],
+                                    precontact_target_quaternion,
+                                )
+                                <= args.precontact_orientation_tolerance_deg
+                            ):
+                                cartesian_phase = "contact_rotate"
+                        elif cartesian_phase == "contact_rotate":
+                            assert contact_ee_z_m is not None
+                            orientation = bounded_orientation_step(
+                                cartesian_target[3:7],
+                                place_target_quaternion,
+                                args.contact_angular_speed_deg_s,
+                                delta_sim,
+                            )
+                            z_step = bounded_axis_step(
+                                contact_ee_z_m
+                                - args.contact_wrist_z_drop_m
+                                - cartesian_target[2],
+                                args.contact_height_correction_speed_mps,
+                                delta_sim,
+                            )
+                            cartesian_target = (
+                                cartesian_target[0],
+                                cartesian_target[1],
+                                cartesian_target[2] + z_step,
+                                *orientation,
+                            )
+                            orientation_error = quaternion_error_deg(
+                                node.right_ee[3:7], place_target_quaternion
+                            )
+                            if (
+                                orientation_error
+                                <= args.place_orientation_tolerance_deg
+                            ):
+                                if contact_rotation_completed_sim is None:
+                                    contact_rotation_completed_sim = node.sim_time
+                            release_ready = placement_release_ready(
+                                xy_error_m=xy_error,
+                                pad_height_m=pad_height,
+                                orientation_error_deg=orientation_error,
+                                release_xy_m=args.alignment_release_xy_m,
+                                release_height_m=args.alignment_release_height_m,
+                                release_height_tolerance_m=(
+                                    args.alignment_release_height_tolerance_m
+                                ),
+                                orientation_tolerance_deg=(
+                                    args.place_orientation_tolerance_deg
+                                ),
+                                require_target_xy=(
+                                    args.placement_contract == "nominal"
+                                ),
+                            )
+                            release_orientation_error_deg = orientation_error
+                        else:
+                            raise AssertionError(
+                                f"unsupported Cartesian phase: {cartesian_phase}"
+                            )
                         node.publish_ee(cartesian_target)
-                        if xy_error <= args.alignment_release_xy_m:
+                        if (
+                            cartesian_phase == "contact_rotate"
+                            and release_ready
+                        ):
                             if cartesian_stable_since is None:
                                 cartesian_stable_since = node.sim_time
                             elif (
@@ -696,17 +1059,67 @@ def main() -> int:
                                 >= args.alignment_stable_s
                             ):
                                 release_started_sim = node.sim_time
+                                release_pad_height_m = pad_height
+                                release_xy_error_m = xy_error
+                                release_ee_z_m = node.right_ee[2]
+                                retract_goal_z_m = (
+                                    release_ee_z_m
+                                    + args.post_release_retract_m
+                                )
                         else:
                             cartesian_stable_since = None
+                            if (
+                                contact_rotation_completed_sim is not None
+                                and node.sim_time
+                                - contact_rotation_completed_sim
+                                >= 2.0
+                            ):
+                                reason = "placement_offset_after_contact_rotation"
+                                break
+                    elif (
+                        node.sim_time - release_started_sim
+                        >= args.post_release_settle_s
+                    ):
+                        assert retract_goal_z_m is not None
+                        if retract_started_sim is None:
+                            retract_started_sim = node.sim_time
+                        delta_sim = max(
+                            0.0,
+                            node.sim_time - (last_active_sim or node.sim_time),
+                        )
+                        z_step = bounded_axis_step(
+                            retract_goal_z_m - cartesian_target[2],
+                            args.post_release_retract_speed_mps,
+                            delta_sim,
+                        )
+                        cartesian_target = (
+                            cartesian_target[0],
+                            cartesian_target[1],
+                            cartesian_target[2] + z_step,
+                            *cartesian_target[3:],
+                        )
+                        node.publish_ee(cartesian_target)
+                        retracted = (
+                            node.right_ee[2]
+                            >= retract_goal_z_m
+                            - args.post_release_retract_tolerance_m
+                        )
+                        if retracted:
+                            if retract_stable_since is None:
+                                retract_stable_since = node.sim_time
+                            elif node.sim_time - retract_stable_since >= 0.20:
+                                retract_completed_sim = node.sim_time
+                        else:
+                            retract_stable_since = None
                     if (
                         args.cartesian_handoff_frame < 630.0
                         and release_started_sim is None
                         and
                         node.pad_centroid[2]
                         - node.objects["board_target"][2]
-                        < 0.08
+                        < -0.02
                     ):
-                        reason = "pad_lost_during_cartesian_alignment"
+                        reason = "pad_below_target_before_release"
                         break
             last_active_sim = node.sim_time
             reference_q, grip = interpolate_landmark(frame)
@@ -755,29 +1168,42 @@ def main() -> int:
                 z_error = abs(node.pad_centroid[2] - target_pose[2])
                 gates_pass = (
                     maximum_pad_height >= args.lift_height_m
-                    and xy_error <= 0.06
-                    and z_error <= 0.06
-                    and grip >= 0.95
                     and (
-                        release_started_sim is None
-                        or node.sim_time - release_started_sim >= 0.5
+                        args.placement_contract == "randomized-flat"
+                        or xy_error <= args.success_xy_m
                     )
+                    and z_error <= args.success_z_m
+                    and node.pad_z_span_m is not None
+                    and node.pad_z_span_m <= args.flat_pad_z_span_m
+                    and grip >= 0.95
+                    and retract_completed_sim is not None
                 )
                 if gates_pass:
                     if stable_success_since is None:
                         stable_success_since = node.sim_time
                     elif node.sim_time - stable_success_since >= 0.5:
                         success = True
-                        reason = "stable_place_and_release"
+                        reason = (
+                            "stable_target_place_release_and_retract"
+                            if args.placement_contract == "nominal"
+                            else "stable_flat_place_release_and_retract"
+                        )
                         break
                 else:
                     stable_success_since = None
+                    if (
+                        retract_completed_sim is not None
+                        and node.sim_time - retract_completed_sim >= 1.0
+                    ):
+                        reason = "post_release_placement_unstable"
+                        break
     finally:
         if not success and reason == "host_watchdog_timeout" and node.pad_centroid:
             reason = "place_or_release_gate_timeout"
         result = {
             "success": success,
             "reason": reason,
+            "placement_contract": args.placement_contract,
             "source_episode": 19,
             "source_frames": [item[0] for item in JOINT_LANDMARKS],
             "relative_to_live_joint_state": not args.absolute_dataset_joints,
@@ -785,6 +1211,9 @@ def main() -> int:
             "baseline_pad_centroid_z_m": baseline_height,
             "final_preposition_max_joint_error_rad": final_preposition_error,
             "final_pad_centroid_m": node.pad_centroid,
+            "final_pad_z_span_m": node.pad_z_span_m,
+            "flat_pad_z_span_threshold_m": args.flat_pad_z_span_m,
+            "final_right_ee_world_xyzw": node.right_ee,
             "final_board_target_pose_wxyz": node.objects.get("board_target"),
             "grasp_aligned_base_xyyaw": grasp_base,
             "safe_preposition_base_xyyaw": preposition_base,
@@ -804,6 +1233,20 @@ def main() -> int:
                 else None
             ),
             "release_started_sim": release_started_sim,
+            "release_pad_height_above_target_m": release_pad_height_m,
+            "release_pad_target_xy_error_m": release_xy_error_m,
+            "release_ee_z_m": release_ee_z_m,
+            "release_orientation_error_deg": release_orientation_error_deg,
+            "cartesian_phase": cartesian_phase,
+            "precontact_goal_z_m": precontact_goal_z_m,
+            "precontact_goal_xy_m": precontact_goal_xy_m,
+            "contact_started_sim": contact_started_sim,
+            "contact_ee_z_m": contact_ee_z_m,
+            "contact_rotation_completed_sim": contact_rotation_completed_sim,
+            "contact_pad_centroid_m": contact_pad_centroid_m,
+            "retract_goal_z_m": retract_goal_z_m,
+            "retract_started_sim": retract_started_sim,
+            "retract_completed_sim": retract_completed_sim,
             "cartesian_handoff_started": cartesian_handoff_started_wall is not None,
             "transport_checkpoint_passed": transport_checkpoint_passed,
             "transport_alignment_started_sim": transport_alignment_started_sim,
@@ -827,7 +1270,9 @@ def main() -> int:
                 else None
             ),
             "pad_height_above_target_m": (
-                node.pad_centroid[2] - 0.75 if node.pad_centroid else None
+                node.pad_centroid[2] - node.objects["board_target"][2]
+                if node.pad_centroid and "board_target" in node.objects
+                else None
             ),
             "elapsed_wall_s": time.monotonic() - started_wall,
         }

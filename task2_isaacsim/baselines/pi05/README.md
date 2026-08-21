@@ -4,6 +4,12 @@ This directory contains the code-only Task 2 PI0.5 training and submission
 runner. Datasets, caches, checkpoints, output, and evidence remain under the
 host path configured by `TASK2_PI05_ROOT` and are never added to Git.
 
+The separate, organizer-permitted Phase I ground-truth controller is described
+in [GROUND_TRUTH_PHASE1.md](GROUND_TRUTH_PHASE1.md).  Its supporting policy
+report and clean-evaluation commands are in
+[PHASE1_POLICY_REPORT.md](PHASE1_POLICY_REPORT.md) and
+[PHASE1_SUBMISSION_RUNBOOK.md](PHASE1_SUBMISSION_RUNBOOK.md).
+
 ## Setup and model inputs
 
 Copy `.env.pi05.example` to `.env.pi05` and set the local paths and images.

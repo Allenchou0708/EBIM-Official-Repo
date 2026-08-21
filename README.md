@@ -4,6 +4,15 @@
 
 ## Task 2 PI0.5 submission quick start
 
+For the Phase I simulator-ground-truth control route, current results and the
+email-compliant submission procedure are documented in
+[`GROUND_TRUTH_PHASE1.md`](task2_isaacsim/baselines/pi05/GROUND_TRUTH_PHASE1.md),
+[`PHASE1_POLICY_REPORT.md`](task2_isaacsim/baselines/pi05/PHASE1_POLICY_REPORT.md),
+and
+[`PHASE1_SUBMISSION_RUNBOOK.md`](task2_isaacsim/baselines/pi05/PHASE1_SUBMISSION_RUNBOOK.md).
+This route must be disclosed as using privileged Isaac Sim state and is not a
+Phase II perception solution.
+
 The `submit` branch contains the complete official benchmark tree plus the
 team's code-only PI0.5 training and live runtime. It does not contain datasets,
 caches, logs, tokens, or model weights.
