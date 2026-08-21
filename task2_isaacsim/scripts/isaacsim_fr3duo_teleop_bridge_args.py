@@ -94,6 +94,16 @@ def add_common_bridge_args(parser: argparse.ArgumentParser) -> None:
         "commands are NOT applied (joint states are still published).",
     )
     parser.add_argument(
+        "--arm-pose-command-control",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Drive both arm end effectors through simulator-side RMPflow "
+        "from world-frame PoseStamped targets on the cartesian_control "
+        "topics in config/topics.yaml. Stamped open-fraction targets on "
+        "the paired cartesian_control gripper topics control the grippers. "
+        "Ordinary ROS joint-group commands are not applied while enabled.",
+    )
+    parser.add_argument(
         "--arm-teleop-linear-speed",
         type=float,
         default=0.18,
@@ -116,7 +126,7 @@ def add_common_bridge_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--arm-teleop-gripper-closed",
         type=float,
-        default=0.8,
+        default=0.804,
         help="Gripper driver joint position in radians for the closed "
         "state of the keyboard gripper toggle.",
     )
@@ -129,6 +139,13 @@ def add_common_bridge_args(parser: argparse.ArgumentParser) -> None:
         help="Author Task 1 actuator gains on the base drives "
         "(steer 500/50, wheel 0/5). "
         "Wheel joints need zero position stiffness for velocity control.",
+    )
+    parser.add_argument(
+        "--configure-gripper-drives",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Author the embodiment's canonical 1000/100/200 drive gains "
+        "on the two Robotiq driver joints.",
     )
     parser.add_argument(
         "--apply-gripper-coupled-targets",

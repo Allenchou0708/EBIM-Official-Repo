@@ -73,6 +73,11 @@ FULL_STATES_TOPIC = _TOPICS["recording"]["joint_states_full"]
 ODOM_TOPIC = _TOPICS["recording"]["odom"]
 CMD_VEL_APPLIED_TOPIC = _TOPICS["recording"]["cmd_vel_applied"]
 EE_POSE_TOPICS = dict(_TOPICS["recording"]["ee_pose"])
+EE_TARGET_TOPICS = dict(_TOPICS["cartesian_control"]["ee_target"])
+GRIPPER_OPEN_TARGET_TOPICS = dict(
+    _TOPICS["cartesian_control"]["gripper_open_fraction_target"]
+)
+BASE_HOLD_TARGET_TOPIC = _TOPICS["cartesian_control"]["base_hold_target"]
 EE_POSE_PRIM_NAMES = {
     "left": "left_fr3v2_link8",
     "right": "right_fr3v2_link8",
@@ -122,7 +127,10 @@ ROS_CALLBACK_BUDGET_PER_TICK = 8
 # so held keys cannot wind the RMPflow target far outside the workspace.
 # Targets are stored in the root frame while the spine physically raises
 # the arm base, so the upper z bound gets the spine travel on top.
-ARM_TARGET_EXTENTS_M = np.array([0.7, 0.7, 0.7])
+# The Task 2 dataset's high transport branch reaches about 1.10 m forward
+# from the mobile-base root.  The former 0.70 m displacement from the ready
+# pose rejected even the measured link8 pose at the direct-to-RMP handoff.
+ARM_TARGET_EXTENTS_M = np.array([0.9, 0.9, 0.9])
 ARM_TARGET_SPINE_ALLOWANCE_M = np.array([0.0, 0.0, 0.85])
 
 ARM_TELEOP_CONFIGS = {
@@ -133,7 +141,10 @@ ARM_TELEOP_CONFIGS = {
         "rmpflow_config_path": (
             LULA_ASSETS_DIR / "left_arm_rmpflow_config.yaml"
         ),
-        "end_effector_frame_name": "left_tcp",
+        # The recording/data contract publishes link8 poses.  Controlling
+        # that same frame makes PoseStamped targets directly comparable to
+        # dataset and measured feedback (the gripper TCP is 0.22 m away).
+        "end_effector_frame_name": "left_fr3v2_link8",
         "arm_joint_names": tuple(LEFT_JOINTS),
         "gripper_label": "left_gripper",
         "gripper_driver_joint": LEFT_GRIPPER_DRIVER_JOINT,
@@ -145,7 +156,7 @@ ARM_TELEOP_CONFIGS = {
         "rmpflow_config_path": (
             LULA_ASSETS_DIR / "right_arm_rmpflow_config.yaml"
         ),
-        "end_effector_frame_name": "right_tcp",
+        "end_effector_frame_name": "right_fr3v2_link8",
         "arm_joint_names": tuple(RIGHT_JOINTS),
         "gripper_label": "right_gripper",
         "gripper_driver_joint": RIGHT_GRIPPER_DRIVER_JOINT,
@@ -482,6 +493,16 @@ def _base_drive_gains(joint_name: str):
     return None
 
 
+def _gripper_drive_gains(joint_name: str):
+    """Return the canonical embodiment gains for Robotiq driver joints."""
+    if joint_name in (
+        LEFT_GRIPPER_DRIVER_JOINT,
+        RIGHT_GRIPPER_DRIVER_JOINT,
+    ):
+        return {"stiffness": 1000.0, "damping": 100.0, "max_force": 200.0}
+    return None
+
+
 def _find_drive_joint_ids(
     joint_names: list[str],
 ) -> tuple[list[int], list[int]]:
@@ -629,6 +650,44 @@ def _compose_world_pose(parent_pos, parent_quat, child_pos, child_quat):
         ]
     )
     return pos, quat
+
+
+def _relative_pose(parent_pos, parent_quat, world_pos, world_quat):
+    """Pose in ``parent`` coordinates for a pose expressed in world.
+
+    Quaternions are wxyz numpy arrays.  Gf uses row-vector transform
+    composition here, matching :func:`_compose_world_pose` above.
+    """
+
+    def _mat(pos, quat):
+        matrix = Gf.Matrix4d().SetRotate(
+            Gf.Quatd(
+                float(quat[0]),
+                float(quat[1]),
+                float(quat[2]),
+                float(quat[3]),
+            )
+        )
+        matrix.SetTranslateOnly(
+            Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2]))
+        )
+        return matrix
+
+    relative = _mat(world_pos, world_quat) * _mat(
+        parent_pos, parent_quat
+    ).GetInverse()
+    translation = relative.ExtractTranslation()
+    rotation = relative.ExtractRotationQuat()
+    position = np.array([translation[0], translation[1], translation[2]])
+    quaternion = np.array(
+        [
+            rotation.GetReal(),
+            rotation.GetImaginary()[0],
+            rotation.GetImaginary()[1],
+            rotation.GetImaginary()[2],
+        ]
+    )
+    return position, quaternion
 
 
 def _disable_conflicting_kit_hotkeys(used_keys) -> None:
@@ -812,6 +871,10 @@ class DualArmKeyboardTeleop:
             True: float(args.arm_teleop_gripper_open),
             False: float(args.arm_teleop_gripper_closed),
         }
+        self._pose_command_control = bool(args.arm_pose_command_control)
+        self._pose_subscriptions = []
+        self._base_hold_pose = None
+        self._pose_target_received = {"left": False, "right": False}
 
         # RmpFlow binds articulation joints by URDF name, so the USD must
         # use the exact URDF names (no _candidate_joint_names fuzzing).
@@ -854,6 +917,7 @@ class DualArmKeyboardTeleop:
                     coupled_indices.get(config["gripper_label"], {})
                 ),
                 "gripper_open": True,
+                "gripper_open_fraction": 1.0,
             }
         self._init_home_targets()
 
@@ -862,32 +926,195 @@ class DualArmKeyboardTeleop:
         self._subscription = None
         self._input = None
         self._keyboard = None
-        try:
-            import carb.input  # noqa: PLC0415
-            import omni.appwindow  # noqa: PLC0415
-
-            self._carb_input = carb.input
-            self._build_key_maps(carb.input.KeyboardInput)
-            self._input = carb.input.acquire_input_interface()
-            app_window = omni.appwindow.get_default_app_window()
-            if app_window is None:
-                raise RuntimeError("No Omniverse app window found")
-            self._keyboard = app_window.get_keyboard()
-            self._subscription = self._input.subscribe_to_keyboard_events(
-                self._keyboard, self._on_keyboard_event
-            )
-            _disable_conflicting_kit_hotkeys(self._teleop_keys())
-            print(ARM_TELEOP_CONTROLS_BANNER, flush=True)
-        except Exception as exc:  # noqa: BLE001 - keyboard is optional in headless sessions
+        if not args.arm_keyboard_teleop:
             self._carb_input = None
+        else:
+            try:
+                import carb.input  # noqa: PLC0415
+                import omni.appwindow  # noqa: PLC0415
+
+                self._carb_input = carb.input
+                self._build_key_maps(carb.input.KeyboardInput)
+                self._input = carb.input.acquire_input_interface()
+                app_window = omni.appwindow.get_default_app_window()
+                if app_window is None:
+                    raise RuntimeError("No Omniverse app window found")
+                self._keyboard = app_window.get_keyboard()
+                self._subscription = self._input.subscribe_to_keyboard_events(
+                    self._keyboard, self._on_keyboard_event
+                )
+                _disable_conflicting_kit_hotkeys(self._teleop_keys())
+                print(ARM_TELEOP_CONTROLS_BANNER, flush=True)
+            except Exception as exc:  # noqa: BLE001 - keyboard optional
+                self._carb_input = None
+                print(
+                    f"Warning: dual-arm keyboard teleop unavailable: {exc}",
+                    file=sys.stderr,
+                )
+
+    def bind(self, node: Node) -> None:
+        if not self._pose_command_control:
+            return
+        for side, topic in EE_TARGET_TOPICS.items():
+            self._pose_subscriptions.append(
+                node.create_subscription(
+                    PoseStamped,
+                    topic,
+                    lambda message, side=side: self._on_pose_target(
+                        side, message
+                    ),
+                    10,
+                )
+            )
+        for side, topic in GRIPPER_OPEN_TARGET_TOPICS.items():
+            self._pose_subscriptions.append(
+                node.create_subscription(
+                    JointState,
+                    topic,
+                    lambda message, side=side: self._on_gripper_target(
+                        side, message
+                    ),
+                    10,
+                )
+            )
+        self._pose_subscriptions.append(
+            node.create_subscription(
+                PoseStamped,
+                BASE_HOLD_TARGET_TOPIC,
+                self._on_base_hold_target,
+                10,
+            )
+        )
+        print(
+            "Dual-arm RMPflow PoseStamped control enabled: "
+            + ", ".join(
+                f"{side}={topic}" for side, topic in EE_TARGET_TOPICS.items()
+            )
+            + "; grippers="
+            + ", ".join(
+                f"{side}={topic}"
+                for side, topic in GRIPPER_OPEN_TARGET_TOPICS.items()
+            )
+            + f"; base_hold={BASE_HOLD_TARGET_TOPIC}"
+            + " (frame_id=world; stamped gripper open fraction in [0,1])",
+            flush=True,
+        )
+
+    def _on_pose_target(self, side: str, message: PoseStamped) -> None:
+        if message.header.frame_id != "world":
             print(
-                f"Warning: dual-arm keyboard teleop unavailable: {exc}",
+                f"Rejected {side} EE target: frame_id must be 'world'",
                 file=sys.stderr,
+            )
+            return
+        pose = message.pose
+        world_position = np.array(
+            [pose.position.x, pose.position.y, pose.position.z], dtype=float
+        )
+        world_quat = np.array(
+            [
+                pose.orientation.w,
+                pose.orientation.x,
+                pose.orientation.y,
+                pose.orientation.z,
+            ],
+            dtype=float,
+        )
+        if not np.all(np.isfinite(world_position)) or not np.all(
+            np.isfinite(world_quat)
+        ):
+            print(f"Rejected {side} EE target: non-finite pose", file=sys.stderr)
+            return
+        quat_norm = float(np.linalg.norm(world_quat))
+        if quat_norm < 1.0e-6:
+            print(
+                f"Rejected {side} EE target: zero-norm orientation",
+                file=sys.stderr,
+            )
+            return
+        world_quat /= quat_norm
+        root_position, root_quat = self.robot.get_world_pose()
+        local_position, local_quat = _relative_pose(
+            np.asarray(root_position, dtype=float),
+            np.asarray(root_quat, dtype=float),
+            world_position,
+            world_quat,
+        )
+        arm = self._arms[side]
+        if np.any(local_position < arm["target_min"]) or np.any(
+            local_position > arm["target_max"]
+        ):
+            print(
+                f"Rejected {side} EE target outside bounded workspace: "
+                f"{local_position.tolist()}",
+                file=sys.stderr,
+            )
+            return
+        if self._base_hold_pose is None:
+            self._base_hold_pose = (
+                np.asarray(root_position, dtype=float).copy(),
+                np.asarray(root_quat, dtype=float).copy(),
+            )
+            print(
+                "PoseStamped base hold latched at "
+                f"position={self._base_hold_pose[0].tolist()} ",
+                f"orientation_wxyz={self._base_hold_pose[1].tolist()}",
+                flush=True,
+            )
+        arm["target_position"] = local_position
+        arm["target_quat"] = local_quat
+        self._pose_target_received[side] = True
+
+    def _on_gripper_target(self, side: str, message: JointState) -> None:
+        if len(message.position) != 1:
+            print(
+                f"Rejected {side} gripper target: expected one open fraction",
+                file=sys.stderr,
+            )
+            return
+        open_fraction = float(message.position[0])
+        if not math.isfinite(open_fraction) or not 0.0 <= open_fraction <= 1.0:
+            print(
+                f"Rejected {side} gripper target outside [0,1]: "
+                f"{open_fraction}",
+                file=sys.stderr,
+            )
+            return
+        self._arms[side]["gripper_open_fraction"] = open_fraction
+
+    def _on_base_hold_target(self, message: PoseStamped) -> None:
+        if message.header.frame_id != "world":
+            print("Rejected base hold target outside world frame", file=sys.stderr)
+            return
+        pose = message.pose
+        position = np.array(
+            [pose.position.x, pose.position.y, pose.position.z], dtype=float
+        )
+        orientation = np.array(
+            [
+                pose.orientation.w,
+                pose.orientation.x,
+                pose.orientation.y,
+                pose.orientation.z,
+            ],
+            dtype=float,
+        )
+        norm = np.linalg.norm(orientation)
+        if not np.all(np.isfinite(position)) or not math.isfinite(norm) or norm < 1e-8:
+            print("Rejected invalid base hold target", file=sys.stderr)
+            return
+        normalized_orientation = orientation / norm
+        previous = self._base_hold_pose
+        self._base_hold_pose = (position, normalized_orientation)
+        if previous is None:
+            print(
+                f"Explicit base hold target latched at {position.tolist()}",
+                flush=True,
             )
 
     @property
     def available(self) -> bool:
-        return self._subscription is not None
+        return self._subscription is not None or self._pose_command_control
 
     def _build_key_maps(self, keyboard_input) -> None:
         # Per-arm key clusters: (fwd, back, left, right, up, down),
@@ -1014,6 +1241,9 @@ class DualArmKeyboardTeleop:
             for arm_name, arm in self._arms.items():
                 if event.input == arm["gripper_key"]:
                     arm["gripper_open"] = not arm["gripper_open"]
+                    arm["gripper_open_fraction"] = (
+                        1.0 if arm["gripper_open"] else 0.0
+                    )
                     state = "open" if arm["gripper_open"] else "closed"
                     print(f"{arm_name} gripper: {state}", flush=True)
             if event.input == self._reset_key:
@@ -1053,7 +1283,11 @@ class DualArmKeyboardTeleop:
             driver_index = arm["gripper_driver_index"]
             if driver_index is None:
                 continue
-            position = self._gripper_positions[arm["gripper_open"]]
+            open_fraction = float(arm["gripper_open_fraction"])
+            position = (
+                open_fraction * self._gripper_positions[True]
+                + (1.0 - open_fraction) * self._gripper_positions[False]
+            )
             gripper_targets[driver_index] = position
             for coupled_index, multiplier in arm["gripper_coupled"].items():
                 gripper_targets[coupled_index] = position * multiplier
@@ -1077,6 +1311,11 @@ class DualArmKeyboardTeleop:
         physics steps), so the loop runs at render rate in GUI sessions and
         at physics rate headless. Defaults to the physics dt.
         """
+        if self._base_hold_pose is not None:
+            position, orientation = self._base_hold_pose
+            self.robot.set_world_pose(position, orientation)
+            self.robot.set_linear_velocity(np.zeros(3, dtype=float))
+            self.robot.set_angular_velocity(np.zeros(3, dtype=float))
         if frame_duration is None:
             frame_duration = self._physics_dt
         self._integrate_held_keys(frame_duration)
@@ -1139,16 +1378,27 @@ class DualArmKeyboardTeleop:
             )
         self._apply_gripper_targets(controller)
 
+    def reset_motion_policy(self, side: str) -> None:
+        """Keep an RMPflow rollout synchronized while joint control owns it."""
+        self._arms[side]["rmpflow"].reset()
+
+    def has_pose_target(self, side: str) -> bool:
+        """Return whether this episode has supplied a valid Cartesian target."""
+        return self._pose_target_received[side]
+
     def reset_targets(self) -> None:
         """Re-initialize both arm targets from FK of the live joint state
         and reopen the grippers (for scene resets between episodes)."""
         for arm in self._arms.values():
             arm["gripper_open"] = True
+            arm["gripper_open_fraction"] = 1.0
             rmpflow = arm["rmpflow"]
             # Drop the internal rollout state so the policy does not glide
             # back from the pre-reset pose.
             if hasattr(rmpflow, "reset"):
                 rmpflow.reset()
+        self._pose_target_received = {"left": False, "right": False}
+        self._base_hold_pose = None
         self._init_home_targets()
 
 
@@ -1317,6 +1567,13 @@ class IsaacSimRosBridge(Node):
                     flush=True,
                 )
         return stale
+
+    def command_group_fresh(self, label: str, timeout_sec: float) -> bool:
+        received_sec = self._latest_command_time_sec[label]
+        if received_sec is None:
+            return False
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+        return now_sec - received_sec <= timeout_sec
 
     def apply_commands(
         self,
@@ -1564,6 +1821,8 @@ def prepare_robot_prim(robot_prim_path: str, args) -> None:
         _deactivate_embedded_graphs(robot_prim_path)
     if args.configure_base_drives:
         _configure_drives(robot_prim_path, _base_drive_gains)
+    if args.configure_gripper_drives:
+        _configure_drives(robot_prim_path, _gripper_drive_gains)
 
 
 def setup_robot_control(
@@ -1628,7 +1887,11 @@ def setup_robot_control(
             )
 
     arm_keyboard_teleop = None
-    if args.arm_keyboard_teleop and args.headless:
+    if (
+        args.arm_keyboard_teleop
+        and not args.arm_pose_command_control
+        and args.headless
+    ):
         # Kit still creates an app-window keyboard headless, so the teleop
         # would "work" while silently blocking ROS arm commands.
         print(
@@ -1636,7 +1899,7 @@ def setup_robot_control(
             "sessions; ROS arm commands stay active.",
             file=sys.stderr,
         )
-    elif args.arm_keyboard_teleop:
+    elif args.arm_keyboard_teleop or args.arm_pose_command_control:
         try:
             arm_keyboard_teleop = DualArmKeyboardTeleop(
                 robot,
@@ -1699,6 +1962,8 @@ def run_teleop_loop(
     )
     if spine_keyboard_controller is not None:
         spine_keyboard_controller.bind(node)
+    if arm_keyboard_teleop is not None:
+        arm_keyboard_teleop.bind(node)
     for callback in tick_callbacks:
         if hasattr(callback, "bind"):
             callback.bind(node)
@@ -1722,9 +1987,11 @@ def run_teleop_loop(
                 arm_keyboard_teleop is not None
                 and arm_keyboard_teleop.available
             )
-            # Exclusive arbitration: the keyboard teleop replaces the ROS
-            # arm and gripper commands (the only groups apply_commands
-            # handles); joint states are still published below.
+            # Pose/RMPflow is the normal owner.  A fresh conventional joint
+            # command may override its action for one control tick; this is
+            # used for short, contact-critical dataset-relative trajectories.
+            # The hard freshness window prevents an ended replay from
+            # permanently pinning stale joint targets.
             if not arm_teleop_active:
                 node.apply_commands(
                     robot,
@@ -1762,7 +2029,19 @@ def run_teleop_loop(
             if spine_keyboard_controller is not None:
                 spine_keyboard_controller.apply()
             if arm_teleop_active:
+                for side in ("left", "right"):
+                    if (
+                        node.command_group_fresh(f"{side}_arm", 0.25)
+                        and arm_keyboard_teleop.has_pose_target(side)
+                    ):
+                        arm_keyboard_teleop.reset_motion_policy(side)
                 arm_keyboard_teleop.apply(loop_dt)
+                node.apply_commands(
+                    robot,
+                    group_indices,
+                    coupled_indices,
+                    timeout_sec=0.25,
+                )
             # With render=False each iteration advances a single physics_dt, so
             # headless keeps the fastest possible ROS command/state loop.
             world.step(render=rendering)

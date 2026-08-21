@@ -1,5 +1,8 @@
 # Task 2 PI0.5：V1/V2 30k GUI 測試指令
 
+> Phase I ground-truth 路線的規則依據、揭露要求與三次隨機成功證據，見
+> [GROUND_TRUTH_PHASE1.md](GROUND_TRUTH_PHASE1.md)。
+
 ## 變數與路徑
 
 每個 terminal 都先執行：

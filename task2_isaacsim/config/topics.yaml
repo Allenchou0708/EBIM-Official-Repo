@@ -43,6 +43,17 @@ teleop:
   pedal_state: /pedal/state
   spine_target: /isaac/spine_target
 
+# Optional simulator-side RMPflow target interface. Enabled only with
+# --arm-pose-command-control; PoseStamped messages must use frame_id=world.
+cartesian_control:
+  base_hold_target: /isaac/base_hold_target
+  ee_target:
+    left: /isaac/left_ee_target
+    right: /isaac/right_ee_target
+  gripper_open_fraction_target:
+    left: /isaac/left_gripper_open_fraction_target
+    right: /isaac/right_gripper_open_fraction_target
+
 bridge:
   # state: published by the bridge; command / browser_command: consumed by
   # the bridge (browser variants only when browser command topics are on).
