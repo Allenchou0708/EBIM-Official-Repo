@@ -1,8 +1,15 @@
 # Copyright (c) 2026 The EBiM Benchmark Contributors
 # SPDX-License-Identifier: Apache-2.0
-# PI0.5 Task 2 submission runtime. Build from the repository root.
+# EBiM Phase I Task 2 ground-truth policy runtime.
+# Build from the repository root; no checkpoint or dataset is required.
 ARG TRAINING_IMAGE=ghcr.io/allenchou0708/ebim-task2-pi05@sha256:e69f329e94be38bc1b1431c35ee556c846c9ff4dbd2bb1036f1971961bd5e1a3
 FROM ${TRAINING_IMAGE}
+
+LABEL org.opencontainers.image.title="EBiM Phase I Task 2 GT policy" \
+      org.opencontainers.image.description="Disclosed simulator-ground-truth thermal-pad placement policy" \
+      org.opencontainers.image.source="https://github.com/Allenchou0708/EBIM-Official-Repo" \
+      org.opencontainers.image.version="phase1-gt-20260821" \
+      org.opencontainers.image.revision="task2_gt_control_20260820"
 
 USER root
 RUN apt-get update \

@@ -4,6 +4,14 @@
 .gitignore
 # ignore docs
 docs/
+# ignore benchmark tasks and root assets not used by the Task 2 image
+assets/
+task1_isaacsim/
+task1_mujoco/
+task3_isaacsim/
+task3_mujoco/
+newton/
+third_party/
 # ignore logs
 **/logs/
 **/runs/

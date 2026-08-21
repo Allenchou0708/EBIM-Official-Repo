@@ -18,21 +18,22 @@ checkout mounted at `/workspace/EBiM_Challenge`.
 
 ```bash
 git clone --branch task2_gt_control_20260820 --recurse-submodules \
-  git@github.com:Allenchou0708/EBIM-Official-Repo.git ebim-task2-phase1
+  https://github.com/Allenchou0708/EBIM-Official-Repo.git ebim-task2-phase1
 cd ebim-task2-phase1
 
-docker build -t ebim-task2-pi05-submit:phase1 .
-docker run --rm ebim-task2-pi05-submit:phase1 health
+docker build --pull -t ebim-task2-phase1-gt:latest .
+docker run --rm ebim-task2-phase1-gt:latest health
+docker run --rm ebim-task2-phase1-gt:latest unit-tests
 ```
 
 Set the shared runtime values in every terminal:
 
 ```bash
 cd /absolute/path/to/ebim-task2-phase1
-export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:phase1
+export PI05_LIVE_IMAGE=ebim-task2-phase1-gt:latest
 export ROS_DOMAIN_ID=0
-export TASK2_EVIDENCE_DIR=/absolute/path/to/evidence/task2-phase1-nominal
-mkdir -p "$TASK2_EVIDENCE_DIR"
+export EVIDENCE_ROOT=/absolute/path/to/evidence/task2-phase1-nominal
+mkdir -p "$EVIDENCE_ROOT"
 ```
 
 Evidence must be outside the Git checkout and writable by the current user.
@@ -51,38 +52,132 @@ PI05_LIVE_IMAGE="$PI05_LIVE_IMAGE" \
 Wait until the scene reports that the robot room and ROS bridge are ready.
 Leave this terminal running.
 
-Terminal 2 runs exactly three attempts.  Every attempt requests a fresh reset
-and rejects the run unless the reset event contains `randomized: false`:
+Each attempt then performs the visible startup sequence required for the GT
+demonstration:
+
+1. reset to the scene's initial robot pose;
+2. physically drive the base with `/pedal/state` to the live-pad grasp pose;
+3. command and verify the spine height;
+4. apply only a bounded millimetre-scale base trim, then converge the arm to
+   dataset frame 399;
+5. grasp, carry, lower only until the pad edge reaches the table, rotate the
+   wrist downward without further Z drop, release, and retract.
+
+For the nominal scene, the launcher uses a calibrated 50 mm Y sweep rather
+than the randomized diagnostic's 10 mm sweep.  This starts contact 40 mm
+farther toward negative Y so the positive-Y motion during wrist rotation puts
+the pad center near the memory centerline.  `CONTACT_SWEEP_Y_M` is an explicit
+engineering override; leave it unset for formal scoring.
+
+The launcher does not pass the legacy `--preposition-at-live-grasp-base`
+switch.  A direct root-pose jump from the initial scene to the grasp pose is
+not part of the submission path.
+
+Before the three runs, start the repository eval-camera service in Terminal 3.
+It is the local development implementation of the Rulebook IoU/orientation
+metric; the organizer's own evaluator remains authoritative:
 
 ```bash
-PI05_LIVE_IMAGE="$PI05_LIVE_IMAGE" \
-TASK2_EVIDENCE_DIR="$TASK2_EVIDENCE_DIR" \
-  bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh \
-  nominal 3 | tee "$TASK2_EVIDENCE_DIR/nominal_three_runs.log"
+export ROS_DOMAIN_ID=0
+export ISAAC_DOCKER_ROOT="$EVIDENCE_ROOT/eval_runtime"
+bash scripts/evaluation/task2/setup.sh
+bash scripts/evaluation/task2/run.sh up
 ```
 
-The command exits 0 only when all three attempts pass.  `controller_result.json`
-contains the last attempt; the terminal log contains all three summaries.  If
-per-attempt JSON files are needed, use a different `TASK2_EVIDENCE_DIR` for
-each `nominal 1` invocation.
+Terminal 2 runs exactly three attempts into independent directories and
+captures the eval-camera result before the next reset.  Every attempt rejects
+the run unless the reset event contains `randomized: false`:
+
+```bash
+export EVIDENCE_ROOT=/absolute/path/to/evidence/task2-phase1-nominal
+export ISAAC_DOCKER_ROOT="$EVIDENCE_ROOT/eval_runtime"
+for run in 1 2 3; do
+  PI05_LIVE_IMAGE="$PI05_LIVE_IMAGE" \
+  TASK2_EVIDENCE_DIR="$EVIDENCE_ROOT/run_$run" \
+    bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh \
+      nominal 1 || exit $?
+  bash scripts/evaluation/task2/run.sh evaluate || exit $?
+done
+```
+
+Each policy invocation exits 0 only when that attempt passes.  Every run
+directory contains its own `base_stage.json`, `spine_stage.json`, and
+`controller_result.json`; the evaluator directory contains one timestamped
+capture per run.
+
+After all three, require three correct-orientation captures and compute the
+unselected mean IoU:
+
+```bash
+python3 -c '
+import json, pathlib, statistics, sys
+files = sorted(pathlib.Path(sys.argv[1]).glob("eval_camera_iou_*.json"))
+assert len(files) == 3, files
+rows = [json.loads(path.read_text()) for path in files]
+assert all(row["is_orientation_correct"] for row in rows)
+ious = [row["iou_thermalpad_vs_target_current"] for row in rows]
+print("IOU", ious, "MEAN", statistics.fmean(ious))
+' "$ISAAC_DOCKER_ROOT/eval-task2/evaluate"
+```
+
+First verify that startup staging was physical and settled:
+
+```bash
+for run in 1 2 3; do
+RUN_DIR="$EVIDENCE_ROOT/run_$run"
+python3 -c '
+import json, math, pathlib, sys
+base = json.loads(pathlib.Path(sys.argv[1]).read_text())
+spine = json.loads(pathlib.Path(sys.argv[2]).read_text())
+assert base["success"] is True
+assert base["target_source"] == "live_thermalpad_gt"
+assert [p["phase"] for p in base["route"]][:3] == [
+    "BACK", "STOP_AFTER_BACK", "STRAFE_RIGHT"
+]
+assert math.dist(base["final_pose"][:2], base["target"][:2]) <= 0.006
+assert spine["success"] is True and spine["reason"] == "stable"
+print("STAGING PASS", base["final_pose"], spine["final_position_m"])
+' "$RUN_DIR/base_stage.json" "$RUN_DIR/spine_stage.json"
+done
+```
 
 For each JSON, require:
 
 ```bash
+for run in 1 2 3; do
+RUN_DIR="$EVIDENCE_ROOT/run_$run"
 python3 -c '
 import json, pathlib, sys
 d = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert d["success"] is True
 assert d["placement_contract"] == "nominal"
 assert d["reason"] == "stable_target_place_release_and_retract"
+assert d["base_preposition_mode"] == "measured_odom_bounded_alignment"
+assert d["base_preposition_completed_sim"] is not None
 assert d["release_started_sim"] is not None
 assert d["retract_completed_sim"] is not None
-assert d["final_pad_target_xy_error_m"] <= 0.055
+assert d["minimum_contact_ee_z_m"] == 0.903
+assert d["contact_ee_tracking_margin_m"] == 0.019
+assert d["contact_ee_clearance_tolerance_m"] == 0.001
+assert d["contact_ee_z_m"] >= d["minimum_contact_ee_z_m"]
+assert (d["minimum_observed_contact_ee_z_m"]
+        + d["contact_ee_clearance_tolerance_m"]
+        >= d["minimum_contact_ee_z_m"])
+assert d["release_ee_z_m"] >= 0.900
+assert d["final_pad_target_xy_error_m"] <= 0.060
 assert d["final_pad_target_z_error_m"] <= 0.012
 assert d["final_pad_z_span_m"] <= 0.020
 print("PASS", d["final_pad_target_xy_error_m"], d["final_pad_z_span_m"])
-' "$TASK2_EVIDENCE_DIR/controller_result.json"
+' "$RUN_DIR/controller_result.json"
+done
 ```
+
+The EE-Z assertions are the nominal-scene clearance audit, not a generic link
+collision sensor.  Preserve an eval-camera video/contact sheet for each formal
+run and visually verify that the pad reaches the table first, the fingertips
+retain a gap, and the gripper retracts.  A run reporting
+`unsafe_gripper_table_clearance` is a failed attempt and must not be retried by
+lowering the floor.
 
 ## 4. Randomized action diagnostic
 
@@ -113,18 +208,18 @@ a placement success.
 
 ```bash
 python3 -m py_compile \
-  task2_isaacsim/baselines/pi05/live/ground_truth_joint_lift.py
+  task2_isaacsim/baselines/pi05/live/ground_truth_joint_lift.py \
+  task2_isaacsim/baselines/pi05/live/fixed_stage_base.py
 bash -n \
   task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh
 git diff --check
 
-docker run --rm --entrypoint /bin/bash \
-  -e PYTHONPATH=/workspace/EBiM_Challenge:/opt/ros/jazzy/lib/python3.12/site-packages \
-  -v "$PWD:/workspace/EBiM_Challenge:ro" \
-  "$PI05_LIVE_IMAGE" -lc \
-  'source /opt/ros/jazzy/setup.bash && /opt/lerobot/.venv/bin/python \
-   -m unittest task2_isaacsim.tests.test_ground_truth_joint_lift'
+docker run --rm "$PI05_LIVE_IMAGE" health
+docker run --rm "$PI05_LIVE_IMAGE" unit-tests
 ```
+
+Do not set `PI05_MOUNT_SOURCE=1` for this audit.  Both commands must exercise
+the source baked into the exact image that will be submitted.
 
 ## 6. Submission checklist
 

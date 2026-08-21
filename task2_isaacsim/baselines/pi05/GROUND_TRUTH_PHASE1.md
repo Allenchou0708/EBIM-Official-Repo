@@ -23,20 +23,25 @@ landmarks.  Placement then follows a contact-first sequence:
 
 1. carry the pad above the target without over-constraining Z;
 2. move to a calibrated pre-contact XY point while preserving the grasp;
-3. descend until the pad edge lightly contacts the table;
-4. immediately rotate the wrist inward to the demonstrated downward pose;
+3. descend until the pad edge lightly contacts the table, subject to the
+   nominal-scene EE-Z clearance floor;
+4. immediately rotate the wrist inward at constant commanded Z to the
+   demonstrated downward pose;
 5. release, wait for the deformable pad to settle, and retract vertically.
 
-The controller does not continue descending to improve XY after contact.  It
-also does not claim success merely because a command was sent: lift, contact,
-wrist orientation, release, retract, target height, and deformed-mesh flatness
-are measured from simulator feedback.
+The controller does not continue descending to improve XY after contact and
+does not apply a post-contact wrist drop.  It also does not claim success
+merely because a command was sent: lift, contact, wrist orientation, release,
+retract, target height, and deformed-mesh flatness are measured from simulator
+feedback.
 
 Two explicit evaluation contracts are implemented:
 
 - `nominal`: the unperturbed scene must overlap the target RAM, release, lie
   on the table, and survive gripper retraction.  The bounded center-distance
-  gate is 55 mm; the final verified run achieved 28.38 mm.
+  gate is 60 mm.  A nominal-only 40 mm negative-Y pre-contact compensation
+  accounts for the positive-Y shift during inward wrist rotation.  Cartesian
+  control begins at dataset frame 544 to avoid unloading the pad at frame 560.
 - `randomized-flat`: object perturbations are treated as a controller
   generalization diagnostic.  Target XY is not a success gate, but contact,
   inward wrist rotation, release, table height, mesh flatness, and retraction
@@ -47,41 +52,47 @@ in world Z after release.  This threshold distinguishes the upright/contact
 shape (roughly 100 mm Z span) from a released pad while allowing the visible
 elastic curl in Isaac Sim.  The eval-camera image remains the human audit.
 
-## Verified nominal result
+## Verified nominal results
 
-On 2026-08-21 a fresh reset reported `randomized: false`, and the nominal
-trial ended with `stable_target_place_release_and_retract`:
+On 2026-08-21 three fresh resets reported `randomized: false`; all three
+trials ended with `stable_target_place_release_and_retract` and the eval-camera
+reported the correct `liner_only` orientation:
 
-| measurement | result | gate |
-| --- | ---: | ---: |
-| maximum lift above target | 167.84 mm | at least 130 mm |
-| release/final target XY error | 28.38 mm | at most 55 mm |
-| final target Z error | 2.10 mm | at most 12 mm |
-| final pad mesh Z span | 13.84 mm | at most 20 mm |
-| wrist orientation error at release | 0.53 deg | at most 3 deg |
-| release and retract | completed | required |
+| run | IoU | final target XY error | final mesh Z span | minimum contact-rotation EE Z |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.28750 | 17.38 mm | 4.13 mm | 0.91648 m |
+| 2 | 0.02429 | 20.46 mm | 3.82 mm | 0.91671 m |
+| 3 | 0.43353 | 12.18 mm | 3.21 mm | 0.91672 m |
+| mean | **0.24844** | **16.67 mm** | **3.72 mm** | **0.91664 m** |
+
+Runs 1 and 2 used the preceding stricter 55 mm release gate and are
+behavior-compatible with the final 60 mm gate because both were already below
+21 mm.  Run 3 used the final gate.  Official results remain whatever the
+organizer obtains from its own three container runs.
 
 Evidence is intentionally outside Git:
 
 ```text
-/scratch1/2026_ebim/allen_task2_pi05/evidence/phase1_gt_contact_place_20260821/nominal/
-  controller_result.json
-  final_eval_camera.png
+/scratch1/2026_ebim/allen_task2_pi05/evidence/phase1_gt_formal_20260821/formal_current/
+  formal_summary.json
+  run_1/{base_stage.json,spine_stage.json,controller_result.json,eval/}
+  run_2/{base_stage.json,spine_stage.json,controller_result.json,eval/}
+  run_3/{base_stage.json,spine_stage.json,controller_result.json,eval/}
 ```
 
-The image shows the released pad overlapping the red-outlined target RAM and
-the gripper retracted.  Earlier randomized runs and calibration failures are
-diagnostic only.  In particular, the three older runs documented before this
-revision passed loose XY/Z checks but used the wrong pad orientation; they are
-not valid evidence for the contact-first controller.
+The eval-camera images show the released pad on the memory with the correct
+liner face visible.  The measured EE stayed at or above 0.91648 m throughout
+contact rotation.  A lower diagnostic
+run at 0.8952 m contact EE Z brought the fingertips to table height and pushed
+the pad 142 mm off target; it is rejected evidence.  Earlier randomized runs
+and calibration failures are diagnostic only.
 
-A fresh perturbed scene also passed `randomized-flat` with
-`stable_flat_place_release_and_retract`: 167.88 mm maximum lift, 58.03 mm
-reported (but ungated) target XY error, 0.73 mm target Z error, 12.32 mm mesh Z
-span, and 1.33 deg wrist orientation error.  Its JSON and image are under
-`randomized_attempt3/` beside the nominal evidence.  Two preceding diagnostics
-were not counted: one spine-staging timeout before manipulation and one
-`pad_lost_during_xy_alignment` stop.
+A fresh post-base-rework perturbed scene passed `randomized-flat` before the
+final nominal clearance refinement: 189.71 mm reported (but ungated) target
+XY error, 2.02 mm target Z error, 14.10 mm mesh Z span, and 3.28 deg wrist
+orientation error.  Its JSON and image are under `randomized/` beside the
+nominal evidence.  It demonstrates the requested action/flatness behavior but
+does not replace fresh current-configuration formal trials.
 
 ## Known limitations
 

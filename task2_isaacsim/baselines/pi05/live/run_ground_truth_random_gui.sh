@@ -51,8 +51,12 @@ run_ros() {
     -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
     -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
     -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
-    -e PYTHONPATH=/workspace/EBiM_Challenge:/opt/ros/jazzy/lib/python3.12/site-packages \
-    -v "${REPO_ROOT}:/workspace/EBiM_Challenge:ro")
+    -e PYTHONPATH=/workspace/EBiM_Challenge:/opt/ros/jazzy/lib/python3.12/site-packages)
+  # Submission runs execute the source baked into the image. Developers may
+  # opt into a read-only live checkout while iterating before the final build.
+  if [[ "${PI05_MOUNT_SOURCE:-0}" == 1 ]]; then
+    docker_args+=(-v "${REPO_ROOT}:/workspace/EBiM_Challenge:ro")
+  fi
   if [[ -n "${EVIDENCE_DIR}" ]]; then
     mkdir -p "${EVIDENCE_DIR}"
     docker_args+=(-v "${EVIDENCE_DIR}:/evidence")
@@ -92,10 +96,33 @@ request_scene_reset() {
 }
 
 stage_spine() {
+  local spine_output=/tmp/task2_ground_truth_spine_stage.json
+  [[ -n "${EVIDENCE_DIR}" ]] && spine_output=/evidence/spine_stage.json
   run_ros '
     source /opt/ros/jazzy/setup.bash
     exec /opt/lerobot/.venv/bin/python \
-      /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_spine.py
+      /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_spine.py \
+      --max-duration-s 90 \
+      --output '"${spine_output}"'
+  '
+}
+
+stage_base() {
+  local base_output=/tmp/task2_ground_truth_base_stage.json
+  [[ -n "${EVIDENCE_DIR}" ]] && base_output=/evidence/base_stage.json
+  run_ros '
+    source /opt/ros/jazzy/setup.bash
+    exec /opt/lerobot/.venv/bin/python \
+      /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_base.py \
+      --target-from-live-pad \
+      --grasp-yaw-limit-deg 5 \
+      --grasp-depth-bias-m 0.005 \
+      --position-tolerance-m 0.006 \
+      --yaw-tolerance-rad 0.01 \
+      --velocity-threshold 0.025 \
+      --settle-duration-s 0.5 \
+      --max-duration-s 120 \
+      --output '"${base_output}"'
   '
 }
 
@@ -105,31 +132,42 @@ run_controller() {
   local alignment_release_xy_m=0.025 success_xy_m=0.030
   if [[ "${placement_contract}" == nominal ]]; then
     default_sweep_x_m=0.003
-    default_sweep_y_m=-0.012
-    alignment_release_xy_m=0.055
-    success_xy_m=0.055
+    # The inward wrist rotation shifts the released pad toward +Y.  Start
+    # nominal contact 40 mm farther toward -Y so the pad center, rather than
+    # its upper edge, lands near the memory centerline.
+    default_sweep_y_m=0.050
+    alignment_release_xy_m=0.060
+    success_xy_m=0.060
   fi
   local contact_sweep_x_m="${CONTACT_SWEEP_X_M:-${default_sweep_x_m}}"
   local contact_sweep_y_m="${CONTACT_SWEEP_Y_M:-${default_sweep_y_m}}"
   local controller_output=/tmp/task2_ground_truth_gui_result.json
   [[ -n "${EVIDENCE_DIR}" ]] && controller_output=/evidence/controller_result.json
+  # Frame 560 occasionally unloads the deformable pad during the final
+  # joint-space transport step.  Hand off at the last verified stable dataset
+  # landmark and finish the remaining XY motion in Cartesian mode.
   run_ros '
     source /opt/ros/jazzy/setup.bash
     exec /opt/lerobot/.venv/bin/python \
       /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/ground_truth_joint_lift.py \
       --absolute-dataset-joints \
-      --preposition-at-live-grasp-base \
+      --no-preposition-at-live-grasp-base \
       --grasp-yaw-limit-deg 5 \
       --grasp-depth-bias-m 0.005 \
       --grasp-dwell-s 0.5 \
       --trajectory-rate-hz 30 \
-      --cartesian-handoff-frame 560 \
+      --cartesian-handoff-frame 544 \
       --cartesian-handoff-settle-s 0.05 \
-      --cartesian-speed-mps 0.30 \
+      --cartesian-speed-mps 0.10 \
       --cartesian-max-xy-displacement-m 0.16 \
       --cartesian-descent-start-xy-m 0.040 \
       --cartesian-descent-speed-mps 0.080 \
-      --precontact-lift-m 0.105 \
+      --precontact-lift-m 0.115 \
+      --minimum-contact-ee-z-m 0.903 \
+      --contact-ee-tracking-margin-m 0.019 \
+      --contact-ee-clearance-tolerance-m 0.001 \
+      --contact-wrist-z-drop-m 0.000 \
+      --precontact-angular-speed-deg-s 25.0 \
       --alignment-release-xy-m '"${alignment_release_xy_m}"' \
       --alignment-release-height-m 0.006 \
       --alignment-release-height-tolerance-m 0.008 \
@@ -137,6 +175,7 @@ run_controller() {
       --contact-sweep-x-m '"${contact_sweep_x_m}"' \
       --contact-sweep-y-m '"${contact_sweep_y_m}"' \
       --flat-pad-z-span-m 0.020 \
+      --place-orientation-tolerance-deg 3.5 \
       --alignment-stable-s 0.50 \
       --post-release-settle-s 0.80 \
       --post-release-retract-m 0.080 \
@@ -144,7 +183,7 @@ run_controller() {
       --post-release-retract-tolerance-m 0.010 \
       --success-xy-m '"${success_xy_m}"' \
       --success-z-m 0.012 \
-      --max-duration-s 90 \
+      --max-duration-s 180 \
       --output '"${controller_output}"'
   '
 }
@@ -186,6 +225,8 @@ run_trials() {
     attempts=$((attempts + 1))
     echo "=== ${placement_contract} attempt ${attempts} (${successes}/${count} passed): reset ==="
     request_scene_reset "${expected_randomized}"
+    echo "=== ${placement_contract} attempt ${attempts}: base ==="
+    stage_base
     echo "=== ${placement_contract} attempt ${attempts}: spine ==="
     stage_spine
     echo "=== ${placement_contract} attempt ${attempts}: place ==="

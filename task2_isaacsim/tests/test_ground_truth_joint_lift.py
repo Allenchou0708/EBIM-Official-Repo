@@ -11,6 +11,7 @@ from task2_isaacsim.baselines.pi05.live.ground_truth_joint_lift import (
     JOINT_LANDMARKS,
     anchored_base_pose,
     bounded_axis_step,
+    bounded_base_pose_step,
     bounded_orientation_step,
     bounded_planar_offset,
     interpolate_base_pose,
@@ -89,6 +90,29 @@ class GroundTruthJointReplayTest(unittest.TestCase):
         self.assertAlmostEqual(midpoint[0], 1.0)
         self.assertAlmostEqual(midpoint[1], 2.0)
         self.assertAlmostEqual(abs(midpoint[2]), math.pi)
+
+    def test_base_preposition_step_bounds_translation_and_yaw(self) -> None:
+        stepped = bounded_base_pose_step(
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 1.0),
+            linear_speed_mps=0.10,
+            angular_speed_rps=0.20,
+            elapsed_s=0.5,
+        )
+        self.assertAlmostEqual(stepped[0], 0.05)
+        self.assertAlmostEqual(stepped[1], 0.0)
+        self.assertAlmostEqual(stepped[2], 0.05)
+
+    def test_base_preposition_step_can_finish_pure_yaw(self) -> None:
+        stepped = bounded_base_pose_step(
+            (1.0, 2.0, 0.0),
+            (1.0, 2.0, 0.2),
+            linear_speed_mps=0.10,
+            angular_speed_rps=0.30,
+            elapsed_s=0.5,
+        )
+        self.assertEqual(stepped[:2], (1.0, 2.0))
+        self.assertAlmostEqual(stepped[2], 0.15)
 
     def test_cartesian_step_is_speed_bounded(self) -> None:
         self.assertAlmostEqual(bounded_axis_step(-0.16, 0.08, 0.10), -0.008)

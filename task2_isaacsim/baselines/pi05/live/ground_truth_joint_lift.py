@@ -14,6 +14,7 @@ from pathlib import Path
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rosgraph_msgs.msg import Clock
@@ -158,6 +159,31 @@ def interpolate_base_pose(
     )
 
 
+def bounded_base_pose_step(
+    start: tuple[float, float, float],
+    end: tuple[float, float, float],
+    *,
+    linear_speed_mps: float,
+    angular_speed_rps: float,
+    elapsed_s: float,
+) -> tuple[float, float, float]:
+    """Interpolate one base step while bounding translation and yaw speed."""
+    distance = math.hypot(end[0] - start[0], end[1] - start[1])
+    yaw_error = abs(_wrap_angle(end[2] - start[2]))
+    elapsed_s = max(0.0, elapsed_s)
+    linear_fraction = (
+        1.0
+        if distance <= 1.0e-9
+        else min(1.0, max(0.0, linear_speed_mps) * elapsed_s / distance)
+    )
+    angular_fraction = (
+        1.0
+        if yaw_error <= 1.0e-9
+        else min(1.0, max(0.0, angular_speed_rps) * elapsed_s / yaw_error)
+    )
+    return interpolate_base_pose(start, end, min(linear_fraction, angular_fraction))
+
+
 def deepen_grasp_base_pose(
     base: tuple[float, float, float],
     live_pad_wxyz: tuple[float, ...],
@@ -272,6 +298,7 @@ class JointLiftNode(Node):
         self.pad_centroid: tuple[float, float, float] | None = None
         self.pad_z_span_m: float | None = None
         self.objects: dict[str, tuple[float, ...]] = {}
+        self.base: tuple[float, float, float] | None = None
         self.right_ee: tuple[float, ...] | None = None
         self.publish_count = 0
         self.create_subscription(
@@ -291,6 +318,12 @@ class JointLiftNode(Node):
             TOPICS["ground_truth"]["object_poses"],
             self._on_objects,
             10,
+        )
+        self.create_subscription(
+            Odometry,
+            TOPICS["recording"]["odom"],
+            self._on_odom,
+            qos_profile_sensor_data,
         )
         self.create_subscription(
             PoseStamped,
@@ -339,6 +372,23 @@ class JointLiftNode(Node):
             for pose in objects.values()
         ):
             self.objects = objects
+
+    def _on_odom(self, message: Odometry) -> None:
+        pose = message.pose.pose
+        yaw = math.atan2(
+            2.0
+            * (
+                pose.orientation.w * pose.orientation.z
+                + pose.orientation.x * pose.orientation.y
+            ),
+            1.0
+            - 2.0
+            * (
+                pose.orientation.y * pose.orientation.y
+                + pose.orientation.z * pose.orientation.z
+            ),
+        )
+        self.base = (pose.position.x, pose.position.y, yaw)
 
     def _on_right_ee(self, message: PoseStamped) -> None:
         pose = message.pose
@@ -412,8 +462,21 @@ def main() -> int:
     parser.add_argument(
         "--preposition-at-live-grasp-base",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Converge q399 directly at the GT-aligned grasp base; useful when randomization makes the nominal-to-grasp base move large.",
+        default=False,
+        help=(
+            "legacy direct root-pose prepositioning; the safe default latches "
+            "measured odometry and bounds the remaining GT alignment"
+        ),
+    )
+    parser.add_argument("--preposition-base-speed-mps", type=float, default=0.10)
+    parser.add_argument(
+        "--preposition-base-angular-speed-rps", type=float, default=0.30
+    )
+    parser.add_argument(
+        "--preposition-base-position-tolerance-m", type=float, default=0.002
+    )
+    parser.add_argument(
+        "--preposition-base-yaw-tolerance-rad", type=float, default=0.01
     )
     parser.add_argument(
         "--transport-base-alignment-frame",
@@ -453,6 +516,27 @@ def main() -> int:
     parser.add_argument("--precontact-angular-speed-deg-s", type=float, default=45.0)
     parser.add_argument("--precontact-orientation-tolerance-deg", type=float, default=3.0)
     parser.add_argument("--contact-height-tolerance-m", type=float, default=0.006)
+    parser.add_argument(
+        "--minimum-contact-ee-z-m",
+        type=float,
+        default=0.0,
+        help=(
+            "Abort before contact rotation when measured EE world Z is below "
+            "this scene-audited gripper-clearance floor; 0 disables the gate."
+        ),
+    )
+    parser.add_argument(
+        "--contact-ee-tracking-margin-m",
+        type=float,
+        default=0.007,
+        help="Commanded EE-Z margin above the measured clearance floor.",
+    )
+    parser.add_argument(
+        "--contact-ee-clearance-tolerance-m",
+        type=float,
+        default=0.001,
+        help="Tolerance for measured EE-Z noise at the clearance floor.",
+    )
     parser.add_argument("--contact-angular-speed-deg-s", type=float, default=25.0)
     parser.add_argument("--contact-height-correction-speed-mps", type=float, default=0.015)
     parser.add_argument("--contact-wrist-z-drop-m", type=float, default=0.005)
@@ -505,8 +589,10 @@ def main() -> int:
     final_preposition_error: float | None = None
     preposition_base: tuple[float, float, float] | None = None
     approach_base: tuple[float, float, float] | None = None
+    base_preposition_completed_sim: float | None = None
     joint_preposition_completed_sim: float | None = None
     base_approach_stable_since: float | None = None
+    grasp_ready_stable_since: float | None = None
     last_preposition_sim: float | None = None
     maximum_pad_height = -math.inf
     stable_success_since: float | None = None
@@ -532,6 +618,8 @@ def main() -> int:
     precontact_goal_xy_m: tuple[float, float] | None = None
     contact_started_sim: float | None = None
     contact_ee_z_m: float | None = None
+    contact_ee_target_z_m: float | None = None
+    minimum_observed_contact_ee_z_m = math.inf
     contact_rotation_completed_sim: float | None = None
     contact_pad_centroid_m: tuple[float, float, float] | None = None
     cartesian_stable_since: float | None = None
@@ -558,6 +646,7 @@ def main() -> int:
                 or node.joints is None
                 or node.pad_centroid is None
                 or node.right_ee is None
+                or node.base is None
                 or "thermalpad" not in node.objects
                 or "board_target" not in node.objects
             ):
@@ -584,13 +673,15 @@ def main() -> int:
                     node.objects["thermalpad"],
                     args.grasp_depth_bias_m,
                 )
-                # The demonstrated base pose is collision-audited for the
-                # q399 arm branch.  Converge there before moving only the
-                # small randomization delta to the live-pad alignment.
+                # The launcher physically drives and settles the base first.
+                # Latch measured odometry without a jump, then bound only the
+                # remaining centimetre-scale GT alignment before q399.  This
+                # preserves the visible base -> spine -> grasp-pose order and
+                # avoids dragging the open gripper across the pad edge.
                 preposition_base = (
                     grasp_base
                     if args.preposition_at_live_grasp_base
-                    else REFERENCE_BASE_XYYAW
+                    else node.base
                 )
                 approach_base = preposition_base
                 target_base = anchored_base_pose(
@@ -600,41 +691,51 @@ def main() -> int:
             assert grasp_base is not None and target_base is not None
             assert preposition_base is not None and approach_base is not None
             if args.absolute_dataset_joints and trajectory_started_sim is None:
-                node.publish(reference_start, 1.0)
-                final_preposition_error = max(
-                    abs(actual - target)
-                    for actual, target in zip(node.joints, reference_start)
-                )
-                if joint_preposition_completed_sim is None:
-                    node.publish_base(preposition_base)
-                else:
+                if base_preposition_completed_sim is None:
+                    node.publish(live_start, 1.0)
                     delta_sim = max(
                         0.0,
                         node.sim_time - (last_preposition_sim or node.sim_time),
                     )
+                    approach_base = bounded_base_pose_step(
+                        approach_base,
+                        grasp_base,
+                        linear_speed_mps=args.preposition_base_speed_mps,
+                        angular_speed_rps=(
+                            args.preposition_base_angular_speed_rps
+                        ),
+                        elapsed_s=delta_sim,
+                    )
+                    node.publish_base(approach_base)
                     distance = math.hypot(
                         grasp_base[0] - approach_base[0],
                         grasp_base[1] - approach_base[1],
                     )
-                    step = min(distance, 0.10 * delta_sim)
-                    fraction = step / max(distance, 1.0e-9)
-                    approach_base = interpolate_base_pose(
-                        approach_base, grasp_base, fraction
+                    yaw_error = abs(
+                        _wrap_angle(grasp_base[2] - approach_base[2])
                     )
-                    node.publish_base(approach_base)
-                    grasp_joint_ready = (
-                        final_preposition_error
-                        <= args.grasp_joint_tolerance_rad
-                    )
-                    if distance <= 0.002 and grasp_joint_ready:
+                    if (
+                        distance
+                        <= args.preposition_base_position_tolerance_m
+                        and yaw_error
+                        <= args.preposition_base_yaw_tolerance_rad
+                    ):
                         if base_approach_stable_since is None:
                             base_approach_stable_since = node.sim_time
                         elif node.sim_time - base_approach_stable_since >= 0.5:
-                            trajectory_started_sim = node.sim_time
-                            baseline_height = node.pad_centroid[2]
+                            base_preposition_completed_sim = node.sim_time
+                            base_approach_stable_since = None
                     else:
                         base_approach_stable_since = None
-                last_preposition_sim = node.sim_time
+                    last_preposition_sim = node.sim_time
+                    continue
+
+                node.publish(reference_start, 1.0)
+                node.publish_base(grasp_base)
+                final_preposition_error = max(
+                    abs(actual - target)
+                    for actual, target in zip(node.joints, reference_start)
+                )
                 if (
                     joint_preposition_completed_sim is None
                     and final_preposition_error <= args.preposition_tolerance_rad
@@ -646,6 +747,18 @@ def main() -> int:
                 else:
                     if joint_preposition_completed_sim is None:
                         preposition_stable_since = None
+                if (
+                    joint_preposition_completed_sim is not None
+                    and final_preposition_error
+                    <= args.grasp_joint_tolerance_rad
+                ):
+                    if grasp_ready_stable_since is None:
+                        grasp_ready_stable_since = node.sim_time
+                    elif node.sim_time - grasp_ready_stable_since >= 0.5:
+                        trajectory_started_sim = node.sim_time
+                        baseline_height = node.pad_centroid[2]
+                else:
+                    grasp_ready_stable_since = None
                 continue
             if trajectory_started_sim is None:
                 trajectory_started_sim = started_sim
@@ -960,10 +1073,19 @@ def main() -> int:
                                 args.precontact_lift_speed_mps,
                                 delta_sim,
                             )
+                            commanded_contact_floor = (
+                                args.minimum_contact_ee_z_m
+                                + args.contact_ee_tracking_margin_m
+                                if args.minimum_contact_ee_z_m > 0.0
+                                else -math.inf
+                            )
                             cartesian_target = (
                                 cartesian_handoff_target[0] + offset_x,
                                 cartesian_handoff_target[1] + offset_y,
-                                cartesian_target[2] + z_step,
+                                max(
+                                    commanded_contact_floor,
+                                    cartesian_target[2] + z_step,
+                                ),
                                 *cartesian_handoff_target[3:7],
                             )
                             precontact_ready = (
@@ -971,11 +1093,34 @@ def main() -> int:
                                 + args.contact_height_tolerance_m
                             )
                             if precontact_ready:
+                                if (
+                                    node.right_ee[2]
+                                    + args.contact_ee_clearance_tolerance_m
+                                    < args.minimum_contact_ee_z_m
+                                ):
+                                    reason = "unsafe_gripper_table_clearance"
+                                    break
                                 contact_started_sim = node.sim_time
-                                contact_ee_z_m = cartesian_target[2]
+                                contact_ee_z_m = node.right_ee[2]
+                                minimum_observed_contact_ee_z_m = min(
+                                    minimum_observed_contact_ee_z_m,
+                                    node.right_ee[2],
+                                )
+                                contact_ee_target_z_m = cartesian_target[2]
                                 contact_pad_centroid_m = node.pad_centroid
                                 cartesian_phase = "contact_rotate_precontact"
                         elif cartesian_phase == "contact_rotate_precontact":
+                            minimum_observed_contact_ee_z_m = min(
+                                minimum_observed_contact_ee_z_m,
+                                node.right_ee[2],
+                            )
+                            if (
+                                node.right_ee[2]
+                                + args.contact_ee_clearance_tolerance_m
+                                < args.minimum_contact_ee_z_m
+                            ):
+                                reason = "unsafe_gripper_table_clearance"
+                                break
                             orientation = bounded_orientation_step(
                                 cartesian_target[3:7],
                                 precontact_target_quaternion,
@@ -998,6 +1143,17 @@ def main() -> int:
                                 cartesian_phase = "contact_rotate"
                         elif cartesian_phase == "contact_rotate":
                             assert contact_ee_z_m is not None
+                            minimum_observed_contact_ee_z_m = min(
+                                minimum_observed_contact_ee_z_m,
+                                node.right_ee[2],
+                            )
+                            if (
+                                node.right_ee[2]
+                                + args.contact_ee_clearance_tolerance_m
+                                < args.minimum_contact_ee_z_m
+                            ):
+                                reason = "unsafe_gripper_table_clearance"
+                                break
                             orientation = bounded_orientation_step(
                                 cartesian_target[3:7],
                                 place_target_quaternion,
@@ -1217,6 +1373,12 @@ def main() -> int:
             "final_board_target_pose_wxyz": node.objects.get("board_target"),
             "grasp_aligned_base_xyyaw": grasp_base,
             "safe_preposition_base_xyyaw": preposition_base,
+            "base_preposition_mode": (
+                "legacy_direct_live_grasp"
+                if args.preposition_at_live_grasp_base
+                else "measured_odom_bounded_alignment"
+            ),
+            "base_preposition_completed_sim": base_preposition_completed_sim,
             "joint_preposition_completed_sim": joint_preposition_completed_sim,
             "grasp_dwell_duration_sim_s": (
                 grasp_dwell_completed_sim - grasp_dwell_started_sim
@@ -1242,6 +1404,19 @@ def main() -> int:
             "precontact_goal_xy_m": precontact_goal_xy_m,
             "contact_started_sim": contact_started_sim,
             "contact_ee_z_m": contact_ee_z_m,
+            "contact_ee_target_z_m": contact_ee_target_z_m,
+            "minimum_contact_ee_z_m": args.minimum_contact_ee_z_m,
+            "contact_ee_tracking_margin_m": (
+                args.contact_ee_tracking_margin_m
+            ),
+            "contact_ee_clearance_tolerance_m": (
+                args.contact_ee_clearance_tolerance_m
+            ),
+            "minimum_observed_contact_ee_z_m": (
+                minimum_observed_contact_ee_z_m
+                if math.isfinite(minimum_observed_contact_ee_z_m)
+                else None
+            ),
             "contact_rotation_completed_sim": contact_rotation_completed_sim,
             "contact_pad_centroid_m": contact_pad_centroid_m,
             "retract_goal_z_m": retract_goal_z_m,

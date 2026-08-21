@@ -1,8 +1,125 @@
 # EBiM Benchmark
 
-**Current capability status: see [STATUS.md](STATUS.md)** — this is a developer preview; check what's usable before you build.
+**Phase I Task 2 submission instructions are below.**  For the wider
+benchmark repository's component status, see [STATUS.md](STATUS.md).
 
-## Task 2 PI0.5 submission quick start
+## Phase I Task 2 policy submission
+
+This branch is the team's **Option A policy submission** for Task 2 thermal-pad
+placement.  It uses simulator-provided ground-truth object poses and deformable
+pad vertices.  This use is permitted for Phase I by the organizer's 2026-08-19
+announcement and must be declared in the submission form.  It is not an
+onboard-perception solution and is not eligible unchanged for Phase II.
+
+Official scoring follows
+[Autonomous Robot Benchmark Rulebook 1.0](https://ebim-benchmark.github.io/docs/Autonomous_Robot_Benchmark_Rulebook_1.0.pdf):
+`Pick Success × Orientation Success × IoU`, with wrong orientation scoring
+zero.  The organizer evaluates three runs and takes their mean.
+
+### Requirements
+
+- Linux, Docker Engine, NVIDIA Container Toolkit, and an NVIDIA GPU.
+- The official Isaac Sim 5.1.0 environment in a container named
+  `isaac-sim-5-1-0-workshop`.
+- This repository cloned with submodules and mounted into that simulator at
+  `/workspace/EBiM_Challenge` by the included launcher.
+- X11 access when running the required GUI scene.
+
+No model checkpoint, training dataset, Hugging Face token, or private
+credential is needed by the submitted GT policy.
+
+### Build and self-test
+
+From a clean checkout of the submission branch:
+
+```bash
+git clone --branch task2_gt_control_20260820 --recurse-submodules \
+  https://github.com/Allenchou0708/EBIM-Official-Repo.git ebim-task2-phase1
+cd ebim-task2-phase1
+
+docker build --pull -t ebim-task2-phase1-gt:latest .
+docker run --rm ebim-task2-phase1-gt:latest health
+docker run --rm ebim-task2-phase1-gt:latest unit-tests
+```
+
+Expected health output is `task2-phase1-gt health: PASS`.  The policy source,
+ROS 2 runtime, base/spine stagers, and tests are baked into the image.  The
+runner does not bind-mount source by default; `PI05_MOUNT_SOURCE=1` is reserved
+for development before a final image build.
+
+The image also exposes the individual commands `stage-base`, `stage-spine`,
+and `ground-truth-controller`.  Normal evaluation should use the orchestrator
+below so reset verification and the visible startup sequence cannot be
+skipped.
+
+### Run the nominal policy
+
+Terminal 1 starts the unperturbed official scene.  It deliberately omits
+`--randomize-objects`:
+
+```bash
+export PI05_LIVE_IMAGE=ebim-task2-phase1-gt:latest
+export ROS_DOMAIN_ID=0
+bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh \
+  launch-nominal
+```
+
+Wait for `Isaac Sim fr3duo Task 2 room bridge started`.  In Terminal 2, save
+three independent runs so one attempt cannot overwrite another:
+
+```bash
+export PI05_LIVE_IMAGE=ebim-task2-phase1-gt:latest
+export ROS_DOMAIN_ID=0
+export EVIDENCE_ROOT=/absolute/path/to/task2-phase1-evidence
+
+for run in 1 2 3; do
+  TASK2_EVIDENCE_DIR="$EVIDENCE_ROOT/run_$run" \
+    bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh \
+      nominal 1 || exit $?
+done
+```
+
+Every attempt verifies `randomized: false`, visibly drives the base from the
+initial scene pose, settles the spine, converges to the grasp posture, picks
+and lifts the pad, moves left over the memory, touches the pad to the table,
+rotates the wrist inward/downward at protected EE height, releases, and
+retracts.  A successful `controller_result.json` ends with
+`stable_target_place_release_and_retract`.
+
+The full clean-room procedure, JSON assertions, eval-camera capture, and
+randomized action diagnostic are in
+[`PHASE1_SUBMISSION_RUNBOOK.md`](task2_isaacsim/baselines/pi05/PHASE1_SUBMISSION_RUNBOOK.md).
+Method and limitations are documented in
+[`PHASE1_POLICY_REPORT.md`](task2_isaacsim/baselines/pi05/PHASE1_POLICY_REPORT.md).
+
+### Verified three-run result
+
+On 2026-08-21, the locked nominal configuration completed all three runs and
+produced the correct visible liner orientation in every eval-camera capture:
+
+| run | controller | orientation | IoU | final center error | mesh Z span |
+| ---: | --- | --- | ---: | ---: | ---: |
+| 1 | pass | correct (`liner_only`) | 0.28750 | 17.38 mm | 4.13 mm |
+| 2 | pass | correct (`liner_only`) | 0.02429 | 20.46 mm | 3.82 mm |
+| 3 | pass | correct (`liner_only`) | 0.43353 | 12.18 mm | 3.21 mm |
+| mean | 3/3 | 3/3 | **0.24844** | **16.67 mm** | **3.72 mm** |
+
+This reports the complete three-run sequence rather than selecting only the
+best placement.  The large IoU spread is a known limitation of open-loop
+deformable contact: small in-plane shifts strongly affect the narrow target
+bbox even when GT centroid error is small and the pad is visibly flat.
+
+When filing the official
+[Repository Submission issue](https://github.com/EBiM-Benchmark/submissions/issues/new?template=submission.yml),
+select Task 2 and answer **“Yes — we use the simulator's ground-truth object
+poses.”**  File only one Option A issue for this team/task; if replacing an
+earlier issue, explicitly state that it supersedes the previous submission.
+
+## Archived PI0.5 learned-policy workflow (not the Phase I submission)
+
+The following section documents the separate learned-policy research path.
+It requires an out-of-band checkpoint, did not complete the task, and is not
+the submitted Option A entry point.
 
 For the Phase I simulator-ground-truth control route, current results and the
 email-compliant submission procedure are documented in
@@ -35,10 +152,11 @@ docker build -t ebim-task2-pi05-submit:local .
 docker run --rm ebim-task2-pi05-submit:local health
 ```
 
-The root [`Dockerfile`](Dockerfile) pins its training base by digest and builds
-the ROS 2 Jazzy PI0.5 submission runtime. Its formal evaluation command is the
-single `run-task` entry point; `run_pi05.sh` performs the required reset,
-fixed-base and initial-spine staging, and camera preflight before invoking it.
+The root [`Dockerfile`](Dockerfile) now builds the Phase I GT submission shown
+above.  In the archived learned-policy workflow, `run-task` was the PI0.5
+evaluation command; `run_pi05.sh` performed reset, fixed-base and initial-spine
+staging, and camera preflight before invoking it.  That command is retained
+for research compatibility and is not the submitted Task 2 policy.
 
 ### Checkpoint and environment
 
