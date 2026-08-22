@@ -1,7 +1,8 @@
 # Copyright (c) 2026 The EBiM Benchmark Contributors
 # SPDX-License-Identifier: Apache-2.0
-# EBiM Phase I Task 2 ground-truth policy runtime.
-# Build from the repository root; no checkpoint or dataset is required.
+# EBiM Phase I Task 2 ground-truth policy submission image.
+# Build from the repository root with:
+#   docker build -f task2_submission/Dockerfile -t ebim-task2-phase1-gt:submission .
 ARG TRAINING_IMAGE=ghcr.io/allenchou0708/ebim-task2-pi05@sha256:e69f329e94be38bc1b1431c35ee556c846c9ff4dbd2bb1036f1971961bd5e1a3
 FROM ${TRAINING_IMAGE}
 
@@ -25,7 +26,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY task2_isaacsim /workspace/EBiM_Challenge/task2_isaacsim
-COPY task2_isaacsim/baselines/pi05/submission_entrypoint.sh /submission-entrypoint.sh
+COPY task2_submission/entrypoint.sh /submission-entrypoint.sh
+RUN chmod 0755 /submission-entrypoint.sh
 
 ENV PYTHONPATH=/workspace/EBiM_Challenge:/opt/ros/jazzy/lib/python3.12/site-packages \
     ROS_DISTRO=jazzy \

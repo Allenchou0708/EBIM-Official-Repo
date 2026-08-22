@@ -43,6 +43,7 @@ Usage:
   ./run_pi05.sh train-v4 [--run NAME]
   ./run_pi05.sh gate-v4 [--checkpoint PATH] [--maximum-episodes N]
   ./run_pi05.sh sim-up [--gui]
+  ./run_pi05.sh stage-init [--staging-audit PATH] [--output-dir PATH] [--max-duration-s S]
   ./run_pi05.sh run-task [--runtime-mode hard5|legacy] [--checkpoint PATH] [--dataset-root PATH] [--staging-audit PATH] [--run-label LABEL] [--shadow] [--confirm-right-wrist-pad-visible] [--max-actions N] [--max-duration-s S]
   ./run_pi05.sh replay-dataset [--dataset-root PATH] [--episode auto|N] [--summary-only|--align-only|--max-frames N]
   ./run_pi05.sh audit-initial-states [--dataset-root PATH] [--output-dir PATH]
@@ -509,6 +510,42 @@ command_sim_up() {
   return "${status}"
 }
 
+command_stage_init() {
+  local staging_audit="${TASK2_PI05_ROOT}/evidence/task2_pi05_camera_ready_pad_relative_20260815/startup_staging_audit.json"
+  local output_dir="${TASK2_PI05_ROOT}/outputs/stage_init_$(date +%Y%m%d_%H%M%S)"
+  local max_duration_s=600
+  local base_target="2.100026845932007 3.0529046058654785 -1.5706931352615356"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --staging-audit) staging_audit="$(realpath "$2")"; shift 2 ;;
+      --output-dir) output_dir="$2"; shift 2 ;;
+      --max-duration-s) max_duration_s="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  [[ "${max_duration_s}" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
+    echo "--max-duration-s must be a non-negative number" >&2
+    exit 2
+  }
+  staging_audit="$(realpath "${staging_audit}")"
+  [[ -f "${staging_audit}" ]] || { echo "Staging audit not found" >&2; exit 2; }
+  mkdir -p "${output_dir}"
+  output_dir="$(realpath "${output_dir}")"
+
+  live_shell "ros2 topic pub --once /isaac/task2/scene_reset_request std_msgs/msg/String '{data: reset}'"
+  live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_base.py --target ${base_target} --position-tolerance-m 0.03 --yaw-tolerance-rad 0.04 --output /data/evidence/stage_init_base.json"
+  docker run --rm --network host --ipc=host --entrypoint bash \
+    --user "$(id -u):$(id -g)" \
+    -e HOME=/tmp/ebim-live-home -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
+    -e PYTHONPATH=/workspace/EBiM_Challenge \
+    -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
+    -v "${REPO_ROOT}:/workspace/EBiM_Challenge:ro" \
+    -v "${staging_audit}:/data/staging_audit.json:ro" \
+    -v "${output_dir}:/data/output" \
+    "${PI05_LIVE_IMAGE}" -lc \
+    "source /opt/ros/jazzy/setup.bash && exec python3 -m task2_isaacsim.baselines.pi05.live.fixed_stage_manipulation --audit /data/staging_audit.json --output /data/output/stage_init_manifest.json --max-duration-s ${max_duration_s}"
+}
+
 command_run_task() {
   local checkpoint="${PI05_CHECKPOINT}" dataset="${PI05_RELATIVE_DATASET}"
   local staging_audit="${TASK2_PI05_ROOT}/evidence/task2_pi05_camera_ready_pad_relative_20260815/startup_staging_audit.json"
@@ -711,6 +748,7 @@ case "${1:-}" in
   train-v4) shift; command_train_v4 "$@" ;;
   gate-v4) shift; command_gate_v4 "$@" ;;
   sim-up) shift; command_sim_up "$@" ;;
+  stage-init) shift; command_stage_init "$@" ;;
   run-task) shift; command_run_task "$@" ;;
   replay-dataset) shift; command_replay_dataset "$@" ;;
   audit-initial-states) shift; command_audit_initial_states "$@" ;;

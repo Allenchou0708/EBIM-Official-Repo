@@ -30,10 +30,10 @@ credential is needed by the submitted GT policy.
 
 ### Build and self-test
 
-From a clean checkout of the submission branch:
+From a clean checkout of the public `main` branch:
 
 ```bash
-git clone --branch task2_gt_control_20260820 --recurse-submodules \
+git clone --branch main --recurse-submodules \
   https://github.com/Allenchou0708/EBIM-Official-Repo.git ebim-task2-phase1
 cd ebim-task2-phase1
 

@@ -17,7 +17,7 @@ an Isaac Sim 5.1.0 container named `isaac-sim-5-1-0-workshop` with this clean
 checkout mounted at `/workspace/EBiM_Challenge`.
 
 ```bash
-git clone --branch task2_gt_control_20260820 --recurse-submodules \
+git clone --branch main --recurse-submodules \
   https://github.com/Allenchou0708/EBIM-Official-Repo.git ebim-task2-phase1
 cd ebim-task2-phase1
 
