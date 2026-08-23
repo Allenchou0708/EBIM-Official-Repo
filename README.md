@@ -109,11 +109,6 @@ best placement.  The large IoU spread is a known limitation of open-loop
 deformable contact: small in-plane shifts strongly affect the narrow target
 bbox even when GT centroid error is small and the pad is visibly flat.
 
-When filing the official
-[Repository Submission issue](https://github.com/EBiM-Benchmark/submissions/issues/new?template=submission.yml),
-select Task 2 and answer **“Yes — we use the simulator's ground-truth object
-poses.”**  File only one Option A issue for this team/task; if replacing an
-earlier issue, explicitly state that it supersedes the previous submission.
 
 ## Archived PI0.5 learned-policy workflow (not the Phase I submission)
 
