@@ -24,6 +24,7 @@ zero.  The organizer evaluates three runs and takes their mean.
 - This repository cloned with submodules and mounted into that simulator at
   `/workspace/EBiM_Challenge` by the included launcher.
 - X11 access when running the required GUI scene.
+- The asset file Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd must be placed under task1_isaacsim/assets/.
 
 No model checkpoint, training dataset, Hugging Face token, or private
 credential is needed by the submitted GT policy.
@@ -65,7 +66,7 @@ bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh \
 ```
 
 Wait for `Isaac Sim fr3duo Task 2 room bridge started`.  In Terminal 2, save
-three independent runs so one attempt cannot overwrite another:
+three independent runs so one attempt cannot overwrite another. Before running the commands below, change EVIDENCE_ROOT to the absolute path where you want to save the evidence :
 
 ```bash
 export PI05_LIVE_IMAGE=ebim-task2-phase1-gt:latest
