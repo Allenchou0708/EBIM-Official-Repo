@@ -153,13 +153,44 @@ Use three terminals for a GUI run:
 
 # Terminal 2
 ./run_pi05.sh run-task \
+  --hybrid-gt-pregrasp \
   --runtime-mode hard5 \
   --checkpoint /path/to/checkpoints/030000/pretrained_model \
+  --dataset-root /path/to/relative_dataset \
+  --confirm-right-wrist-pad-visible \
   --max-actions 600
 
 # Terminal 3
 ./run_pi05.sh evaluate
 ```
+
+The formal Phase II hybrid handoff is the complete recorded state from expert
+episode 19, frame 399. Staging restores base, spine, both seven-joint arms, and
+both open grippers. In particular, the left arm is not left at its home pose:
+although the right arm performs the grasp, the left joint state and wrist image
+are PI0.5 inputs and therefore affect its inferred task phase. The runner keeps
+all policy publishers inactive while the checkpoint loads, reacquires a fresh
+observation, and fails closed unless all 14 arm joints remain within `0.03 rad`
+of the staging manifest and both grippers remain open. From the first accepted
+decision onward, PI0.5 exclusively owns both arms, both grippers, and the spine;
+the GT controller and pose/RMPflow paths are inactive.
+
+State equivalence at the handoff is not trajectory equivalence. The staging
+controller reaches frame 399 with a bounded base -> spine -> dual-arm sequence;
+it does not replay every episode-19 action from frames 0--399. This preserves a
+safe, auditable ownership boundary while matching every policy-observed robot
+state at takeover. Use the full Phase-I controller, not this hybrid entry path,
+when literal expert-trajectory replay is the experiment being measured.
+
+The corrected 2026-08-25 V2 30k rollout is diagnostic evidence, not a passing
+result. With the full dual-arm GT handoff, the policy initially matched the
+expert transition (left gripper open, right gripper closed) and moved the right
+arm forward, but began reopening the right gripper at decision 38 and kept it
+open through most of the remaining rollout. The official evaluator reported
+IoU `0.0000` with the pad still at the source. This isolates the remaining
+failure to learned grasp/phase behavior rather than a partial-state handoff;
+do not treat the V2 checkpoint as submission-ready without new training and
+fresh multi-run evaluation.
 
 `sim-up` mirrors Isaac/Kit output to the terminal and to a timestamped
 `isaac_gui_*.log` below
@@ -170,12 +201,12 @@ helper/live containers; disabling its ineffective cross-container Fast DDS
 shared-memory transport prevents stale DDS files from filling the long-lived
 container's `/dev/shm` and causing a Kit `Bus error`.
 
-`run-task` requests a scene reset, returns the spine to the demonstrated
-near-zero starting height, checks the evaluation camera, and starts the runner.
-The runner loads the checkpoint before invoking the existing fixed base route
-to `(2.10, 3.05, -1.571)`. This moves the approximately two-minute PI0.5 load
-out of the post-base idle window. It discards staging-time observations and
-requires a fresh, settled camera/state tuple before warmup or inference.
+`run-task --hybrid-gt-pregrasp` requests a scene reset, runs the measured base
+alignment, restores the demonstrated spine and full dual-arm frame-399 state,
+and then starts the runner. The runner leaves its publishers inactive while
+loading the checkpoint, discards staging-time observations, verifies that the
+complete handoff state did not drift, and requires a fresh, settled
+camera/state tuple before warmup or inference.
 The route's command pulses, braking pauses, and settle duration use
 `/isaac/clock`; its bounded process timeout remains on host monotonic time.
 Short `0.05 s` correction pulses (`0.10 s` for forward/back) and `0.10 s`

@@ -503,6 +503,15 @@ def main() -> int:
             "initial_ee_world": initial,
             "target_ee_world": targets,
             "final_ee_world": node.ee,
+            "final_base_xyyaw": node.base,
+            "final_joints": node.joints,
+            "handoff_sim_time": node.sim_time,
+            "final_sample_sim_times": {
+                "objects": node.objects_time,
+                "base": node.base_time,
+                "joints": node.joints_time,
+                "ee": node.ee_time,
+            },
             "final_errors": errors,
             "provenance": provenance,
             "tolerances": {

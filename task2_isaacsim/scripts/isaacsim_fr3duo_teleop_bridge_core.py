@@ -872,6 +872,7 @@ class DualArmKeyboardTeleop:
             False: float(args.arm_teleop_gripper_closed),
         }
         self._pose_command_control = bool(args.arm_pose_command_control)
+        self._keyboard_control = bool(args.arm_keyboard_teleop)
         self._pose_subscriptions = []
         self._base_hold_pose = None
         self._pose_target_received = {"left": False, "right": False}
@@ -1334,7 +1335,17 @@ class DualArmKeyboardTeleop:
 
         positions: dict[int, float] = {}
         velocities: dict[int, float] = {}
-        for arm in self._arms.values():
+        for side, arm in self._arms.items():
+            # Pose-command mode must not silently drive an arm back to its
+            # initialized home target before that side has received an EE
+            # target.  This is also the clean ownership state used by the
+            # Phase-II GT-joint-pregrasp -> learned-joint-policy handoff.
+            if (
+                self._pose_command_control
+                and not self._keyboard_control
+                and not self._pose_target_received[side]
+            ):
+                continue
             rmpflow = arm["rmpflow"]
             rmpflow.set_robot_base_pose(base_pos, base_quat)
             world_pos, world_quat = _compose_world_pose(

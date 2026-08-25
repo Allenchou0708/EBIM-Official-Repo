@@ -27,13 +27,22 @@ from task2_isaacsim.baselines.pi05.live.ground_truth_pregrasp import (
     _slerp,
     _yaw_from_wxyz,
 )
-from task2_isaacsim.common.state_contract import RIGHT_JOINTS
+from task2_isaacsim.common.state_contract import (
+    LEFT_JOINTS,
+    RIGHT_JOINTS,
+    SPINE_JOINT,
+)
 from task2_isaacsim.scripts.topics import load_topics
 
 
 TOPICS = load_topics()
+LEFT_COMMAND_TOPIC = TOPICS["bridge"]["joint_groups"]["left_arm"]["command"]
+LEFT_STATE_TOPIC = TOPICS["bridge"]["joint_groups"]["left_arm"]["state"]
 RIGHT_COMMAND_TOPIC = TOPICS["bridge"]["joint_groups"]["right_arm"]["command"]
 RIGHT_STATE_TOPIC = TOPICS["bridge"]["joint_groups"]["right_arm"]["state"]
+LEFT_GRIPPER_TOPIC = TOPICS["cartesian_control"][
+    "gripper_open_fraction_target"
+]["left"]
 RIGHT_GRIPPER_TOPIC = TOPICS["cartesian_control"][
     "gripper_open_fraction_target"
 ]["right"]
@@ -61,6 +70,18 @@ REFERENCE_PLACE_QUATERNION_XYZW = (
     0.003020714968442917,
 )
 REFERENCE_CONTACT_SWEEP_XY = (0.050, 0.010)
+# Exact left-arm action target at successful dataset episode 19, frame 399.
+# The arm is not static at home in the demonstration; reproducing it is part
+# of the learned-policy observation and left-wrist camera geometry.
+LEFT_PREGRASP_Q399 = (
+    -0.2740990222,
+    -0.3937259018,
+    1.3518345356,
+    -2.5705306530,
+    0.5819327831,
+    2.3917682171,
+    1.3968001604,
+)
 # Post-arbitration targets from successful dataset episode 19.  Runtime uses
 # only their deltas from frame 399, added to the live GT-aligned joint state.
 JOINT_LANDMARKS = (
@@ -294,6 +315,7 @@ class JointLiftNode(Node):
     def __init__(self) -> None:
         super().__init__("task2_ground_truth_joint_lift")
         self.sim_time: float | None = None
+        self.left_joints: tuple[float, ...] | None = None
         self.joints: tuple[float, ...] | None = None
         self.pad_centroid: tuple[float, float, float] | None = None
         self.pad_z_span_m: float | None = None
@@ -303,6 +325,9 @@ class JointLiftNode(Node):
         self.publish_count = 0
         self.create_subscription(
             Clock, TOPICS["clock"], self._on_clock, qos_profile_sensor_data
+        )
+        self.create_subscription(
+            JointState, LEFT_STATE_TOPIC, self._on_left_joints, 10
         )
         self.create_subscription(
             JointState, RIGHT_STATE_TOPIC, self._on_joints, 10
@@ -331,7 +356,13 @@ class JointLiftNode(Node):
             self._on_right_ee,
             qos_profile_sensor_data,
         )
+        self.left_joint_pub = self.create_publisher(
+            JointState, LEFT_COMMAND_TOPIC, 10
+        )
         self.joint_pub = self.create_publisher(JointState, RIGHT_COMMAND_TOPIC, 10)
+        self.left_gripper_pub = self.create_publisher(
+            JointState, LEFT_GRIPPER_TOPIC, 10
+        )
         self.gripper_pub = self.create_publisher(JointState, RIGHT_GRIPPER_TOPIC, 10)
         self.base_pub = self.create_publisher(PoseStamped, BASE_HOLD_TOPIC, 10)
         self.ee_pub = self.create_publisher(
@@ -345,6 +376,13 @@ class JointLiftNode(Node):
         by_name = dict(zip(message.name, message.position))
         if all(name in by_name for name in RIGHT_JOINTS):
             self.joints = tuple(float(by_name[name]) for name in RIGHT_JOINTS)
+
+    def _on_left_joints(self, message: JointState) -> None:
+        by_name = dict(zip(message.name, message.position))
+        if all(name in by_name for name in LEFT_JOINTS):
+            self.left_joints = tuple(
+                float(by_name[name]) for name in LEFT_JOINTS
+            )
 
     def _on_pad(self, message: Float32MultiArray) -> None:
         data = tuple(float(value) for value in message.data)
@@ -418,11 +456,29 @@ class JointLiftNode(Node):
         arm.position = list(joints)
         self.joint_pub.publish(arm)
 
+    def publish_left_joint(self, joints: tuple[float, ...]) -> None:
+        arm = JointState()
+        arm.name = list(LEFT_JOINTS)
+        arm.position = list(joints)
+        self.left_joint_pub.publish(arm)
+
     def publish_gripper(self, gripper: float) -> None:
         grip = JointState()
         grip.name = ["right_gripper_open_fraction"]
         grip.position = [float(gripper)]
         self.gripper_pub.publish(grip)
+
+    def publish_left_gripper(self, gripper: float) -> None:
+        grip = JointState()
+        grip.name = ["left_gripper_open_fraction"]
+        grip.position = [float(gripper)]
+        self.left_gripper_pub.publish(grip)
+
+    def publish_left_pregrasp(
+        self, joints: tuple[float, ...], gripper: float = 1.0
+    ) -> None:
+        self.publish_left_joint(joints)
+        self.publish_left_gripper(gripper)
 
     def publish(self, joints: tuple[float, ...], gripper: float) -> None:
         self.publish_joint(joints)
@@ -453,6 +509,14 @@ def main() -> int:
         default=True,
     )
     parser.add_argument("--stop-frame", type=int, default=949)
+    parser.add_argument(
+        "--pregrasp-only",
+        action="store_true",
+        help=(
+            "stop after the verified absolute episode-19 frame-399 joint "
+            "preposition, before any grasp command"
+        ),
+    )
     parser.add_argument("--preposition-tolerance-rad", type=float, default=0.065)
     parser.add_argument("--trajectory-rate-hz", type=float, default=40.0)
     parser.add_argument("--grasp-dwell-s", type=float, default=0.5)
@@ -582,11 +646,14 @@ def main() -> int:
     started_wall = time.monotonic()
     started_sim: float | None = None
     live_start: tuple[float, ...] | None = None
+    live_left_start: tuple[float, ...] | None = None
     baseline_height: float | None = None
     initial_pad_centroid: tuple[float, float, float] | None = None
     trajectory_started_sim: float | None = None
     preposition_stable_since: float | None = None
     final_preposition_error: float | None = None
+    final_left_preposition_error: float | None = None
+    final_right_preposition_error: float | None = None
     preposition_base: tuple[float, float, float] | None = None
     approach_base: tuple[float, float, float] | None = None
     base_preposition_completed_sim: float | None = None
@@ -643,6 +710,7 @@ def main() -> int:
             rclpy.spin_once(node, timeout_sec=0.02)
             if (
                 node.sim_time is None
+                or node.left_joints is None
                 or node.joints is None
                 or node.pad_centroid is None
                 or node.right_ee is None
@@ -655,11 +723,19 @@ def main() -> int:
                 node.joint_pub.get_subscription_count() != 1
                 or node.gripper_pub.get_subscription_count() != 1
                 or node.base_pub.get_subscription_count() != 1
+                or (
+                    args.pregrasp_only
+                    and (
+                        node.left_joint_pub.get_subscription_count() != 1
+                        or node.left_gripper_pub.get_subscription_count() != 1
+                    )
+                )
             ):
                 continue
             if started_sim is None:
                 started_sim = node.sim_time
                 live_start = node.joints
+                live_left_start = node.left_joints
                 baseline_height = node.pad_centroid[2]
                 initial_pad_centroid = node.pad_centroid
                 grasp_base = deepen_grasp_base_pose(
@@ -688,11 +764,14 @@ def main() -> int:
                     node.objects["board_target"], REFERENCE_TARGET_XYYAW
                 )
             assert live_start is not None and baseline_height is not None
+            assert live_left_start is not None
             assert grasp_base is not None and target_base is not None
             assert preposition_base is not None and approach_base is not None
             if args.absolute_dataset_joints and trajectory_started_sim is None:
                 if base_preposition_completed_sim is None:
                     node.publish(live_start, 1.0)
+                    if args.pregrasp_only:
+                        node.publish_left_pregrasp(live_left_start)
                     delta_sim = max(
                         0.0,
                         node.sim_time - (last_preposition_sim or node.sim_time),
@@ -731,10 +810,26 @@ def main() -> int:
                     continue
 
                 node.publish(reference_start, 1.0)
+                if args.pregrasp_only:
+                    node.publish_left_pregrasp(LEFT_PREGRASP_Q399)
                 node.publish_base(grasp_base)
-                final_preposition_error = max(
+                final_right_preposition_error = max(
                     abs(actual - target)
                     for actual, target in zip(node.joints, reference_start)
+                )
+                final_left_preposition_error = max(
+                    abs(actual - target)
+                    for actual, target in zip(
+                        node.left_joints, LEFT_PREGRASP_Q399, strict=True
+                    )
+                )
+                final_preposition_error = max(
+                    final_right_preposition_error,
+                    (
+                        final_left_preposition_error
+                        if args.pregrasp_only
+                        else 0.0
+                    ),
                 )
                 if (
                     joint_preposition_completed_sim is None
@@ -755,6 +850,10 @@ def main() -> int:
                     if grasp_ready_stable_since is None:
                         grasp_ready_stable_since = node.sim_time
                     elif node.sim_time - grasp_ready_stable_since >= 0.5:
+                        if args.pregrasp_only:
+                            success = True
+                            reason = "stable_dataset_ground_truth_pregrasp"
+                            break
                         trajectory_started_sim = node.sim_time
                         baseline_height = node.pad_centroid[2]
                 else:
@@ -1359,6 +1458,7 @@ def main() -> int:
         result = {
             "success": success,
             "reason": reason,
+            "schema_version": 1,
             "placement_contract": args.placement_contract,
             "source_episode": 19,
             "source_frames": [item[0] for item in JOINT_LANDMARKS],
@@ -1366,10 +1466,51 @@ def main() -> int:
             "publish_count": node.publish_count,
             "baseline_pad_centroid_z_m": baseline_height,
             "final_preposition_max_joint_error_rad": final_preposition_error,
+            "final_left_preposition_max_joint_error_rad": (
+                final_left_preposition_error if args.pregrasp_only else None
+            ),
+            "final_right_preposition_max_joint_error_rad": (
+                final_right_preposition_error
+            ),
             "final_pad_centroid_m": node.pad_centroid,
             "final_pad_z_span_m": node.pad_z_span_m,
             "flat_pad_z_span_threshold_m": args.flat_pad_z_span_m,
             "final_right_ee_world_xyzw": node.right_ee,
+            "final_ee_world": {"right": node.right_ee},
+            "final_base_xyyaw": node.base,
+            "final_joints": {
+                **(
+                    dict(zip(LEFT_JOINTS, node.left_joints, strict=True))
+                    if node.left_joints is not None
+                    else {}
+                ),
+                **(
+                    dict(zip(RIGHT_JOINTS, node.joints, strict=True))
+                    if node.joints is not None
+                    else {}
+                ),
+                SPINE_JOINT: 0.4857,
+            },
+            "handoff_sim_time": node.sim_time,
+            "provenance": {
+                "controller": "formal_phase1_ground_truth_joint_lift",
+                "dataset_episode": 19,
+                "dataset_frame": 399,
+                "absolute_dataset_joints": args.absolute_dataset_joints,
+                "guessed_ik_used": False,
+                "staged_groups": (
+                    [
+                        "base",
+                        "spine",
+                        "left_arm",
+                        "right_arm",
+                        "left_gripper",
+                        "right_gripper",
+                    ]
+                    if args.pregrasp_only
+                    else ["base", "spine", "right_arm", "right_gripper"]
+                ),
+            },
             "final_board_target_pose_wxyz": node.objects.get("board_target"),
             "grasp_aligned_base_xyyaw": grasp_base,
             "safe_preposition_base_xyyaw": preposition_base,

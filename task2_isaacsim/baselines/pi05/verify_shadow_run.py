@@ -52,6 +52,42 @@ def verify_shadow_run(run_dir: Path, *, contract: str) -> dict[str, object]:
         "right_camera_ready_pad_relative_position",
         "right_camera_ready_orientation",
     }
+    ownership = manifest.get("ownership_handoff", {})
+    hybrid = ownership.get("mode") == "gt_pregrasp_to_pi05"
+    hybrid_stage_valid = (
+        stage_result.get("success") is True
+        and stage_result.get("reason")
+        == "stable_dataset_ground_truth_pregrasp"
+        and stage_result.get("provenance", {}).get("controller")
+        == "formal_phase1_ground_truth_joint_lift"
+        and stage_result.get("provenance", {}).get("dataset_frame") == 399
+        and stage_result.get("provenance", {}).get("absolute_dataset_joints")
+        is True
+        and stage_result.get("provenance", {}).get("guessed_ik_used") is False
+        and stage_result.get("provenance", {}).get("staged_groups")
+        == [
+            "base",
+            "spine",
+            "left_arm",
+            "right_arm",
+            "left_gripper",
+            "right_gripper",
+        ]
+        and stage_result.get("final_left_preposition_max_joint_error_rad", 1.0)
+        <= 0.02
+        and stage_result.get("final_right_preposition_max_joint_error_rad", 1.0)
+        <= 0.02
+        and ownership.get("cartesian_publishers_before_policy")
+        == {"left": 0, "right": 0}
+        and ownership.get("policy_publishers_before_activation")
+        == {
+            "left_arm": 0,
+            "right_arm": 0,
+            "left_gripper": 0,
+            "right_gripper": 0,
+            "spine": 0,
+        }
+    )
     checks = {
         "completed": manifest.get("completed") is True,
         "one_valid_decision": (
@@ -68,9 +104,29 @@ def verify_shadow_run(run_dir: Path, *, contract: str) -> dict[str, object]:
             and mapping[19] == (28 if contract == "v1" else None)
         ),
         "staging_all_within_tolerance": (
-            stage_result.get("feedback", {}).get("within_tolerance") is True
-            and set(stage_groups) == required_stage_groups
-            and all(stage_groups.values())
+            hybrid_stage_valid
+            if hybrid
+            else (
+                stage_result.get("feedback", {}).get("within_tolerance") is True
+                and set(stage_groups) == required_stage_groups
+                and all(stage_groups.values())
+            )
+        ),
+        "ownership_handoff_timestamps": (
+            not hybrid
+            or (
+                ownership.get("gt_handoff_sim_time") is not None
+                and ownership.get("first_post_handoff_observation_sim_time")
+                is not None
+                and ownership.get("first_policy_decision_sim_time") is not None
+            )
+        ),
+        "full_dual_arm_handoff_state": (
+            not hybrid
+            or (
+                ownership.get("post_handoff_arm_max_error_rad", 1.0) <= 0.03
+                and ownership.get("post_handoff_grippers_open") is True
+            )
         ),
         "fresh_capture_skew": (
             capture_skew_valid and 0.0 <= capture_skew <= 0.10

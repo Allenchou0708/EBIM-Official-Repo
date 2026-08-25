@@ -42,9 +42,9 @@ Usage:
   ./run_pi05.sh offline-gate [--run NAME] [--max-frames N]
   ./run_pi05.sh train-v4 [--run NAME]
   ./run_pi05.sh gate-v4 [--checkpoint PATH] [--maximum-episodes N]
-  ./run_pi05.sh sim-up [--gui]
+  ./run_pi05.sh sim-up --gui [--hybrid]
   ./run_pi05.sh stage-init [--staging-audit PATH] [--output-dir PATH] [--max-duration-s S]
-  ./run_pi05.sh run-task [--runtime-mode hard5|legacy] [--checkpoint PATH] [--dataset-root PATH] [--staging-audit PATH] [--run-label LABEL] [--shadow] [--confirm-right-wrist-pad-visible] [--max-actions N] [--max-duration-s S]
+  ./run_pi05.sh run-task [--hybrid-gt-pregrasp] [--runtime-mode hard5|legacy] [--checkpoint PATH] [--dataset-root PATH] [--staging-audit PATH] [--run-label LABEL] [--shadow] [--confirm-right-wrist-pad-visible] [--max-actions N] [--max-duration-s S]
   ./run_pi05.sh replay-dataset [--dataset-root PATH] [--episode auto|N] [--summary-only|--align-only|--max-frames N]
   ./run_pi05.sh audit-initial-states [--dataset-root PATH] [--output-dir PATH]
   ./run_pi05.sh evaluate
@@ -493,9 +493,43 @@ live_shell() {
     "${PI05_LIVE_IMAGE}" -lc "source /opt/ros/jazzy/setup.bash && $1"
 }
 
+hybrid_shell() {
+  docker run --rm --network host --ipc=host --entrypoint bash \
+    --user "$(id -u):$(id -g)" \
+    -e HOME=/tmp/ebim-live-home -e USER=ebim -e LOGNAME=ebim \
+    -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
+    -e PYTHONPATH=/workspace/EBiM_Challenge \
+    -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
+    -v "${REPO_ROOT}:/workspace/EBiM_Challenge:ro" \
+    -v "${HYBRID_STAGING_AUDIT}:/data/staging_audit.json:ro" \
+    -v "${HYBRID_OUTPUT}:/data/output" \
+    "${PI05_LIVE_IMAGE}" -lc \
+    "source /opt/ros/jazzy/setup.bash && exec $1"
+}
+
 command_sim_up() {
-  [[ "${1:-}" = "--gui" ]] || { echo "sim-up requires --gui" >&2; exit 2; }
+  local gui=false hybrid=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --gui) gui=true; shift ;;
+      --hybrid) hybrid=true; shift ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  ${gui} || { echo "sim-up requires --gui" >&2; exit 2; }
   local log_dir log_path status
+  local -a simulator_args=(
+    --disable-browser-command-topics --record
+  )
+  if ${hybrid}; then
+    simulator_args+=(
+      --arm-pose-command-control
+      --configure-gripper-drives
+      --arm-teleop-gripper-closed 0.804
+      --publish-ground-truth
+      --scene-reset-hotkey
+    )
+  fi
   log_dir="${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/launcher"
   log_path="${log_dir}/isaac_gui_$(date +%Y%m%d_%H%M%S).log"
   mkdir -p "${log_dir}"
@@ -503,7 +537,7 @@ command_sim_up() {
   set +e
   "${REPO_ROOT}/task2_isaacsim/scripts/run_isaacsim_teleop.sh" \
     --scene room --controller-mode none --no-browser --no-republisher -- \
-    --disable-browser-command-topics --record 2>&1 | tee "${log_path}"
+    "${simulator_args[@]}" 2>&1 | tee "${log_path}"
   status="${PIPESTATUS[0]}"
   set -e
   echo "isaac_gui_exit_code=${status}" | tee -a "${log_path}"
@@ -552,6 +586,7 @@ command_run_task() {
   local base_target="2.100026845932007 3.0529046058654785 -1.5706931352615356"
   local runtime_mode=hard5 max_actions=600 max_duration_s=300 max_decisions shadow=false
   local run_label="unlabeled" confirm_right_wrist_pad_visible=false
+  local hybrid_gt_pregrasp=false
   local -a runner_mode=(--arm-simulator)
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -560,6 +595,7 @@ command_run_task() {
       --staging-audit) staging_audit="$(realpath "$2")"; shift 2 ;;
       --run-label) run_label="$2"; shift 2 ;;
       --runtime-mode) runtime_mode="$2"; shift 2 ;;
+      --hybrid-gt-pregrasp) hybrid_gt_pregrasp=true; shift ;;
       --shadow) shadow=true; shift ;;
       --confirm-right-wrist-pad-visible) confirm_right_wrist_pad_visible=true; shift ;;
       --max-actions) max_actions="$2"; shift 2 ;;
@@ -611,6 +647,23 @@ command_run_task() {
   mkdir -p "${output}" "${TASK2_PI05_ROOT}/evidence/task2_200_submit_20260812/launcher"
   live_shell "ros2 topic pub --once /isaac/task2/scene_reset_request std_msgs/msg/String '{data: reset}'"
   live_shell "python3 /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/eval_camera_preflight.py --output /data/evidence/task2_200_submit_20260812/launcher/eval_preflight.json"
+  local -a staging_runner_args=(
+    --stage-base-after-policy-load
+    --stage-manipulation-after-base
+    --staging-audit /data/staging_audit.json
+    --manipulation-stage-max-duration-s 600
+  )
+  if ${hybrid_gt_pregrasp}; then
+    HYBRID_OUTPUT="${output}"
+    HYBRID_STAGING_AUDIT="${staging_audit}"
+    export HYBRID_OUTPUT HYBRID_STAGING_AUDIT
+    hybrid_shell "python3 -m task2_isaacsim.baselines.pi05.live.fixed_stage_base --target-from-live-pad --grasp-yaw-limit-deg 5 --grasp-depth-bias-m 0.005 --position-tolerance-m 0.006 --yaw-tolerance-rad 0.01 --velocity-threshold 0.025 --settle-duration-s 0.5 --max-duration-s 240 --output /data/output/gt_base_stage.json"
+    hybrid_shell "python3 -m task2_isaacsim.baselines.pi05.live.fixed_stage_spine --max-duration-s 90 --output /data/output/gt_spine_stage.json"
+    hybrid_shell "python3 -m task2_isaacsim.baselines.pi05.live.ground_truth_joint_lift --absolute-dataset-joints --no-preposition-at-live-grasp-base --grasp-yaw-limit-deg 5 --grasp-depth-bias-m 0.005 --pregrasp-only --output /data/output/gt_pregrasp_manifest.json --max-duration-s 120"
+    staging_runner_args=(
+      --hybrid-pregrasp-manifest /data/output/gt_pregrasp_manifest.json
+    )
+  fi
   local -a visibility_arg=()
   ${confirm_right_wrist_pad_visible} && visibility_arg=(--confirm-right-wrist-pad-visible)
   exec docker run --rm --gpus all --network host --ipc=host \
@@ -632,10 +685,7 @@ command_run_task() {
     --output-dir /data/output --base-target ${base_target} \
     --base-coordinate-frame dataset_odom_world_verified_against_room_scene \
     --confirm-fixed-base-staging \
-    --stage-base-after-policy-load \
-    --stage-manipulation-after-base \
-    --staging-audit /data/staging_audit.json \
-    --manipulation-stage-max-duration-s 600 \
+    "${staging_runner_args[@]}" \
     --runtime-mode "${runtime_mode}" \
     --position-tolerance-m 0.03 --yaw-tolerance-rad 0.04 \
     "${runner_mode[@]}" \

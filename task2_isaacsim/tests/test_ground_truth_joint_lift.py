@@ -6,6 +6,7 @@ import math
 import unittest
 
 from task2_isaacsim.baselines.pi05.live.ground_truth_joint_lift import (
+    LEFT_PREGRASP_Q399,
     REFERENCE_BASE_XYYAW,
     REFERENCE_PAD_XYYAW,
     JOINT_LANDMARKS,
@@ -23,6 +24,11 @@ from task2_isaacsim.baselines.pi05.live.ground_truth_joint_lift import (
 
 
 class GroundTruthJointReplayTest(unittest.TestCase):
+    def test_left_pregrasp_matches_episode19_frame399(self) -> None:
+        self.assertEqual(len(LEFT_PREGRASP_Q399), 7)
+        self.assertAlmostEqual(LEFT_PREGRASP_Q399[0], -0.2740990222)
+        self.assertAlmostEqual(LEFT_PREGRASP_Q399[6], 1.3968001604)
+
     def test_landmark_interpolation_and_release(self) -> None:
         q, grip = interpolate_landmark(834.5)
         self.assertAlmostEqual(q[0], (JOINT_LANDMARKS[-4][1][0] + JOINT_LANDMARKS[-3][1][0]) / 2.0)

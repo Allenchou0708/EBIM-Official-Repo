@@ -65,6 +65,7 @@ CAMERA_ENTRIES = TOPICS["cameras"]["robot"]
 COMMAND_ENTRIES = TOPICS["bridge"]["joint_groups"]
 SPINE_COMMAND_TOPIC = TOPICS["teleop"]["spine_target"]
 POLICY_COMMAND_TOPICS = policy_command_topics(TOPICS)
+EE_TARGET_TOPICS = TOPICS["cartesian_control"]["ee_target"]
 
 
 def _stamp_seconds(message: object) -> float:
@@ -328,6 +329,12 @@ class LiveObservationNode(Node):
             for group, topic in POLICY_COMMAND_TOPICS.items()
         }
 
+    def cartesian_publisher_counts(self) -> dict[str, int]:
+        return {
+            side: len(self.get_publishers_info_by_topic(topic))
+            for side, topic in EE_TARGET_TOPICS.items()
+        }
+
     def publish_action(self, action: tuple[float, ...]) -> None:
         if not self.publish_enabled:
             raise RuntimeError("shadow runner cannot publish")
@@ -395,6 +402,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stage-base-after-policy-load", action="store_true")
     parser.add_argument("--stage-manipulation-after-base", action="store_true")
     parser.add_argument("--staging-audit", type=Path)
+    parser.add_argument("--hybrid-pregrasp-manifest", type=Path)
     parser.add_argument(
         "--confirm-right-wrist-pad-visible", action="store_true"
     )
@@ -437,7 +445,15 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     if args.arm_simulator and args.max_publish_actions <= 0:
         print("FAIL: --max-publish-actions must be positive")
         return 2
-    if not args.stage_manipulation_after_base or args.staging_audit is None:
+    hybrid_handoff = args.hybrid_pregrasp_manifest is not None
+    hybrid_expected_arm_state: tuple[float, ...] | None = None
+    if hybrid_handoff and args.stage_manipulation_after_base:
+        print("FAIL: hybrid handoff cannot also run dataset manipulation staging")
+        return 2
+    if (
+        not hybrid_handoff
+        and (not args.stage_manipulation_after_base or args.staging_audit is None)
+    ):
         print(
             "FAIL: dataset-derived --stage-manipulation-after-base and "
             "--staging-audit are required"
@@ -449,19 +465,66 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             "--confirm-right-wrist-pad-visible after shadow evidence review"
         )
         return 2
-    try:
-        staging_audit = validate_staging_audit(
-            json.loads(args.staging_audit.read_text(encoding="utf-8"))
-        )
-        staged_spine_target = float(
-            staging_audit["final_target"]["measured_reference"]["spine_m"]
-        )
-        staged_spine_tolerance = float(
-            staging_audit["tolerances"]["spine_abs_m"]
-        )
-    except (KeyError, OSError, TypeError, ValueError) as error:
-        print(f"FAIL: invalid staging audit: {error}")
-        return 2
+    stage_result: dict = {}
+    if hybrid_handoff:
+        try:
+            stage_result = json.loads(
+                args.hybrid_pregrasp_manifest.read_text(encoding="utf-8")
+            )
+            if stage_result.get("success") is not True:
+                raise ValueError("GT pregrasp did not succeed")
+            if stage_result.get("reason") != "stable_dataset_ground_truth_pregrasp":
+                raise ValueError("unexpected GT pregrasp completion reason")
+            provenance = stage_result.get("provenance", {})
+            if provenance.get("controller") != "formal_phase1_ground_truth_joint_lift":
+                raise ValueError("hybrid handoff did not use the formal Phase-I controller")
+            if provenance.get("dataset_frame") != 399:
+                raise ValueError("hybrid handoff did not stop at dataset frame 399")
+            if provenance.get("absolute_dataset_joints") is not True:
+                raise ValueError("hybrid handoff did not use absolute dataset joints")
+            if provenance.get("guessed_ik_used") is not False:
+                raise ValueError("GT pregrasp provenance is not auditable")
+            if provenance.get("staged_groups") != [
+                "base",
+                "spine",
+                "left_arm",
+                "right_arm",
+                "left_gripper",
+                "right_gripper",
+            ]:
+                raise ValueError("GT pregrasp did not stage the full dual-arm state")
+            final_joints = stage_result["final_joints"]
+            hybrid_expected_arm_state = tuple(
+                float(final_joints[name])
+                for name in (*LEFT_JOINTS, *RIGHT_JOINTS)
+            )
+            staged_spine_target = float(final_joints[SPINE_JOINT])
+            staged_spine_tolerance = 0.02
+            handoff_base = tuple(
+                float(value) for value in stage_result["final_base_xyyaw"]
+            )
+            if len(handoff_base) != 3 or not all(
+                math.isfinite(value) for value in handoff_base
+            ):
+                raise ValueError("invalid GT handoff base pose")
+            args.base_target = handoff_base
+        except (KeyError, OSError, TypeError, ValueError) as error:
+            print(f"FAIL: invalid hybrid pregrasp manifest: {error}")
+            return 2
+    else:
+        try:
+            staging_audit = validate_staging_audit(
+                json.loads(args.staging_audit.read_text(encoding="utf-8"))
+            )
+            staged_spine_target = float(
+                staging_audit["final_target"]["measured_reference"]["spine_m"]
+            )
+            staged_spine_tolerance = float(
+                staging_audit["tolerances"]["spine_abs_m"]
+            )
+        except (KeyError, OSError, TypeError, ValueError) as error:
+            print(f"FAIL: invalid staging audit: {error}")
+            return 2
     if not 0 < args.queue_refill_actions <= PI05_CONTRACT.chunk_size:
         print("FAIL: --queue-refill-actions must be within the policy chunk")
         return 2
@@ -633,37 +696,42 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             print("FAIL: base staging after policy load failed", flush=True)
             return 2
     manipulation_stage_output = (
-        args.output_dir / "dataset_pregrasp_staging_manifest.json"
+        args.hybrid_pregrasp_manifest
+        if hybrid_handoff
+        else args.output_dir / "dataset_pregrasp_staging_manifest.json"
     )
-    manipulation_stage_started = time.monotonic()
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            (
-                "task2_isaacsim.baselines.pi05.live."
-                "fixed_stage_manipulation"
-            ),
-            "--audit",
-            str(args.staging_audit),
-            "--output",
-            str(manipulation_stage_output),
-            "--max-duration-s",
-            str(args.manipulation_stage_max_duration_s),
-        ],
-        check=False,
-    )
-    manipulation_stage_s = time.monotonic() - manipulation_stage_started
-    stage_result: dict = {}
-    if manipulation_stage_output.is_file():
-        stage_result = json.loads(
-            manipulation_stage_output.read_text(encoding="utf-8")
+    manipulation_stage_s = 0.0
+    stage_failed = False
+    if not hybrid_handoff:
+        manipulation_stage_started = time.monotonic()
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                (
+                    "task2_isaacsim.baselines.pi05.live."
+                    "fixed_stage_manipulation"
+                ),
+                "--audit",
+                str(args.staging_audit),
+                "--output",
+                str(manipulation_stage_output),
+                "--max-duration-s",
+                str(args.manipulation_stage_max_duration_s),
+            ],
+            check=False,
         )
-    if (
-        result.returncode != 0
-        or stage_result.get("success") is not True
-        or stage_result.get("feedback", {}).get("within_tolerance") is not True
-    ):
+        manipulation_stage_s = time.monotonic() - manipulation_stage_started
+        if manipulation_stage_output.is_file():
+            stage_result = json.loads(
+                manipulation_stage_output.read_text(encoding="utf-8")
+            )
+        stage_failed = (
+            result.returncode != 0
+            or stage_result.get("success") is not True
+            or stage_result.get("feedback", {}).get("within_tolerance") is not True
+        )
+    if stage_failed:
         failure = {
             "schema_version": 8,
             "mode": mode,
@@ -685,7 +753,18 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         rclpy.shutdown()
         print("FAIL: dataset pregrasp staging failed", flush=True)
         return 2
-    if args.arm_simulator:
+    cartesian_publishers_before_policy = node.cartesian_publisher_counts()
+    policy_publishers_before_activation = node.command_publisher_counts()
+    if hybrid_handoff and any(cartesian_publishers_before_policy.values()):
+        print(
+            "FAIL: GT Cartesian publishers remain active: "
+            f"{cartesian_publishers_before_policy}",
+            flush=True,
+        )
+        node.destroy_node()
+        rclpy.shutdown()
+        return 2
+    if args.arm_simulator and not hybrid_handoff:
         try:
             node.activate_publishers()
         except RuntimeError as error:
@@ -694,7 +773,11 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             rclpy.shutdown()
             return 2
     node.discard_staging_observations()
-    gate.reset("dataset_pregrasp_staging_complete")
+    gate.reset(
+        "hybrid_gt_pregrasp_handoff_complete"
+        if hybrid_handoff
+        else "dataset_pregrasp_staging_complete"
+    )
     started = time.monotonic()
     last_sequences: dict[str, int] = {}
     last_reset_count = node.reset_count
@@ -734,6 +817,9 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     warmup_images: dict[str, np.ndarray] | None = None
     warmup_state: tuple[float, ...] | None = None
     staging_observation_images: dict[str, str] = {}
+    first_post_handoff_observation_sim_time: float | None = None
+    post_handoff_arm_max_error_rad: float | None = None
+    post_handoff_grippers_open: bool | None = None
     while (
         warmup_images is None
         and time.monotonic() - started < args.max_duration_s
@@ -762,7 +848,35 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             warmup_images = None
             stale_observations += 1
     if warmup_images is not None and warmup_state is not None:
+        first_post_handoff_observation_sim_time = node.sim_time
         initial_spine_position_m = warmup_state[28]
+        if hybrid_handoff:
+            assert hybrid_expected_arm_state is not None
+            observed_arm_state = warmup_state[14:28]
+            post_handoff_arm_max_error_rad = max(
+                abs(observed - expected)
+                for observed, expected in zip(
+                    observed_arm_state,
+                    hybrid_expected_arm_state,
+                    strict=True,
+                )
+            )
+            post_handoff_grippers_open = (
+                warmup_state[29] >= 0.95 and warmup_state[30] >= 0.95
+            )
+            if (
+                post_handoff_arm_max_error_rad > 0.03
+                or not post_handoff_grippers_open
+            ):
+                print(
+                    "FAIL: full GT pregrasp state drifted before policy "
+                    f"handoff: arm_error={post_handoff_arm_max_error_rad:.6f} "
+                    f"grippers={warmup_state[29:31]}",
+                    flush=True,
+                )
+                node.destroy_node()
+                rclpy.shutdown()
+                return 2
         for key, image in warmup_images.items():
             path = args.output_dir / f"settled_fresh_{key}.ppm"
             _write_ppm(path, image)
@@ -773,6 +887,15 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             )
             warmup_latencies.append(latency)
         policy.reset()
+
+    if args.arm_simulator and hybrid_handoff:
+        try:
+            node.activate_publishers()
+        except RuntimeError as error:
+            print(f"FAIL: {error}", flush=True)
+            node.destroy_node()
+            rclpy.shutdown()
+            return 2
 
     try:
         while (
@@ -882,6 +1005,9 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 )
                 event = {
                     "decision": event_index,
+                    "observation_capture_sim_time": future_context[
+                        "capture_sim_at"
+                    ],
                     "runtime_mode": args.runtime_mode,
                     "valid": True,
                     "fixed_base_staging": True,
@@ -1223,7 +1349,11 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             ),
         },
         "staging": {
-            "audit": str(args.staging_audit.resolve()),
+            "audit": (
+                str(args.staging_audit.resolve())
+                if args.staging_audit is not None
+                else None
+            ),
             "execution_manifest": str(manipulation_stage_output),
             "result": stage_result,
             "observations_discarded_after_staging": True,
@@ -1231,6 +1361,38 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             "right_wrist_pad_visible_operator_attested": (
                 args.confirm_right_wrist_pad_visible
             ),
+        },
+        "ownership_handoff": {
+            "mode": (
+                "gt_pregrasp_to_pi05" if hybrid_handoff else "dataset_staging"
+            ),
+            "manifest": (
+                str(args.hybrid_pregrasp_manifest.resolve())
+                if hybrid_handoff
+                else None
+            ),
+            "gt_handoff_sim_time": (
+                stage_result.get("handoff_sim_time") if hybrid_handoff else None
+            ),
+            "cartesian_publishers_before_policy": (
+                cartesian_publishers_before_policy
+            ),
+            "policy_publishers_before_activation": (
+                policy_publishers_before_activation
+            ),
+            "first_post_handoff_observation_sim_time": (
+                first_post_handoff_observation_sim_time
+            ),
+            "first_policy_decision_sim_time": (
+                events[0].get("observation_capture_sim_time")
+                if events
+                else None
+            ),
+            "post_handoff_arm_max_error_rad": (
+                post_handoff_arm_max_error_rad
+            ),
+            "post_handoff_grippers_open": post_handoff_grippers_open,
+            "unaddressed_rmpflow_sides_inactive": True,
         },
         "final_readiness": gate.last_evidence,
         "decisions": len(events),
