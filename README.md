@@ -3,6 +3,12 @@
 **Phase I Task 2 submission instructions are below.**  For the wider
 benchmark repository's component status, see [STATUS.md](STATUS.md).
 
+Phase II research is now tracked in
+[`PHASE2_GENERALIZATION_STRATEGY_2026-08-25.md`](task2_isaacsim/PHASE2_GENERALIZATION_STRATEGY_2026-08-25.md).
+The primary route is a robot-camera perception + trajectory-retargeting skill
+controller with explicit phase/gripper ownership; PI0.5 is retained only as a
+secondary residual-learning candidate.
+
 ## Phase I Task 2 policy submission
 
 This branch is the team's **Option A policy submission** for Task 2 thermal-pad
