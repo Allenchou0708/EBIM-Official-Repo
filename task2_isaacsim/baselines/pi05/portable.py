@@ -1122,6 +1122,21 @@ def build_parser() -> argparse.ArgumentParser:
     v4_gate_parser.add_argument("--output", type=Path, required=True)
     v4_gate_parser.add_argument("--maximum-episodes", type=int)
 
+    v5_parser = subparsers.add_parser("v5-train")
+    v5_parser.add_argument("--checkpoint", type=Path, required=True)
+    v5_parser.add_argument("--dataset-root", type=Path, required=True)
+    v5_parser.add_argument("--phase-manifest", type=Path, required=True)
+    v5_parser.add_argument("--output-dir", type=Path, required=True)
+    v5_parser.add_argument("--steps", type=int, default=3000)
+    v5_parser.add_argument("--execute", action="store_true")
+
+    v5_gate_parser = subparsers.add_parser("v5-gripper-gate")
+    v5_gate_parser.add_argument("--checkpoint", type=Path, required=True)
+    v5_gate_parser.add_argument("--dataset-root", type=Path, required=True)
+    v5_gate_parser.add_argument("--phase-manifest", type=Path, required=True)
+    v5_gate_parser.add_argument("--output", type=Path, required=True)
+    v5_gate_parser.add_argument("--maximum-episodes", type=int)
+
     resume_parser = subparsers.add_parser("resume")
     resume_parser.add_argument("--checkpoint", type=Path, required=True)
     resume_parser.add_argument("--output-dir", type=Path, required=True)
@@ -1280,6 +1295,38 @@ def main() -> int:
             )
         except (OSError, RuntimeError, ValueError) as error:
             print(f"FAIL: V4 offline gate: {error}")
+            return 2
+        print(json.dumps({"go": report["go"], "checks": report["checks"]}, indent=2))
+        return 0 if report["go"] else 3
+    if args.command == "v5-train":
+        from .v5_train import run_v5_training
+
+        try:
+            return run_v5_training(
+                checkpoint=args.checkpoint,
+                dataset_root=args.dataset_root,
+                phase_manifest=args.phase_manifest,
+                output_dir=args.output_dir,
+                profile=PROFILE_DIRECTORY / "expert_v5_gripper.yaml",
+                steps=args.steps,
+                execute=args.execute,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"FAIL: V5 training: {error}")
+            return 2
+    if args.command == "v5-gripper-gate":
+        from .gripper_hold_gate import run_gripper_hold_gate
+
+        try:
+            report = run_gripper_hold_gate(
+                checkpoint=args.checkpoint,
+                dataset_root=args.dataset_root,
+                phase_manifest=args.phase_manifest,
+                output=args.output,
+                maximum_episodes=args.maximum_episodes,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"FAIL: V5 gripper gate: {error}")
             return 2
         print(json.dumps({"go": report["go"], "checks": report["checks"]}, indent=2))
         return 0 if report["go"] else 3

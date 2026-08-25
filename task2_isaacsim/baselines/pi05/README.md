@@ -107,6 +107,27 @@ NO-GO. The 2026-08-14 V4 checkpoint failed orient-to-pregrasp direction and
 correct-prompt discriminability, so it must not be run in GUI; see
 `TASK2_PI05_V4_SEVEN_PROMPT_OFFLINE_GATE_LAB_RESULT_2026-08-14.md`.
 
+V5 is an experimental V2-30k continuation that normalizes a per-action flow
+loss and gives action 18 (the right gripper) weight `8.0`, leaving the other 19
+action dimensions at `1.0`. It preserves the original task prompt, action
+contract, six phase groups, 179/20 train/held-out split, expert-only training,
+and frozen vision encoder:
+
+```bash
+./run_pi05.sh train-v5 --run task2_pi05_v5_weighted_gripper_3k --steps 3000
+./run_pi05.sh gate-v5 \
+  --checkpoint /path/to/checkpoints/003000/pretrained_model \
+  --output "${TASK2_PI05_ROOT}/evidence/v5_gripper_hold_gate.json"
+```
+
+`gate-v5` is teacher-forced and publishes no ROS commands. For every held-out
+episode it checks all five effective actions at approach-open, initial close,
+early/mid/late hold, and release-open landmarks. The 2026-08-25 3k run was a
+measured NO-GO: approach-open improved, but initial close and late hold
+regressed. A 100-step early-stop candidate also remained NO-GO. Neither V5
+checkpoint is approved for simulator or live use; see
+`TASK2_PI05_V5_WEIGHTED_GRIPPER_LAB_RESULT_2026-08-25.md`.
+
 Before a GUI run, one checkpoint shadow can exercise the real observation,
 postprocessing, action-bound, base-isolation, spine, and time-alignment
 contracts without publishing ROS commands:

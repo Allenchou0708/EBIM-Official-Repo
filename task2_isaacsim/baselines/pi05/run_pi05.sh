@@ -42,6 +42,8 @@ Usage:
   ./run_pi05.sh offline-gate [--run NAME] [--max-frames N]
   ./run_pi05.sh train-v4 [--run NAME]
   ./run_pi05.sh gate-v4 [--checkpoint PATH] [--maximum-episodes N]
+  ./run_pi05.sh train-v5 [--run NAME] [--steps N]
+  ./run_pi05.sh gate-v5 [--checkpoint PATH] [--output PATH] [--maximum-episodes N]
   ./run_pi05.sh sim-up --gui [--hybrid]
   ./run_pi05.sh stage-init [--staging-audit PATH] [--output-dir PATH] [--max-duration-s S]
   ./run_pi05.sh run-task [--hybrid-gt-pregrasp] [--runtime-mode hard5|legacy] [--checkpoint PATH] [--dataset-root PATH] [--staging-audit PATH] [--run-label LABEL] [--shadow] [--confirm-right-wrist-pad-visible] [--max-actions N] [--max-duration-s S]
@@ -486,6 +488,84 @@ command_gate_v4() {
     --output /data/output/v4_offline_gate.json "${episode_arg[@]}"
 }
 
+command_train_v5() {
+  local run_name="task2_pi05_v5_weighted_gripper_3k" steps=3000
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --run) run_name="$2"; shift 2 ;;
+      --steps) steps="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  [[ "${steps}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "--steps must be a positive integer" >&2
+    exit 2
+  }
+  [[ "${run_name}" =~ ^[A-Za-z0-9._-]+$ ]] || {
+    echo "--run must be a simple run name" >&2
+    exit 2
+  }
+  local checkpoint dataset phase_manifest output
+  checkpoint="${TASK2_PI05_ROOT}/outputs/task2_pi05_v2_expert_30k/training/checkpoints/030000/pretrained_model"
+  dataset="${TASK2_PI05_ROOT}/outputs/task2_pi05_v2_expert_30k/relative_dataset"
+  phase_manifest="${TASK2_PI05_ROOT}/outputs/task2_pi05_v2_expert_30k/phase_manifest.json"
+  output="${TASK2_PI05_ROOT}/outputs/${run_name}"
+  [[ -d "${checkpoint}" ]] || { echo "V2 30k checkpoint not found" >&2; exit 2; }
+  [[ -d "${dataset}" ]] || { echo "V2 relative dataset not found" >&2; exit 2; }
+  [[ -f "${phase_manifest}" ]] || { echo "V2 phase manifest not found" >&2; exit 2; }
+  mkdir -p "${output}"
+  training_base_args
+  docker run "${TRAINING_ARGS[@]}" \
+    -v "${TASK2_PI05_ROOT}:/data/task2_pi05" \
+    -v "${checkpoint}:/data/v2-checkpoint:ro" \
+    "${PI05_TRAIN_IMAGE}" v5-train \
+    --checkpoint /data/v2-checkpoint \
+    --dataset-root /data/task2_pi05/outputs/task2_pi05_v2_expert_30k/relative_dataset \
+    --phase-manifest /data/task2_pi05/outputs/task2_pi05_v2_expert_30k/phase_manifest.json \
+    --output-dir "/data/task2_pi05/outputs/${run_name}" \
+    --steps "${steps}" --execute
+}
+
+command_gate_v5() {
+  local checkpoint maximum_episodes="" output
+  checkpoint="${TASK2_PI05_ROOT}/outputs/task2_pi05_v5_weighted_gripper_3k/training/checkpoints/003000/pretrained_model"
+  output="${TASK2_PI05_ROOT}/evidence/task2_pi05_v5_weighted_gripper_3k/gripper_hold_gate.json"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --checkpoint) checkpoint="$(realpath "$2")"; shift 2 ;;
+      --output) output="$2"; shift 2 ;;
+      --maximum-episodes) maximum_episodes="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  [[ -d "${checkpoint}" ]] || { echo "V5 checkpoint not found" >&2; exit 2; }
+  [[ -z "${maximum_episodes}" || "${maximum_episodes}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "--maximum-episodes must be a positive integer" >&2
+    exit 2
+  }
+  local dataset phase_manifest
+  dataset="${TASK2_PI05_ROOT}/outputs/task2_pi05_v2_expert_30k/relative_dataset"
+  phase_manifest="${TASK2_PI05_ROOT}/outputs/task2_pi05_v2_expert_30k/phase_manifest.json"
+  mkdir -p "$(dirname "${output}")"
+  output="$(realpath "${output}")"
+  [[ "${output}" = "${TASK2_PI05_ROOT}"/* ]] || {
+    echo "--output must be below TASK2_PI05_ROOT" >&2
+    exit 2
+  }
+  training_base_args
+  local -a episode_arg=()
+  [[ -n "${maximum_episodes}" ]] && episode_arg=(--maximum-episodes "${maximum_episodes}")
+  docker run "${TRAINING_ARGS[@]}" \
+    -v "${TASK2_PI05_ROOT}:/data/task2_pi05" \
+    -v "${checkpoint}:/data/checkpoint:ro" \
+    "${PI05_TRAIN_IMAGE}" v5-gripper-gate \
+    --checkpoint /data/checkpoint \
+    --dataset-root /data/task2_pi05/outputs/task2_pi05_v2_expert_30k/relative_dataset \
+    --phase-manifest /data/task2_pi05/outputs/task2_pi05_v2_expert_30k/phase_manifest.json \
+    --output "/data/task2_pi05/${output#"${TASK2_PI05_ROOT}/"}" \
+    "${episode_arg[@]}"
+}
+
 live_shell() {
   docker run --rm --network host --entrypoint bash \
     -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
@@ -797,6 +877,8 @@ case "${1:-}" in
   train) shift; command_train "$@" ;;
   train-v4) shift; command_train_v4 "$@" ;;
   gate-v4) shift; command_gate_v4 "$@" ;;
+  train-v5) shift; command_train_v5 "$@" ;;
+  gate-v5) shift; command_gate_v5 "$@" ;;
   sim-up) shift; command_sim_up "$@" ;;
   stage-init) shift; command_stage_init "$@" ;;
   run-task) shift; command_run_task "$@" ;;
