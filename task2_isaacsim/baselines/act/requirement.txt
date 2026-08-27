@@ -1,0 +1,2 @@
+# Compatibility filename requested by the Task 2 runbook.
+-r requirements.txt

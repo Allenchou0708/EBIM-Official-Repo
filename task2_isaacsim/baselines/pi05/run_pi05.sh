@@ -46,7 +46,7 @@ Usage:
   ./run_pi05.sh gate-v5 [--checkpoint PATH] [--output PATH] [--maximum-episodes N]
   ./run_pi05.sh sim-up --gui [--hybrid]
   ./run_pi05.sh stage-init [--staging-audit PATH] [--output-dir PATH] [--max-duration-s S]
-  ./run_pi05.sh run-task [--hybrid-gt-pregrasp] [--runtime-mode hard5|legacy] [--checkpoint PATH] [--dataset-root PATH] [--staging-audit PATH] [--run-label LABEL] [--shadow] [--confirm-right-wrist-pad-visible] [--max-actions N] [--max-duration-s S]
+  ./run_pi05.sh run-task [--policy-type pi05|act] [--hybrid-gt-pregrasp] [--runtime-mode hard5|legacy] [--checkpoint PATH] [--dataset-root PATH] [--staging-audit PATH] [--run-label LABEL] [--shadow] [--confirm-right-wrist-pad-visible] [--max-actions N] [--max-duration-s S]
   ./run_pi05.sh replay-dataset [--dataset-root PATH] [--episode auto|N] [--summary-only|--align-only|--max-frames N]
   ./run_pi05.sh audit-initial-states [--dataset-root PATH] [--output-dir PATH]
   ./run_pi05.sh evaluate
@@ -665,6 +665,7 @@ command_run_task() {
   local staging_audit="${TASK2_PI05_ROOT}/evidence/task2_pi05_camera_ready_pad_relative_20260815/startup_staging_audit.json"
   local base_target="2.100026845932007 3.0529046058654785 -1.5706931352615356"
   local runtime_mode=hard5 max_actions=600 max_duration_s=300 max_decisions shadow=false
+  local policy_type=pi05
   local run_label="unlabeled" confirm_right_wrist_pad_visible=false
   local hybrid_gt_pregrasp=false
   local -a runner_mode=(--arm-simulator)
@@ -675,6 +676,7 @@ command_run_task() {
       --staging-audit) staging_audit="$(realpath "$2")"; shift 2 ;;
       --run-label) run_label="$2"; shift 2 ;;
       --runtime-mode) runtime_mode="$2"; shift 2 ;;
+      --policy-type) policy_type="$2"; shift 2 ;;
       --hybrid-gt-pregrasp) hybrid_gt_pregrasp=true; shift ;;
       --shadow) shadow=true; shift ;;
       --confirm-right-wrist-pad-visible) confirm_right_wrist_pad_visible=true; shift ;;
@@ -690,6 +692,10 @@ command_run_task() {
   }
   [[ "${runtime_mode}" = "hard5" || "${runtime_mode}" = "legacy" ]] || {
     echo "--runtime-mode must be hard5 or legacy" >&2
+    exit 2
+  }
+  [[ "${policy_type}" = "pi05" || "${policy_type}" = "act" ]] || {
+    echo "--policy-type must be pi05 or act" >&2
     exit 2
   }
   checkpoint="$(realpath "${checkpoint}")"
@@ -761,6 +767,7 @@ command_run_task() {
     -v "${staging_audit}:/data/staging_audit.json:ro" \
     -v "${output}:/data/output" \
     "${PI05_LIVE_IMAGE}" run-task --checkpoint /data/checkpoint \
+    --policy-type "${policy_type}" \
     --dataset-root /data/dataset --dataset-repo-id hermanprawiro/task2_fixpos_200 \
     --output-dir /data/output --base-target ${base_target} \
     --base-coordinate-frame dataset_odom_world_verified_against_room_scene \

@@ -1,0 +1,5 @@
+# Installed by the pip section in environment.yml. The commit is the same
+# LeRobot revision used by the existing Task 2 PI0.5 image.
+lerobot[training] @ git+https://github.com/huggingface/lerobot.git@30da8e687a6dfc617fcd94afc367ac7071c376ce
+pyarrow>=16
+numpy>=1.26

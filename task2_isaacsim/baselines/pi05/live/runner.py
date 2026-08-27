@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 The EBiM Benchmark Contributors
 # SPDX-License-Identifier: Apache-2.0
-"""ROS 2 live PI0.5 runner; shadow by default, simulator publication opt-in."""
+"""ROS 2 learned-policy runner; shadow by default, simulator publication opt-in."""
 
 from __future__ import annotations
 
@@ -47,7 +47,6 @@ from task2_isaacsim.baselines.pi05.live.core import (
     validate_live_state,
     validate_rgb_frame,
 )
-from task2_isaacsim.baselines.pi05.live.policy import LivePi05Policy
 from task2_isaacsim.baselines.pi05.live.staging import validate_staging_audit
 from task2_isaacsim.common.state_contract import (
     GRIPPER_CLOSED_RAD,
@@ -391,6 +390,7 @@ def _write_ppm(path: Path, image: np.ndarray) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--policy-type", choices=("pi05", "act"), default="pi05")
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument(
         "--dataset-repo-id", default="hermanprawiro/task2_fixpos_v1"
@@ -439,6 +439,21 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:  # noqa: C901 - one bounded live control loop
     args = parse_args()
+    if args.policy_type == "act":
+        from task2_isaacsim.baselines.act.contract import ACT_CONTRACT
+        from task2_isaacsim.baselines.act.live.policy import LiveACTPolicy
+
+        policy_class = LiveACTPolicy
+        policy_chunk_size = ACT_CONTRACT.chunk_size
+        policy_action_steps = ACT_CONTRACT.n_action_steps
+        task_instruction = "Pick up the thermal pad and place it on the target RAM board."
+    else:
+        from task2_isaacsim.baselines.pi05.live.policy import LivePi05Policy
+
+        policy_class = LivePi05Policy
+        policy_chunk_size = PI05_CONTRACT.chunk_size
+        policy_action_steps = PI05_CONTRACT.n_action_steps
+        task_instruction = PI05_CONTRACT.task_instruction
     if not args.confirm_fixed_base_staging:
         print("FAIL: --confirm-fixed-base-staging is required")
         return 2
@@ -525,7 +540,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         except (KeyError, OSError, TypeError, ValueError) as error:
             print(f"FAIL: invalid staging audit: {error}")
             return 2
-    if not 0 < args.queue_refill_actions <= PI05_CONTRACT.chunk_size:
+    if not 0 < args.queue_refill_actions <= policy_chunk_size:
         print("FAIL: --queue-refill-actions must be within the policy chunk")
         return 2
     if args.startup_timeout_s <= 0.0 or args.startup_retries < 0:
@@ -629,11 +644,11 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         return 2
 
     policy_load_started = time.monotonic()
-    policy = LivePi05Policy(
+    policy = policy_class(
         checkpoint=args.checkpoint,
         dataset_root=args.dataset_root,
         dataset_repo_id=args.dataset_repo_id,
-        instruction=PI05_CONTRACT.task_instruction,
+        instruction=task_instruction,
         seed=args.seed,
     )
     policy_load_s = time.monotonic() - policy_load_started
@@ -1306,6 +1321,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     )
     summary = {
         "schema_version": 8,
+        "policy_type": args.policy_type,
         "mode": mode,
         "runtime_mode": args.runtime_mode,
         "execution_horizon": 5 if hard5 else "asynchronous_refill",
@@ -1319,9 +1335,9 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         ),
         "dataset_root": str(args.dataset_root.resolve()),
         "dataset_repo_id": args.dataset_repo_id,
-        "task_instruction": PI05_CONTRACT.task_instruction,
-        "chunk_size": PI05_CONTRACT.chunk_size,
-        "n_action_steps": PI05_CONTRACT.n_action_steps,
+        "task_instruction": task_instruction,
+        "chunk_size": policy_chunk_size,
+        "n_action_steps": policy_action_steps,
         "warmup_decisions": args.warmup_decisions,
         "warmup_policy_compute_host_s": warmup_latencies,
         "seed": args.seed,
