@@ -190,8 +190,9 @@ stream details are documented in the
    task2_isaacsim/scripts/run_isaacsim_teleop.sh --scene room -- --record --arm-keyboard-teleop
    ```
 
-   (add `--randomize-objects` to jitter the object spawns on every reset,
-   and `--robot-camera-depth` if you want depth topics.)
+   (add `--randomize-objects` to randomize the object layout on every
+   reset — see [Object randomization](#object-randomization) — and
+   `--robot-camera-depth` if you want depth topics.)
 
    Robot cameras are described by
    [assets/embodiments/fr3duo_mobile_task2/camera_sensors.yaml](assets/embodiments/fr3duo_mobile_task2/camera_sensors.yaml)
@@ -254,6 +255,57 @@ stream details are documented in the
    RECORDER_ARGS="--fps 20 --record-depth" \
    cd task2_isaacsim && docker compose --profile record run --rm lerobot_recorder
    ```
+
+   The evaluation service and this recorder's success suggestion share the
+   same frame synchronization: both score only stamp-coherent eval-camera
+   snapshots with label tables bound to their own frame (never
+   latest-message stitching), and every result now carries sync /
+   provenance / evaluator-version diagnostics plus an additive,
+   ground-truth physical coverage audit — see [Frame synchronization](../scripts/evaluation/task2/README.md#frame-synchronization)
+   and [Physical coverage audit](../scripts/evaluation/task2/README.md#physical-coverage-audit)
+   in the Task 2 evaluation README. The recorder gained
+   `--success-sync-timeout-s` (default `2.0`s: how long to wait for a
+   coherent set before the suggestion goes `null` and the label falls back
+   to the console prompt or default `False`), and the stored
+   `success_suggestion` now also carries `orientation_confidence`, the
+   liner/thermalpad pixel ratios, and sync status. **The official score
+   composition — Pick Success × Placement Orientation Success × Placement
+   IoU — is unchanged.**
+
+### Object randomization
+
+`--randomize-objects` randomizes the task-object layout on **every scene
+reset** (the `5` hotkey in the Isaac Sim window, the recorder's `1`/`5`
+menu keys, or a message on `/isaac/task2/scene_reset_request`) — not at
+startup, so the scene keeps the authored layout until the first reset.
+Without the flag, every reset restores the authored layout exactly.
+
+The four RAM boards sit in a row of slots on the table, labelled **A–D**
+in descending table-x order; the target board's authored home is slot
+**B**. What moves is controlled by two sub-flags:
+
+| Flag | Default | Effect on a randomized reset |
+|---|---|---|
+| `--randomize-board-swap` | on | The target board swaps into a uniformly random one of the four slots. |
+| `--randomize-boards` | on | Every board gets an independent XY jitter about its assigned slot. |
+| `--randomize-pad` | off | The thermal pad and its sticker base move as one rigid group — a shared XY jitter, rotating together about the sticker-base origin. |
+
+The toggles are independent (e.g. `--no-randomize-boards` keeps the slot
+swap but drops the jitter); an object not moved by any enabled toggle is
+restored to its exact spawn pose.
+
+Jitter magnitudes are shared by both groups: `--randomize-xy-cm` bounds
+the ± XY offset (default 2 cm) and `--randomize-yaw-deg` the ± yaw
+(default 0 — no rotation).
+
+Each reset publishes a JSON event on `/isaac/task2/scene_reset` with the
+chosen `target_slot` (`A`–`D`, or `null` when not randomized) and the
+per-object jitter `offsets`; the recorder stores it verbatim in the
+episode metadata (`scene_reset_events`, see
+[services/recording/DATASET.md](services/recording/DATASET.md)).
+Randomization never renames prims, and the evaluation service identifies
+the target board by its semantic label rather than its position, so
+ground-truth contracts and scoring are unaffected.
 
 ## Architecture
 

@@ -33,7 +33,8 @@ Isaac Sim; the recorder imports it through
 | Topic | Type | Producer → Consumer |
 |---|---|---|
 | `/keyboard/state`, `/{left,right}/gello/joint_states`, gripper width topics | various | host device publishers → teleop adapters |
-| `/pedal/state` | `std_msgs/String` | teleop adapters (`keyboard_to_base.py`) or host pedal publisher → bridge (swerve base) |
+| `/pedal/state` | `std_msgs/String` | teleop adapters (`keyboard_to_base.py`), host pedal publisher, or `scripts/adapters/twist_to_pedal.py` (quantizes a `geometry_msgs/Twist` on `/cmd_vel` to pedal tokens) → bridge (swerve base) |
+| `/isaac/spine_joint_commands` | `sensor_msgs/JointState` | any ROS publisher → in-sim spine command ingress (`scripts/policy_ext.py`, registered by `scene_room.py`; needs `--spine-keyboard-control`, on by default) |
 | `/bridge/{left,right}_joint_commands`, `/bridge/{left,right}_robotiq_joint_commands` | `sensor_msgs/JointState` | adapters / browser UI → republisher + position controller *(task1-side names, not in the contract)* |
 | `/isaac/{left,right}_joint_commands` | `sensor_msgs/JointState` | position controller → bridge |
 | `/isaac/{left,right}_robotiq_joint_commands` | `sensor_msgs/JointState` | republisher (gripper calibration) → bridge |
@@ -43,7 +44,11 @@ A per-group watchdog (`--command-timeout`, default 1 s, negative disables)
 stops re-applying a group's cached command once its topics go quiet — the
 drives hold the last applied target, so a dead publisher cannot stomp later
 state such as the post-reset ready pose. `/pedal/state` has its own
-`--pedal-timeout` (base twist forced to zero instead).
+`--pedal-timeout` (base twist forced to zero instead). A scene reset
+additionally drains the DDS-queued command messages and clears every
+cached command (`IsaacSimRosBridge.clear_commands`), so pre-reset targets
+delivered after the seconds-long reset cannot re-arm the watchdog and
+stomp the ready pose (which also reopens the grippers).
 
 ### Bridge state (60 Hz)
 
@@ -68,7 +73,7 @@ state such as the post-reset ready pose. `/pedal/state` has its own
 |---|---|---|
 | `/isaac/task2/object_poses` | `std_msgs/String` (JSON) | `{"sim_time", "objects": {name: [x,y,z,qw,qx,qy,qz]}}` |
 | `/isaac/task2/pad_points` | `std_msgs/Float32MultiArray` | `[sim_time, n_points, x0,y0,z0,...]` deformed pad vertices (~10 Hz) |
-| `/isaac/task2/scene_reset` | `std_msgs/String` (JSON) | reset/randomize event, published after the reset completes |
+| `/isaac/task2/scene_reset` | `std_msgs/String` (JSON) | reset/randomize event, published after the reset completes; includes `target_slot` (A–D) and per-board jitter `offsets` when randomized |
 | `/isaac/task2/scene_reset_request` | `std_msgs/String` | any message triggers a scene reset (recorder menu keys `1` reset+record and `5` reset; same effect as the sim-window `5` hotkey) |
 
 ### Clock and cameras

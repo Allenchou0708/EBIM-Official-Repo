@@ -105,6 +105,9 @@ def build_recording_tick_callbacks(
                     spine_controller=spine_controller,
                     arm_teleop=arm_teleop,
                     randomize=args_cli.randomize_objects,
+                    randomize_boards=args_cli.randomize_boards,
+                    randomize_board_swap=args_cli.randomize_board_swap,
+                    randomize_pad=args_cli.randomize_pad,
                     xy_jitter_m=args_cli.randomize_xy_cm / 100.0,
                     yaw_jitter_deg=args_cli.randomize_yaw_deg,
                 )

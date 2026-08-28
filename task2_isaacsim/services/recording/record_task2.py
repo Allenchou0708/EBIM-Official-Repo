@@ -217,7 +217,12 @@ def depth_msg_to_array(msg) -> np.ndarray:
 # ---------------------------------------------------------------------------
 class Task2RecorderNode(Node):
     def __init__(
-        self, camera_keys, *, record_depth, suggest_success, qos_depth
+        self,
+        camera_keys,
+        *,
+        record_depth,
+        qos_depth,
+        eval_sync=None,
     ):
         super().__init__("task2_lerobot_recorder")
         self.lock = threading.Lock()
@@ -228,16 +233,20 @@ class Task2RecorderNode(Node):
         self.cmd_vel = (0.0, 0.0, 0.0)
         self.ee_poses = {"left": None, "right": None}
         self.images = {key: None for key in camera_keys}
+        # Wall time each camera's latest frame arrived: rendering pauses
+        # for the whole scene-reset stop/play window, so a cached frame
+        # can be the previous episode's last image. Episode start gates
+        # on frames newer than the last reset event.
+        self.image_walls = {key: -math.inf for key in camera_keys}
         self.depths = {key: None for key in camera_keys}
         self.object_poses_raw = None
         self.pad_points_raw = None
         self.reset_events = []
-        self.eval_bbox = None
-        self.eval_bbox_labels = None
-        self.eval_bbox_loose = None
-        self.eval_bbox_loose_labels = None
-        self.eval_labels = None
-        self.eval_segmentation = None
+        self.last_reset_wall = -math.inf
+        # Eval-camera streams for the success suggestion (see
+        # suggest_success): buffered and stamp-matched by EvalStreamSync
+        # rather than cached as individual latest-message attributes.
+        self.eval_sync = eval_sync
         self.message_counts = {}
 
         self.create_subscription(Clock, CLOCK_TOPIC, self._on_clock, qos_depth)
@@ -286,7 +295,17 @@ class Task2RecorderNode(Node):
         self._reset_request_pub = self.create_publisher(
             String, SCENE_RESET_REQUEST_TOPIC, qos_depth
         )
-        if suggest_success and Detection2DArray is not None:
+        if eval_sync is not None and Detection2DArray is not None:
+            # Pure stdlib, and already imported once by load_eval_modules
+            # (which runs before this node is constructed -- see
+            # run_recording), so this is a cache hit, not a fresh lookup.
+            # The callbacks below need the STREAM_* constants and stamp
+            # helpers; keeping the module here (rather than importing it
+            # in each callback) preserves the dynamic-import pattern
+            # while resolving it only once.
+            import stream_sync  # noqa: PLC0415
+
+            self._stream_sync = stream_sync
             self.create_subscription(
                 Detection2DArray,
                 EVAL_BBOX_TOPIC,
@@ -378,6 +397,7 @@ class Task2RecorderNode(Node):
     def _on_image(self, key, msg):
         with self.lock:
             self.images[key] = msg
+            self.image_walls[key] = time.monotonic()
             self._count(f"image_{key}")
 
     def _on_depth(self, key, msg):
@@ -398,37 +418,59 @@ class Task2RecorderNode(Node):
     def _on_scene_reset(self, msg):
         with self.lock:
             self.reset_events.append(msg.data)
+            self.last_reset_wall = time.monotonic()
             self._count("scene_reset")
 
     def _on_eval_bbox(self, msg):
-        with self.lock:
-            self.eval_bbox = msg
-            self._count("eval_bbox")
+        self.eval_sync.observe(
+            self._stream_sync.STREAM_BBOX_TIGHT,
+            msg,
+            stamp=self._stream_sync.stamp_to_seconds(
+                msg.header.stamp.sec, msg.header.stamp.nanosec
+            ),
+        )
 
     def _on_eval_bbox_labels(self, msg):
-        with self.lock:
-            self.eval_bbox_labels = msg
-            self._count("eval_bbox_labels")
+        self.eval_sync.observe(
+            self._stream_sync.STREAM_BBOX_TIGHT_LABELS,
+            msg,
+            stamp=self._stream_sync.parse_label_stamp(msg.data),
+            parsed_ok=self._stream_sync.parse_label_payload_ok(msg.data),
+        )
 
     def _on_eval_bbox_loose(self, msg):
-        with self.lock:
-            self.eval_bbox_loose = msg
-            self._count("eval_bbox_loose")
+        self.eval_sync.observe(
+            self._stream_sync.STREAM_BBOX_LOOSE,
+            msg,
+            stamp=self._stream_sync.stamp_to_seconds(
+                msg.header.stamp.sec, msg.header.stamp.nanosec
+            ),
+        )
 
     def _on_eval_bbox_loose_labels(self, msg):
-        with self.lock:
-            self.eval_bbox_loose_labels = msg
-            self._count("eval_bbox_loose_labels")
+        self.eval_sync.observe(
+            self._stream_sync.STREAM_BBOX_LOOSE_LABELS,
+            msg,
+            stamp=self._stream_sync.parse_label_stamp(msg.data),
+            parsed_ok=self._stream_sync.parse_label_payload_ok(msg.data),
+        )
 
     def _on_eval_labels(self, msg):
-        with self.lock:
-            self.eval_labels = msg
-            self._count("eval_labels")
+        self.eval_sync.observe(
+            self._stream_sync.STREAM_SEMANTIC_LABELS,
+            msg,
+            stamp=self._stream_sync.parse_label_stamp(msg.data),
+            parsed_ok=self._stream_sync.parse_label_payload_ok(msg.data),
+        )
 
     def _on_eval_segmentation(self, msg):
-        with self.lock:
-            self.eval_segmentation = msg
-            self._count("eval_segmentation")
+        self.eval_sync.observe(
+            self._stream_sync.STREAM_SEMANTIC,
+            msg,
+            stamp=self._stream_sync.stamp_to_seconds(
+                msg.header.stamp.sec, msg.header.stamp.nanosec
+            ),
+        )
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -450,23 +492,26 @@ class Task2RecorderNode(Node):
             events, self.reset_events = self.reset_events, []
         return events
 
+    def last_reset_wall_time(self) -> float:
+        with self.lock:
+            return self.last_reset_wall
+
+    def stale_image_keys(self, camera_keys, after_wall: float) -> list:
+        """Cameras whose latest frame is not newer than after_wall
+        (never-received counts as stale)."""
+        with self.lock:
+            return [
+                key
+                for key in camera_keys
+                if self.image_walls.get(key, -math.inf) <= after_wall
+            ]
+
     def message_count(self, key: str) -> int:
         with self.lock:
             return self.message_counts.get(key, 0)
 
     def publish_scene_reset_request(self) -> None:
         self._reset_request_pub.publish(String())
-
-    def eval_snapshot(self) -> tuple:
-        with self.lock:
-            return (
-                self.eval_bbox,
-                self.eval_bbox_labels,
-                self.eval_bbox_loose,
-                self.eval_bbox_loose_labels,
-                self.eval_labels,
-                self.eval_segmentation,
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -640,13 +685,19 @@ def load_eval_modules(eval_dir: Path):
     try:
         import evaluation  # noqa: PLC0415
         import image_utils  # noqa: PLC0415
-        from config import SEMANTIC_RAW_ID_NAME_HINTS  # noqa: PLC0415
+        import stream_sync  # noqa: PLC0415
+        from config import (  # noqa: PLC0415
+            SEMANTIC_RAW_ID_NAME_HINTS,
+            resolve_evaluator_version,
+        )
 
         return {
             "evaluate": evaluation.evaluate_thermalpad_target_iou,
             "to_label_array": image_utils.ros_image_to_label_array,
             "hints_from_payload": evaluation.hints_from_label_payload,
             "hints": SEMANTIC_RAW_ID_NAME_HINTS,
+            "stream_sync": stream_sync,
+            "resolve_version": resolve_evaluator_version,
         }
     except Exception as exc:  # noqa: BLE001 - suggestion is best-effort
         logging.warning(
@@ -655,51 +706,125 @@ def load_eval_modules(eval_dir: Path):
         return None
 
 
-def suggest_success(eval_modules, node: Task2RecorderNode):
+def init_eval_sync(eval_modules):
+    """Cache evaluator_version and build the EvalStreamSync selector.
+
+    Returns None when eval_modules is None (--no-suggest-success, or the
+    eval dir/deps were unavailable at load time), which keeps the
+    suggestion feature disabled cleanly downstream.
+    """
     if eval_modules is None:
         return None
-    (
-        bbox,
-        bbox_labels,
-        bbox_loose,
-        bbox_loose_labels,
-        seg_labels,
-        segmentation,
-    ) = node.eval_snapshot()
+    # resolve_version() reads the repo's git sha (or an env var
+    # override); it never changes over the life of this process, so it
+    # is resolved once here rather than on every suggest_success call.
+    eval_modules["evaluator_version"] = eval_modules["resolve_version"]()
+    stream_sync = eval_modules["stream_sync"]
+    return stream_sync.EvalStreamSync(
+        required_core=(
+            stream_sync.STREAM_SEMANTIC,
+            stream_sync.STREAM_BBOX_TIGHT,
+        )
+    )
+
+
+def suggest_success(eval_modules, node: Task2RecorderNode, timeout_s: float):
+    if eval_modules is None:
+        return None
+    # The background rclpy.spin thread (started in run_recording) keeps
+    # draining subscription callbacks while this call blocks, so waiting
+    # here for a coherent set is safe.
+    selection = node.eval_sync.wait_for_selection(timeout_s)
+    if selection is None:
+        logging.warning(
+            "Success suggestion sync failed after %.1fs: %s",
+            timeout_s,
+            node.eval_sync.stream_report(),
+        )
+        return None
+
+    sm = eval_modules["stream_sync"]
+    items = selection.items
+    bbox = items[sm.STREAM_BBOX_TIGHT]
+    bbox_tight_labels = items[sm.STREAM_BBOX_TIGHT_LABELS]
+    semantic_labels = items[sm.STREAM_SEMANTIC_LABELS]
     # bbox class_ids resolve through the bbox annotator's own label map;
     # fall back to the legacy shared topic when the scene predates the
     # split (racy, but no worse than before).
-    labels = bbox_labels if bbox_labels is not None else seg_labels
-    if bbox is None or labels is None:
+    label_payload = (
+        bbox_tight_labels.data
+        if bbox_tight_labels is not None
+        else (semantic_labels.data if semantic_labels is not None else None)
+    )
+    if bbox is None or label_payload is None:
         return None
+
+    segmentation = items[sm.STREAM_SEMANTIC]
     label_array = None
     if segmentation is not None:
         try:
             label_array = eval_modules["to_label_array"](segmentation)
         except Exception:  # noqa: BLE001
             label_array = None
-    # The raw mask IDs are assigned per session; derive them from the live
-    # segmentation label map and only fall back to the static hints.
+
+    # The raw mask IDs are assigned per session; derive them from the
+    # selected segmentation label map. hints must never end up None here
+    # -- evaluate_thermalpad_target_iou requires semantic_hints to be a
+    # dict -- so an absent or unparsable live payload always falls back
+    # to the static hints; there is no "trust the live table is just
+    # late" grace window.
     hints = None
-    if seg_labels is not None:
-        hints = eval_modules["hints_from_payload"](seg_labels.data)
-    if hints is None:
+    if semantic_labels is not None:
+        hints = eval_modules["hints_from_payload"](semantic_labels.data)
+    semantic_table_stamp = selection.stamps[sm.STREAM_SEMANTIC_LABELS]
+    if hints is not None:
+        semantic_source = "dynamic"
+        semantic_table_binding = (
+            "stamp" if semantic_table_stamp is not None else "arrival_order"
+        )
+    else:
         hints = eval_modules["hints"]
+        semantic_source = "static_hints"
+        semantic_table_binding = "static"
+
+    # The target resolves through the loose annotator's own stream and
+    # map when the scene publishes them; otherwise evaluate() falls back
+    # to the tight stream (pre-loose scene).
+    bbox_loose_labels = items[sm.STREAM_BBOX_LOOSE_LABELS]
+    target_bbox_msg = items[sm.STREAM_BBOX_LOOSE]
+    target_labels_payload = (
+        bbox_loose_labels.data if bbox_loose_labels is not None else None
+    )
+
+    label_provenance = {
+        "semantic_table_source": semantic_source,
+        "semantic_table_binding": semantic_table_binding,
+        "semantic_table_stamp": semantic_table_stamp,
+        "tight_table_stamp": selection.stamps[sm.STREAM_BBOX_TIGHT_LABELS],
+        "loose_table_stamp": selection.stamps[sm.STREAM_BBOX_LOOSE_LABELS],
+        "bbox_table_source": "tight"
+        if bbox_tight_labels is not None
+        else "legacy_semantic_shared",
+    }
+
     try:
         return eval_modules["evaluate"](
             bbox,
-            labels.data,
+            label_payload,
             thermalpad_label="thermalpad",
             liner_label="liner",
             target_label="target",
             semantic_hints=hints,
             label_array=label_array,
-            target_bbox_msg=bbox_loose,
-            target_labels_payload=(
-                bbox_loose_labels.data
-                if bbox_loose_labels is not None
-                else None
-            ),
+            target_bbox_msg=target_bbox_msg,
+            target_labels_payload=target_labels_payload,
+            stream_stamps=selection.stamps,
+            sync_status=selection.status,
+            sync_tolerance_s=node.eval_sync.tolerance_s,
+            sync_anchor_stamp=selection.anchor_stamp,
+            max_stamp_delta=selection.max_stamp_delta,
+            label_provenance=label_provenance,
+            evaluator_version=eval_modules["evaluator_version"],
         )
     except Exception as exc:  # noqa: BLE001
         logging.warning("Success suggestion failed: %s", exc)
@@ -1218,8 +1343,20 @@ def confirm_save_despite_drops(dropped, *, interactive) -> bool:
             return False
 
 
-def wait_for_streams(node: Task2RecorderNode, camera_keys, timeout_s):
-    """Block until /clock, states, commands, and all cameras are alive."""
+def wait_for_streams(
+    node: Task2RecorderNode,
+    camera_keys,
+    timeout_s,
+    images_after: float = -math.inf,
+):
+    """Block until /clock, states, commands, and all cameras are alive.
+
+    images_after: wall time each camera must have delivered a frame
+    after (pass the last scene-reset event's arrival so an episode never
+    starts on the previous episode's final frames — rendering pauses for
+    the whole reset stop/play window, mirroring the eval client's
+    streams_fresh_since gate).
+    """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         snap = node.snapshot()
@@ -1234,8 +1371,7 @@ def wait_for_streams(node: Task2RecorderNode, camera_keys, timeout_s):
             missing.append(ODOM_TOPIC)
         missing.extend(
             CAMERAS[key]["image_topic"]
-            for key in camera_keys
-            if snap["images"].get(key) is None
+            for key in node.stale_image_keys(camera_keys, images_after)
         )
         if not missing:
             return True
@@ -1435,7 +1571,8 @@ def save_episode_with_metadata(
 ) -> None:
     """Label success, save the buffered episode, and append its extras
     sidecar metadata line."""
-    suggestion = suggest_success(eval_modules, node)
+    sync_timeout_s = float(getattr(args, "success_sync_timeout_s", 2.0))
+    suggestion = suggest_success(eval_modules, node, sync_timeout_s)
     min_iou = float(getattr(args, "success_min_iou", 0.0))
     success = (
         prompt_success(suggestion, min_iou)
@@ -1473,9 +1610,20 @@ def save_episode_with_metadata(
                     "iou_thermalpad_vs_target_current",
                     "is_orientation_correct",
                     "orientation_case",
+                    "orientation_confidence",
+                    "liner_pixel_ratio",
+                    "thermalpad_pixel_ratio",
                 )
             },
             "min_iou": min_iou,
+            "sync": {
+                "status": suggestion["sync"]["status"],
+                "anchor_stamp": suggestion["sync"]["anchor_stamp"],
+                "max_stamp_delta": suggestion["sync"]["max_stamp_delta"],
+            },
+            "label_provenance_semantic_table_source": suggestion[
+                "label_provenance"
+            ]["semantic_table_source"],
         }
         if suggestion
         else None,
@@ -1509,21 +1657,22 @@ def run_recording(args):
             f"Unknown cameras {unknown}; choose from {sorted(CAMERAS)}"
         )
 
+    eval_modules = (
+        load_eval_modules(EVAL_MODULE_DIR) if args.suggest_success else None
+    )
+    eval_sync = init_eval_sync(eval_modules)
+
     rclpy.init()
     node = Task2RecorderNode(
         camera_keys,
         record_depth=args.record_depth,
-        suggest_success=args.suggest_success,
         qos_depth=args.qos_depth,
+        eval_sync=eval_sync,
     )
     spin_thread = threading.Thread(
         target=rclpy.spin, args=(node,), daemon=True
     )
     spin_thread.start()
-
-    eval_modules = (
-        load_eval_modules(EVAL_MODULE_DIR) if args.suggest_success else None
-    )
 
     dataset, dataset_path, dataset_repo_id = open_dataset(args, camera_keys)
     # After creation: LeRobotDataset.create requires a not-yet-existing
@@ -1579,7 +1728,10 @@ def run_recording(args):
 
             # -------------------------------------------------- episode ---
             if not wait_for_streams(
-                node, camera_keys, timeout_s=args.stream_timeout_s
+                node,
+                camera_keys,
+                timeout_s=args.stream_timeout_s,
+                images_after=node.last_reset_wall_time(),
             ):
                 continue
             if not wait_for_fresh_clock(node, timeout_s=args.stream_timeout_s):
@@ -1895,6 +2047,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Minimum pad-vs-target IoU for the auto-suggested success "
         "label (the orientation must also be correct). 0.0 accepts any "
         "overlap at all.",
+    )
+    parser.add_argument(
+        "--success-sync-timeout-s",
+        type=float,
+        default=2.0,
+        help="Seconds to wait for a stamp-coherent eval-camera snapshot "
+        "(all eval streams agreeing within one sim render tick) when "
+        "computing the auto-suggested success label at episode save; "
+        "past this the suggestion is null and the label falls back to "
+        "the console prompt or default False.",
     )
     parser.add_argument("--max_episode_time_s", type=float, default=300.0)
     parser.add_argument("--max_episodes", type=int, default=200)

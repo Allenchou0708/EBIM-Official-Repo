@@ -260,8 +260,30 @@ def _add_recording_args(parser: argparse.ArgumentParser) -> None:
         "--randomize-objects",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Randomize the task-object spawn poses on each scene reset "
-        "(the thermal pad and its sticker base move as one group).",
+        help="Randomize the task-object spawn poses on each scene reset; "
+        "see --randomize-board-swap, --randomize-boards, and "
+        "--randomize-pad for what moves.",
+    )
+    parser.add_argument(
+        "--randomize-boards",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="With --randomize-objects: jitter each board's XY "
+        "independently about its assigned slot.",
+    )
+    parser.add_argument(
+        "--randomize-board-swap",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="With --randomize-objects: place the target board at a random "
+        "one of the four board slots (swapping with the displaced board).",
+    )
+    parser.add_argument(
+        "--randomize-pad",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="With --randomize-objects: jitter the thermal pad and its "
+        "sticker base as one group about the sticker-base origin.",
     )
     parser.add_argument(
         "--randomize-xy-cm",
@@ -272,7 +294,7 @@ def _add_recording_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--randomize-yaw-deg",
         type=float,
-        default=10.0,
+        default=0.0,
         help="Max +/- yaw spawn jitter in degrees for --randomize-objects.",
     )
 
