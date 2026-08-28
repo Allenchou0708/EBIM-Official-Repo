@@ -73,6 +73,7 @@ FULL_STATES_TOPIC = _TOPICS["recording"]["joint_states_full"]
 ODOM_TOPIC = _TOPICS["recording"]["odom"]
 CMD_VEL_APPLIED_TOPIC = _TOPICS["recording"]["cmd_vel_applied"]
 EE_POSE_TOPICS = dict(_TOPICS["recording"]["ee_pose"])
+CAMERA_POSE_TOPICS = dict(_TOPICS["recording"]["camera_pose"])
 EE_TARGET_TOPICS = dict(_TOPICS["cartesian_control"]["ee_target"])
 GRIPPER_OPEN_TARGET_TOPICS = dict(
     _TOPICS["cartesian_control"]["gripper_open_fraction_target"]
@@ -81,6 +82,11 @@ BASE_HOLD_TARGET_TOPIC = _TOPICS["cartesian_control"]["base_hold_target"]
 EE_POSE_PRIM_NAMES = {
     "left": "left_fr3v2_link8",
     "right": "right_fr3v2_link8",
+}
+CAMERA_POSE_PRIM_TOKENS = {
+    "head": ("zed",),
+    "wrist_left": ("left", "d405"),
+    "wrist_right": ("right", "d405"),
 }
 WHEEL_RADIUS_M = 0.05
 MAX_WHEEL_SPEED_RADPS = 18.0
@@ -1428,6 +1434,7 @@ class IsaacSimRosBridge(Node):
         self.last_base_twist = (0.0, 0.0, 0.0)
         self._recording_enabled = bool(publish_recording_topics)
         self._ee_prims = None  # lazily resolved link8 prims, {side: UsdPrim}
+        self._camera_prims = None  # lazily resolved robot Camera prims
         if self._recording_enabled:
             # The clock topic is published from the main loop's
             # world.current_time (physics time, rebases to 0 on scene
@@ -1453,6 +1460,10 @@ class IsaacSimRosBridge(Node):
             self._ee_pose_pubs = {
                 side: self.create_publisher(PoseStamped, topic, 10)
                 for side, topic in EE_POSE_TOPICS.items()
+            }
+            self._camera_pose_pubs = {
+                key: self.create_publisher(PoseStamped, topic, 10)
+                for key, topic in CAMERA_POSE_TOPICS.items()
             }
         self._state_publishers = {
             group.label: self.create_publisher(
@@ -1660,6 +1671,32 @@ class IsaacSimRosBridge(Node):
             )
         return prims
 
+    def _resolve_camera_prims(self) -> dict:
+        """Resolve robot cameras without reading task-object state."""
+        stage = omni.usd.get_context().get_stage()
+        camera_prims = [
+            prim for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)
+        ]
+        resolved = {}
+        for key, tokens in CAMERA_POSE_PRIM_TOKENS.items():
+            matches = [
+                prim
+                for prim in camera_prims
+                if all(
+                    token in str(prim.GetPath()).lower() for token in tokens
+                )
+            ]
+            if len(matches) == 1:
+                resolved[key] = matches[0]
+            else:
+                print(
+                    f"Warning: camera pose publishing disabled for {key}: "
+                    f"expected one prim matching {tokens}, got "
+                    f"{[str(prim.GetPath()) for prim in matches]}",
+                    file=sys.stderr,
+                )
+        return resolved
+
     def publish_clock(self, sim_time: float) -> None:
         """Publish simulation time on the clock topic (recorders pace on
         it)."""
@@ -1770,6 +1807,31 @@ class IsaacSimRosBridge(Node):
                 pose.pose.orientation.y = float(imaginary[1])
                 pose.pose.orientation.z = float(imaginary[2])
                 self._ee_pose_pubs[side].publish(pose)
+
+        # Publish calibrated ROS optical-frame poses. USD Camera looks along
+        # -Z with +Y up, while ROS optical uses +Z forward and +Y down; the
+        # frames differ by 180 degrees about X.
+        if self._camera_prims is None:
+            self._camera_prims = self._resolve_camera_prims()
+        if self._camera_prims:
+            xform_cache = UsdGeom.XformCache()
+            optical_correction = Gf.Quatd(0.0, Gf.Vec3d(1.0, 0.0, 0.0))
+            for key, prim in self._camera_prims.items():
+                world = xform_cache.GetLocalToWorldTransform(prim)
+                translation = world.ExtractTranslation()
+                rotation = world.ExtractRotationQuat() * optical_correction
+                pose = PoseStamped()
+                pose.header.stamp = stamp
+                pose.header.frame_id = "world"
+                pose.pose.position.x = float(translation[0])
+                pose.pose.position.y = float(translation[1])
+                pose.pose.position.z = float(translation[2])
+                pose.pose.orientation.w = float(rotation.GetReal())
+                imaginary = rotation.GetImaginary()
+                pose.pose.orientation.x = float(imaginary[0])
+                pose.pose.orientation.y = float(imaginary[1])
+                pose.pose.orientation.z = float(imaginary[2])
+                self._camera_pose_pubs[key].publish(pose)
 
 
 def _add_dome_light(stage, prim_path: str = "/World/Light") -> None:

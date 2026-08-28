@@ -85,6 +85,14 @@ recording:
   ee_pose:
     left: /isaac/left_ee_pose
     right: /isaac/right_ee_pose
+  # Robot optical-frame FK.  The simulator bridge derives these poses only
+  # from the robot/camera prim transforms; on hardware the same contract is
+  # supplied by calibrated TF.  These are policy-legal robot state, not task
+  # object or evaluator ground truth.
+  camera_pose:
+    head: /isaac/head_camera/pose
+    wrist_left: /isaac/left_wrist_camera/pose
+    wrist_right: /isaac/right_wrist_camera/pose
 
 # Ground-truth streams from scripts/recording/scene_capture.py.
 ground_truth:
