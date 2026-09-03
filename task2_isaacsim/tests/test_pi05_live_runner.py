@@ -9,6 +9,7 @@ import math
 import tempfile
 import unittest
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -23,20 +24,34 @@ from task2_isaacsim.baselines.pi05.live.core import (
     FreshnessConfig,
     FreshnessError,
     ReadinessConfig,
+    RightGraspGuard,
     RunnerPhase,
     align_action_chunk,
+    apply_right_only_policy_ownership,
     freshness_metrics,
+    gripper_open_fraction_command,
     hard5_action_window,
     hard5_hold_action,
     policy_command_topics,
+    project_fr3_joint_step,
     replace_action_queue,
+    right_ee_within_demonstrated_workspace,
     safe_action,
     startup_inventory,
     validate_rgb_frame,
 )
-from task2_isaacsim.baselines.pi05.live.policy import LivePi05Policy
+from task2_isaacsim.baselines.pi05.live.policy import (
+    LivePi05Policy,
+    _compatible_config_payload,
+    _expand_right_only_action,
+    _right_only_state,
+    _saved_relative_action_state_indices,
+    _write_compatible_processor_bundle,
+)
 from task2_isaacsim.baselines.pi05.live.staging import (
+    apply_staging_spine_hold,
     interpolate_staging_command,
+    project_entry_calibration_for_fixed_spine,
     staging_command_within_tolerance,
     staging_entry_duration_s,
     staging_feedback,
@@ -109,6 +124,47 @@ class StateContractTest(unittest.TestCase):
 
 
 class LiveSafetyTest(unittest.TestCase):
+    def test_gripper_bridge_command_converts_open_fraction_to_driver_rad(self) -> None:
+        self.assertEqual(gripper_open_fraction_command(0.0), (0.8,))
+        self.assertEqual(gripper_open_fraction_command(1.0), (0.0,))
+        with self.assertRaises(ValueError):
+            gripper_open_fraction_command(1.01)
+
+    def test_grasp_latch_and_demonstrated_workspace_guard(self) -> None:
+        grasp_pose = (1.75, 2.14, 0.87)
+        carry_pose = (1.95, 2.03, 1.00)
+        release_pose = (2.14, 2.03, 0.92)
+        guard = RightGraspGuard(
+            close_confirm_actions=3,
+            minimum_hold_actions=6,
+            release_confirm_actions=3,
+        )
+        self.assertTrue(right_ee_within_demonstrated_workspace(grasp_pose))
+        self.assertFalse(
+            right_ee_within_demonstrated_workspace((1.75, 2.03, 1.46))
+        )
+
+        blocked, evidence = guard.apply(0.0, carry_pose)
+        self.assertEqual(blocked, 1.0)
+        self.assertEqual(evidence["reason"], "close_blocked_outside_grasp_gate")
+        for _ in range(3):
+            effective, evidence = guard.apply(0.0, grasp_pose)
+        self.assertEqual(effective, 0.0)
+        self.assertEqual(guard.phase, "latched")
+
+        effective, evidence = guard.apply(1.0, carry_pose)
+        self.assertEqual(effective, 0.0)
+        self.assertEqual(evidence["reason"], "open_blocked_while_latched")
+        while guard.held_actions < guard.minimum_hold_actions:
+            guard.apply(0.0, carry_pose)
+        for _ in range(3):
+            effective, evidence = guard.apply(1.0, release_pose)
+        self.assertEqual(effective, 1.0)
+        self.assertEqual(guard.phase, "released")
+        effective, evidence = guard.apply(0.0, release_pose)
+        self.assertEqual(effective, 1.0)
+        self.assertEqual(evidence["reason"], "reclose_blocked_after_release")
+
     def _staging_audit(self) -> dict:
         left = [0.0, -0.7, 0.1, -2.3, 0.0, 1.6, 0.8]
         right = [0.8, -1.6, -1.8, -2.4, -0.7, 3.8, -0.5]
@@ -211,6 +267,28 @@ class LiveSafetyTest(unittest.TestCase):
         self.assertFalse(staging_command_within_tolerance(audit, current, target))
         self.assertTrue(staging_command_within_tolerance(audit, target, target))
 
+    def test_arm_staging_holds_already_staged_spine(self) -> None:
+        audit = self._staging_audit()
+        first = tuple(audit["trajectory"][0]["command"])
+        final = tuple(audit["trajectory"][-1]["command"])
+        projected_first = apply_staging_spine_hold(first, 0.5)
+        projected_final = apply_staging_spine_hold(final, 0.5)
+        self.assertEqual(projected_first[:16], first[:16])
+        self.assertEqual(projected_final[:16], final[:16])
+        self.assertEqual(projected_first[16], 0.5)
+        self.assertEqual(projected_final[16], 0.5)
+        current = (*first[:16], 0.485)
+        self.assertLess(
+            staging_entry_duration_s(audit, current, projected_first),
+            staging_entry_duration_s(audit, current, first),
+        )
+        with self.assertRaisesRegex(ValueError, "spine hold"):
+            apply_staging_spine_hold(first, -0.01)
+        self.assertEqual(
+            project_entry_calibration_for_fixed_spine((0.01, -0.02, 0.484)),
+            (0.01, -0.02, 0.0),
+        )
+
     def test_dataset_staging_feedback_covers_every_required_group(self) -> None:
         audit = self._staging_audit()
         reference = audit["final_target"]["measured_reference"]
@@ -307,6 +385,15 @@ class LiveSafetyTest(unittest.TestCase):
                 )
             )
 
+        window = hard5_action_window(
+            actions,
+            ready_at=103.0,
+            action_rate_hz=30.0,
+            execution_horizon=30,
+            max_actions=30,
+        )
+        self.assertEqual([item[2] for item in window], list(range(30)))
+
     def test_shadow_gate_distinguishes_v1_and_v2_spine_contracts(self) -> None:
         groups = {
             name: True
@@ -366,6 +453,118 @@ class LiveSafetyTest(unittest.TestCase):
                     self.assertFalse(
                         verify_shadow_run(root, contract=wrong)["valid"]
                     )
+
+    def test_shadow_gate_accepts_complete_rmpflow_waypoint_chain(self) -> None:
+        stage_results = []
+        for target_kind in (
+            "safe_orientation",
+            "clearance",
+            "observation",
+        ):
+            result = {
+                "success": True,
+                "reason": "stable_rmpflow_observation_pose",
+                "control": "simulator_side_rmpflow_pose_staging",
+                "target_kind": target_kind,
+                "ground_truth_subscriptions": [],
+            }
+            stage_results.append(
+                {
+                    "target_kind": target_kind,
+                    "returncode": 0,
+                    "result": result,
+                }
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "settled_fresh_wrist_right.ppm").write_bytes(
+                b"P6\n2 2\n255\n" + b"\0" * 12
+            )
+            manifest = {
+                "completed": True,
+                "valid_decisions": 1,
+                "command_publications": 0,
+                "ros_publication": False,
+                "right_only_policy_after_staging": True,
+                "policy_owned_groups": ["right_arm", "right_gripper"],
+                "deterministic_hold_command_action_3_20": [
+                    float(value) for value in range(17)
+                ],
+                "spine_control": {"policy_controlled": False},
+                "checkpoint_relative_action_state_indices": list(
+                    V2_RELATIVE_ACTION_STATE_INDICES
+                ),
+                "staging": {
+                    "mode": "rmpflow_observation",
+                    "result": stage_results[-1]["result"],
+                    "rmpflow_waypoints": stage_results,
+                },
+                "events": [
+                    {
+                        "valid": True,
+                        "policy_indices": [0, 1, 2, 3, 4],
+                        "capture_to_ready_sim_s": 0.1,
+                        "freshness": {"observation_capture_skew_s": 0.02},
+                        "deterministic_hold_groups": [
+                            "left_arm",
+                            "left_gripper",
+                            "spine",
+                        ],
+                        "effective_actions": [
+                            [0.0, 0.0, 0.0]
+                            + [float(value) for value in range(7)]
+                            + [0.0] * 7
+                            + [14.0, 0.0, 16.0]
+                        ],
+                    }
+                ],
+            }
+            (root / "live_runner_manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            self.assertTrue(
+                verify_shadow_run(
+                    root, contract="v2", require_right_only=True
+                )["valid"]
+            )
+
+            manifest["checkpoint_relative_action_state_indices"] = [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                None,
+            ]
+            (root / "live_runner_manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            self.assertTrue(
+                verify_shadow_run(
+                    root, contract="v2", require_right_only=True
+                )["valid"]
+            )
+
+            manifest["spine_control"]["policy_controlled"] = True
+            (root / "live_runner_manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            self.assertFalse(
+                verify_shadow_run(
+                    root, contract="v2", require_right_only=True
+                )["valid"]
+            )
+            manifest["spine_control"]["policy_controlled"] = False
+
+            manifest["staging"]["rmpflow_waypoints"][1]["result"][
+                "success"
+            ] = False
+            (root / "live_runner_manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            self.assertFalse(verify_shadow_run(root, contract="v2")["valid"])
 
     def test_startup_inventory_names_missing_real_inputs(self) -> None:
         state = [0.0] * 37
@@ -475,6 +674,131 @@ class LiveSafetyTest(unittest.TestCase):
         live_policy.reset()
         self.assertTrue(live_policy.policy.reset_called)
         self.assertEqual(live_policy.decision_index, 0)
+
+    def test_saved_processor_distinguishes_relative_and_absolute_actions(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkpoint = Path(temporary)
+            processor = checkpoint / "policy_preprocessor.json"
+            processor.write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "registry_name": "relative_actions_processor",
+                                "config": {"enabled": False},
+                            }
+                        ]
+                    }
+                )
+            )
+            self.assertIsNone(
+                _saved_relative_action_state_indices(checkpoint, 20)
+            )
+
+            processor.write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "registry_name": "relative_actions_processor",
+                                "config": {"enabled": True},
+                            }
+                        ]
+                    }
+                )
+            )
+            self.assertEqual(
+                _saved_relative_action_state_indices(checkpoint, 8),
+                (*range(7), None),
+            )
+
+    def test_checkpoint_config_filters_only_known_legacy_fields(self) -> None:
+        @dataclass
+        class FakeConfig:
+            device: str = "cpu"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            checkpoint = Path(temporary)
+            config_path = checkpoint / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "type": "pi05",
+                        "device": "cuda",
+                        "relative_action_state_indices": [0, 1],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload, ignored = _compatible_config_payload(
+                checkpoint, FakeConfig
+            )
+            self.assertEqual(payload, {"type": "pi05", "device": "cuda"})
+            self.assertEqual(ignored, ("relative_action_state_indices",))
+
+            config_path.write_text(
+                json.dumps({"type": "pi05", "unexpected": True}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "unknown unsupported"):
+                _compatible_config_payload(checkpoint, FakeConfig)
+
+    def test_mapped_relative_processor_uses_manual_compatibility_bundle(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkpoint = root / "checkpoint"
+            destination = root / "compatible"
+            checkpoint.mkdir()
+            (checkpoint / "policy_preprocessor.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "registry_name": "relative_actions_processor",
+                                "config": {
+                                    "enabled": True,
+                                    "state_indices": [None, 14],
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (checkpoint / "policy_postprocessor.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "registry_name": "absolute_actions_processor",
+                                "config": {"enabled": True},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state_file = checkpoint / "policy_preprocessor_step.safetensors"
+            state_file.touch()
+
+            self.assertTrue(
+                _write_compatible_processor_bundle(checkpoint, destination)
+            )
+            compatible_pre = json.loads(
+                (destination / "policy_preprocessor.json").read_text()
+            )
+            compatible_post = json.loads(
+                (destination / "policy_postprocessor.json").read_text()
+            )
+            relative = compatible_pre["steps"][0]["config"]
+            self.assertNotIn("state_indices", relative)
+            self.assertFalse(relative["enabled"])
+            self.assertFalse(compatible_post["steps"][0]["config"]["enabled"])
+            self.assertTrue((destination / state_file.name).is_symlink())
 
     def test_camera_shapes_and_eval_rejection(self) -> None:
         validate_rgb_frame("head", np.zeros((720, 1280, 3), dtype=np.uint8))
@@ -695,6 +1019,80 @@ class LiveSafetyTest(unittest.TestCase):
         invalid_spine[19] = float("nan")
         with self.assertRaisesRegex(ValueError, "finite"):
             safe_action(invalid_spine)
+
+    def test_right_only_policy_ownership_preserves_verified_staging_holds(
+        self,
+    ) -> None:
+        effective = safe_action(valid_action())[1]
+        staging = list(effective[3:20])
+        staging[14] = 1.0
+        staging[15] = 1.0
+        staging[16] = 0.5
+        owned = apply_right_only_policy_ownership(effective, staging)
+        self.assertEqual(owned[:3], (0.0, 0.0, 0.0))
+        self.assertEqual(owned[3:10], tuple(staging[:7]))
+        self.assertEqual(owned[10:17], effective[10:17])
+        self.assertEqual(owned[17], 1.0)
+        self.assertEqual(owned[18], effective[18])
+        self.assertEqual(owned[19], 0.5)
+
+    def test_right_arm_step_is_position_and_slew_bounded(self) -> None:
+        previous = (0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0)
+        target = (3.5, -3.5, 1.0, -4.0, 2.0, 4.0, -2.0)
+        projected = project_fr3_joint_step(
+            previous,
+            target,
+            action_rate_hz=30.0,
+        )
+        expected_steps = (
+            2.62 / 60.0,
+            2.62 / 60.0,
+            2.62 / 60.0,
+            2.62 / 60.0,
+            5.26 / 60.0,
+            4.18 / 60.0,
+            5.26 / 60.0,
+        )
+        for before, after, maximum in zip(
+            previous,
+            projected,
+            expected_steps,
+            strict=True,
+        ):
+            self.assertLessEqual(abs(after - before), maximum + 1e-12)
+        self.assertGreater(projected[0], previous[0])
+        self.assertLess(projected[3], previous[3])
+
+    def test_right_arm_step_rejects_invalid_runtime_contract(self) -> None:
+        joints = (0.0,) * 7
+        with self.assertRaisesRegex(ValueError, "seven"):
+            project_fr3_joint_step(joints[:-1], joints, action_rate_hz=30.0)
+        with self.assertRaisesRegex(ValueError, "positive"):
+            project_fr3_joint_step(joints, joints, action_rate_hz=0.0)
+        with self.assertRaisesRegex(ValueError, "finite"):
+            project_fr3_joint_step(
+                joints,
+                (*joints[:-1], math.nan),
+                action_rate_hz=30.0,
+            )
+
+    def test_right_only_checkpoint_adapter_uses_locked_state_and_action_slots(
+        self,
+    ) -> None:
+        state = tuple(float(index) / 100.0 for index in range(37))
+        self.assertEqual(
+            _right_only_state(state),
+            (*state[21:28], state[30]),
+        )
+        right_action = tuple(0.5 + index / 100.0 for index in range(8))
+        expanded = _expand_right_only_action(right_action, state)
+        self.assertEqual(len(expanded), 20)
+        self.assertEqual(expanded[:3], [0.0, 0.0, 0.0])
+        self.assertEqual(expanded[3:10], list(state[14:21]))
+        self.assertEqual(expanded[10:17], list(right_action[:7]))
+        self.assertEqual(expanded[17], state[29])
+        self.assertEqual(expanded[18], right_action[7])
+        self.assertEqual(expanded[19], state[28])
 
     def test_policy_publication_adds_only_spine_and_forbids_base(
         self,

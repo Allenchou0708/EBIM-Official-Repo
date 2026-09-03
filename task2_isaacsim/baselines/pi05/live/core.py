@@ -13,11 +13,13 @@ from typing import Any
 from task2_isaacsim.baselines.pi05.contract import (
     ACTION_SIZE,
     EXPECTED_CAMERA_SHAPES,
+    FR3_JOINT_LIMITS,
     apply_fixed_mobile_axes,
     project_arm_action_bounds,
     validate_absolute_action_bounds,
 )
 from task2_isaacsim.common.state_contract import (
+    GRIPPER_CLOSED_RAD,
     LEFT_JOINTS,
     RIGHT_JOINTS,
     SPINE_JOINT,
@@ -28,6 +30,20 @@ ROBOT_CAMERA_KEYS = ("head", "wrist_left", "wrist_right")
 HARD5_EXECUTION_HORIZON = 5
 SPINE_POLICY_MIN_M = 0.0
 SPINE_POLICY_MAX_M = 0.6
+FR3_JOINT_VELOCITY_LIMITS_RAD_S = (2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26)
+RIGHT_ARM_SLEW_VELOCITY_FRACTION = 0.50
+
+# Development-only envelopes measured over all 90,028 manipulation frames
+# from the 180-episode split.  The workspace adds roughly 3 cm beyond the
+# observed extrema; the acquisition/release gates add margin around their
+# corresponding event distributions.  They are simulator-world coordinates,
+# so the real-robot adapter must derive equivalent gates in its task frame.
+RIGHT_EE_WORKSPACE_MIN_XYZ = (1.70, 1.86, 0.82)
+RIGHT_EE_WORKSPACE_MAX_XYZ = (2.21, 2.23, 1.17)
+RIGHT_GRASP_GATE_MIN_XYZ = (1.70, 2.10, 0.82)
+RIGHT_GRASP_GATE_MAX_XYZ = (1.80, 2.22, 0.93)
+RIGHT_RELEASE_GATE_MIN_XYZ = (2.08, 1.97, 0.87)
+RIGHT_RELEASE_GATE_MAX_XYZ = (2.19, 2.12, 0.98)
 TimedAction = tuple[tuple[float, ...], float, int]
 QueuedAction = tuple[tuple[float, ...], float, float, int, int]
 
@@ -42,6 +58,154 @@ def policy_command_topics(topics: dict[str, Any]) -> dict[str, str]:
         },
         "spine": topics["teleop"]["spine_target"],
     }
+
+
+def gripper_open_fraction_command(value: float) -> tuple[float]:
+    """Convert semantic open fraction to the direct driver-joint command.
+
+    The live runner publishes ``/isaac/*_robotiq_joint_commands``, whose
+    payload is a joint position in radians.  It does not publish the separate
+    cartesian-control ``*_gripper_open_fraction_target`` interface.
+    """
+
+    target = float(value)
+    if not math.isfinite(target) or not 0.0 <= target <= 1.0:
+        raise ValueError("gripper open fraction must be within [0, 1]")
+    return ((1.0 - target) * GRIPPER_CLOSED_RAD,)
+
+
+def _xyz_in_box(
+    xyz: Any,
+    minimum: tuple[float, float, float],
+    maximum: tuple[float, float, float],
+) -> bool:
+    values = tuple(float(value) for value in xyz[:3])
+    if len(values) != 3 or not all(math.isfinite(value) for value in values):
+        return False
+    return all(
+        lower <= value <= upper
+        for value, lower, upper in zip(values, minimum, maximum, strict=True)
+    )
+
+
+def right_ee_within_demonstrated_workspace(pose: Any) -> bool:
+    """Return whether the current right EE remains near demonstrated motion."""
+
+    return _xyz_in_box(
+        pose,
+        RIGHT_EE_WORKSPACE_MIN_XYZ,
+        RIGHT_EE_WORKSPACE_MAX_XYZ,
+    )
+
+
+@dataclass
+class RightGraspGuard:
+    """Latch one grasp and allow one release only in demonstrated regions."""
+
+    close_confirm_actions: int = 3
+    minimum_hold_actions: int = 60
+    release_confirm_actions: int = 3
+    close_threshold: float = 0.20
+    open_threshold: float = 0.80
+    phase: str = "pregrasp"
+    close_evidence_actions: int = 0
+    held_actions: int = 0
+    release_evidence_actions: int = 0
+    interventions: int = 0
+
+    def apply(
+        self,
+        requested_open_fraction: float,
+        ee_pose: Any,
+    ) -> tuple[float, dict[str, Any]]:
+        requested = float(requested_open_fraction)
+        if not math.isfinite(requested) or not 0.0 <= requested <= 1.0:
+            raise ValueError("requested gripper open fraction must be in [0, 1]")
+        xyz = tuple(float(value) for value in ee_pose[:3])
+        if len(xyz) != 3 or not all(math.isfinite(value) for value in xyz):
+            raise ValueError("right EE pose must provide three finite coordinates")
+
+        before = self.phase
+        in_grasp_gate = _xyz_in_box(
+            xyz, RIGHT_GRASP_GATE_MIN_XYZ, RIGHT_GRASP_GATE_MAX_XYZ
+        )
+        in_release_gate = _xyz_in_box(
+            xyz, RIGHT_RELEASE_GATE_MIN_XYZ, RIGHT_RELEASE_GATE_MAX_XYZ
+        )
+        effective = requested
+        reason = "policy_command_allowed"
+
+        if self.phase == "pregrasp":
+            if requested <= self.close_threshold:
+                if in_grasp_gate:
+                    self.close_evidence_actions += 1
+                    if self.close_evidence_actions >= self.close_confirm_actions:
+                        self.phase = "latched"
+                        self.held_actions = 1
+                else:
+                    self.close_evidence_actions = 0
+                    effective = 1.0
+                    reason = "close_blocked_outside_grasp_gate"
+            else:
+                self.close_evidence_actions = 0
+        elif self.phase == "latched":
+            self.held_actions += 1
+            if (
+                requested >= self.open_threshold
+                and self.held_actions >= self.minimum_hold_actions
+                and in_release_gate
+            ):
+                self.release_evidence_actions += 1
+                if self.release_evidence_actions >= self.release_confirm_actions:
+                    self.phase = "released"
+                    effective = 1.0
+                    reason = "release_confirmed_in_gate"
+                else:
+                    effective = 0.0
+                    reason = "release_confirmation_pending"
+            else:
+                self.release_evidence_actions = 0
+                effective = 0.0
+                if requested > self.close_threshold:
+                    reason = "open_blocked_while_latched"
+        elif self.phase == "released":
+            effective = 1.0
+            if requested < self.open_threshold:
+                reason = "reclose_blocked_after_release"
+        else:
+            raise RuntimeError(f"unknown grasp guard phase: {self.phase}")
+
+        intervened = abs(effective - requested) > 1e-9
+        if intervened:
+            self.interventions += 1
+        return effective, {
+            "phase_before": before,
+            "phase_after": self.phase,
+            "phase_changed": before != self.phase,
+            "requested_open_fraction": requested,
+            "effective_open_fraction": effective,
+            "intervened": intervened,
+            "reason": reason,
+            "ee_world_xyz": list(xyz),
+            "in_grasp_gate": in_grasp_gate,
+            "in_release_gate": in_release_gate,
+            "held_actions": self.held_actions,
+        }
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "phase": self.phase,
+            "close_evidence_actions": self.close_evidence_actions,
+            "held_actions": self.held_actions,
+            "release_evidence_actions": self.release_evidence_actions,
+            "interventions": self.interventions,
+            "workspace_min_xyz": list(RIGHT_EE_WORKSPACE_MIN_XYZ),
+            "workspace_max_xyz": list(RIGHT_EE_WORKSPACE_MAX_XYZ),
+            "grasp_gate_min_xyz": list(RIGHT_GRASP_GATE_MIN_XYZ),
+            "grasp_gate_max_xyz": list(RIGHT_GRASP_GATE_MAX_XYZ),
+            "release_gate_min_xyz": list(RIGHT_RELEASE_GATE_MIN_XYZ),
+            "release_gate_max_xyz": list(RIGHT_RELEASE_GATE_MAX_XYZ),
+        }
 
 
 def align_action_chunk(
@@ -103,15 +267,18 @@ def hard5_action_window(
     *,
     ready_at: float,
     action_rate_hz: float,
+    execution_horizon: int = HARD5_EXECUTION_HORIZON,
     max_actions: int = HARD5_EXECUTION_HORIZON,
 ) -> list[TimedAction]:
-    """Schedule only the checkpoint's configured five-action horizon."""
+    """Schedule one bounded synchronous execution window."""
 
     if action_rate_hz <= 0.0:
         raise ValueError("action_rate_hz must be positive")
     if max_actions <= 0:
         raise ValueError("max_actions must be positive")
-    count = min(HARD5_EXECUTION_HORIZON, max_actions, len(actions))
+    if not 0 < execution_horizon <= len(actions):
+        raise ValueError("execution_horizon must be within the action chunk")
+    count = min(execution_horizon, max_actions, len(actions))
     if count == 0:
         raise ValueError("hard5 requires at least one action")
     return [
@@ -486,6 +653,70 @@ def safe_action(
     effective = list(project_arm_action_bounds(effective))
     validate_absolute_action_bounds(effective)
     return raw, tuple(effective)
+
+
+def project_fr3_joint_step(
+    previous: Any,
+    target: Any,
+    *,
+    action_rate_hz: float,
+    velocity_fraction: float = RIGHT_ARM_SLEW_VELOCITY_FRACTION,
+) -> tuple[float, ...]:
+    """Bound one seven-joint absolute target by FR3 position and slew limits."""
+
+    before = tuple(float(value) for value in previous)
+    requested = tuple(float(value) for value in target)
+    if len(before) != 7 or len(requested) != 7:
+        raise ValueError("FR3 joint step requires seven previous and target values")
+    if not all(math.isfinite(value) for value in (*before, *requested)):
+        raise ValueError("FR3 joint step must be finite")
+    if action_rate_hz <= 0.0:
+        raise ValueError("action_rate_hz must be positive")
+    if not 0.0 < velocity_fraction <= 1.0:
+        raise ValueError("velocity_fraction must be within (0, 1]")
+
+    projected = []
+    for current, desired, position_bounds, velocity_limit in zip(
+        before,
+        requested,
+        FR3_JOINT_LIMITS,
+        FR3_JOINT_VELOCITY_LIMITS_RAD_S,
+        strict=True,
+    ):
+        desired = min(position_bounds[1], max(position_bounds[0], desired))
+        maximum_step = velocity_limit * velocity_fraction / action_rate_hz
+        projected.append(
+            min(current + maximum_step, max(current - maximum_step, desired))
+        )
+    return tuple(projected)
+
+
+def apply_right_only_policy_ownership(
+    effective_action: Any,
+    staging_command: Any,
+) -> tuple[float, ...]:
+    """Keep deterministic staging owners fixed while PI0.5 owns the right side.
+
+    ``staging_command`` follows the existing manipulation-stager action[3:20]
+    layout. Only right arm action[10:17] and right gripper action[18] survive
+    from the policy output.
+    """
+
+    action = tuple(float(value) for value in effective_action)
+    hold = tuple(float(value) for value in staging_command)
+    if len(action) != 20:
+        raise ValueError("effective action must contain 20 values")
+    if len(hold) != 17:
+        raise ValueError("staging hold command must contain action[3:20]")
+    if not all(math.isfinite(value) for value in (*action, *hold)):
+        raise ValueError("right-only ownership inputs must be finite")
+    owned = list(action)
+    owned[0:3] = [0.0, 0.0, 0.0]
+    owned[3:10] = hold[0:7]
+    owned[17] = hold[14]
+    owned[19] = hold[16]
+    validate_absolute_action_bounds(owned)
+    return tuple(owned)
 
 
 class ActionWatchdog:

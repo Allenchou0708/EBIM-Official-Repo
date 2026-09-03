@@ -75,6 +75,37 @@ def interpolate_staging_command(
     ]
 
 
+def apply_staging_spine_hold(
+    command: tuple[float, ...] | list[float], spine_command_m: float
+) -> tuple[float, ...]:
+    """Keep an already-staged spine fixed while replaying an arm route."""
+
+    if len(command) != 17:
+        raise ValueError("staging command must contain action indices 3:20")
+    if not math.isfinite(spine_command_m) or not 0.0 <= spine_command_m <= 0.6:
+        raise ValueError("spine hold command must be finite and within [0, 0.6]")
+    projected = tuple(float(value) for value in command)
+    return (*projected[:16], float(spine_command_m))
+
+
+def project_entry_calibration_for_fixed_spine(
+    calibration_m: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Remove the obsolete vertical offset from a fixed-spine arm route.
+
+    The source trajectory begins with its spine lowered. Once the live workflow
+    stages and holds the spine at the final height, that source-entry Z offset
+    is no longer an object/base displacement and must not shift the final gate.
+    Horizontal calibration remains useful for reset/base displacement.
+    """
+
+    if len(calibration_m) != 3 or not all(
+        math.isfinite(float(value)) for value in calibration_m
+    ):
+        raise ValueError("entry calibration must contain three finite values")
+    return (float(calibration_m[0]), float(calibration_m[1]), 0.0)
+
+
 def staging_command_within_tolerance(
     audit: dict[str, Any],
     current: tuple[float, ...],

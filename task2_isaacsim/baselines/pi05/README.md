@@ -1,214 +1,170 @@
-# Task 2 PI0.5 submission baseline
+# Task 2 PI0.5 simulator controller
 
-This directory contains the code-only Task 2 PI0.5 training and submission
-runner. Datasets, caches, checkpoints, output, and evidence remain under the
-host path configured by `TASK2_PI05_ROOT` and are never added to Git.
+`run_pi05.sh` is the only supported operator entry point.  It selects one of
+three checkpoint contracts while keeping reset, base navigation, spine
+staging, RMPflow pre-grasp staging, evidence paths, and shutdown consistent.
+Checkpoints, datasets, images, logs, and run evidence remain under
+`/scratch1/2026_ebim/allen_task2_pi05/` and are not stored in Git.
 
-The separate, organizer-permitted Phase I ground-truth controller is described
-in [GROUND_TRUTH_PHASE1.md](GROUND_TRUTH_PHASE1.md).  Its supporting policy
-report and clean-evaluation commands are in
-[PHASE1_POLICY_REPORT.md](PHASE1_POLICY_REPORT.md) and
-[PHASE1_SUBMISSION_RUNBOOK.md](PHASE1_SUBMISSION_RUNBOOK.md).
+## Start the simulator
 
-## Setup and model inputs
-
-Copy `.env.pi05.example` to `.env.pi05` and set the local paths and images.
-The file is ignored by Git. Do not put a Hugging Face token in it:
+From this directory:
 
 ```bash
-TASK2_PI05_ROOT=/absolute/path/to/task2-pi05-runtime
-PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
-PI05_LIVE_IMAGE=ebim-task2-pi05-submit:local
-PI05_CHECKPOINT=/absolute/path/to/checkpoints/030000/pretrained_model
-PI05_RELATIVE_DATASET=/absolute/path/to/relative_dataset
+./run_pi05.sh models
+ROS_DOMAIN_ID=30 ./run_pi05.sh sim-up --gui
 ```
 
-The original V1 formal config pins:
+`models` must report all three profiles as `ready`.  Keep the GUI terminal
+open, then run exactly one policy command in a second terminal.
 
-- dataset `hermanprawiro/task2_fixpos_200` at revision
-  `46ab41f16fe836ee8ca791c7afaade44783eefe6`;
-- base policy `lerobot/pi05_base` at revision
-  `338b5c22c12dbdd0d2ab19046802de2eb7696a6b`;
-- an episode-level seed-`20260812` split of 180 train and 20 held-out
-  episodes;
-- expert-only, frozen-vision, bfloat16 training for 30000 steps with
-  checkpoints every 5000 steps.
+## Three model commands
 
-The Hugging Face cache mounted under `${TASK2_PI05_ROOT}/cache` must already
-have access to the PaliGemma-gated model files. Never put an access token in a
-config, command, manifest, image, or Git file.
-
-## Dataset and training
-
-Run from this directory:
+Our manipulation-only 20k checkpoint uses the head and right-wrist cameras,
+8-D right-arm/right-gripper state and action, relative actions, and a 15-action
+execution horizon:
 
 ```bash
-./run_pi05.sh doctor
-./run_pi05.sh dataset --config configs/task2_fixpos_200_expert.yaml
-./run_pi05.sh train --config configs/task2_fixpos_200_expert.yaml \
-  --run task2_200_30k_v1
+ROS_DOMAIN_ID=30 ./run_pi05.sh run \
+  --model ours-20k \
+  --execution-horizon 15 \
+  --seed 1001 \
+  --run-label ours-20k-seed1001-h15
 ```
 
-CLI path and run-name arguments override YAML defaults. Dataset QA checks the
-LeRobot schema, 20-D action and 37-D state, all four readable camera streams,
-episode/frame consistency, finite numeric data, action range and codec, plus
-base/spine variance. Optional success, orientation, and drop metadata is
-reported when present but is not required for technical eligibility.
-`task2_extras` is QA-only and is never a policy input.
-
-Relative action statistics use only the 180 training episodes. V1 keeps base
-velocity and grippers absolute while arm joints and spine use the explicit
-20-D action-to-37-D state mapping in `contract.py`.
-
-The V3 calibration profile initializes from the existing V1 30k task
-checkpoint, preserves its arm/gripper behavior with a low learning rate, and
-changes only the learned spine representation to the V2 absolute target
-contract. It runs 3000 phase-balanced steps and saves one final checkpoint:
+The submitted 30k checkpoint loads its saved whole-body 20-D transform.  The
+normal live mode deliberately publishes only its right-arm/right-gripper
+slice; base and spine stay fixed and the left arm stays in its staged hold:
 
 ```bash
-PI05_V3_INIT_CHECKPOINT=/path/to/v1/checkpoints/030000/pretrained_model \
-  ./run_pi05.sh train --config configs/task2_fixpos_200_v3.yaml \
-  --run task2_pi05_v3_from_v1_3k
+ROS_DOMAIN_ID=30 ./run_pi05.sh run \
+  --model submitted-30k \
+  --execution-horizon 15 \
+  --seed 1001 \
+  --run-label submitted-30k-seed1001-h15
 ```
 
-Phase-specific language is intentionally not used in this calibration run.
-Adding it would change both the training labels and live phase-transition
-contract, confounding the arm/spine representation test.
-
-PI0.5 V2 keeps the arms relative but learns spine as the absolute command used
-by the simulator. It also samples six physical event phases instead of uniform
-frames and stores only checkpoints 6k and 12k:
+The Robot Dreams checkpoint must be tested with its native training contract:
+head, left-wrist, and right-wrist cameras; 37-D state; absolute 20-D action;
+and asynchronous 50-action chunks.  Its base output is forced to zero after
+staging, but both arms, grippers, and spine remain model-owned:
 
 ```bash
-./run_pi05.sh train --config configs/task2_fixpos_200_v2.yaml \
-  --run task2_pi05_v2_12k
+ROS_DOMAIN_ID=30 ./run_pi05.sh run \
+  --model robot-dreams-20k \
+  --robot-dreams-native \
+  --seed 1001 \
+  --run-label robot-dreams-native-seed1001-h50
 ```
 
-The V2 phase manifest is derived from recorded spine state, gripper commands,
-and thermal-pad motion. Held-out episodes are excluded from every sampler
-group. The selected relative-action mapping is serialized in the checkpoint;
-the live and offline processors retain V1 decoding for older checkpoints.
+Do not add `--robot-dreams-native` to the other two profiles.  Do not combine
+it with `--hybrid-transport`.
 
-V4 is a bounded continuation from the V2 6k checkpoint using the audited
-seven-prompt dataset view. It keeps the V2 action contract and stores one final
-3k checkpoint:
+## Shared control sequence
+
+All three commands execute this measured sequence before PI0.5:
+
+1. reset the seeded room scene;
+2. run the Phase-I `BACK -> STRAFE_RIGHT -> odometry correction` base route;
+3. raise and settle the spine;
+4. recheck base drift after spine motion;
+5. move the left arm to safe hold and the right arm to the demonstrated
+   observation pose using collision-aware RMPflow;
+6. confirm the right-wrist pad signal;
+7. start the selected PI0.5 ownership mode.
+
+The reference pose is a robust development-only summary of 180 unique
+training episodes, not a replay of episode 19.  The policy process does not
+subscribe to evaluator, object-pose, deformable-object, or other ground-truth
+topics.
+
+Use shadow mode to validate checkpoint loading and one inference without any
+VLA action publication.  The explicitly requested deterministic staging still
+runs:
 
 ```bash
-./run_pi05.sh train-v4 --run task2_pi05_v4_from_v2_3k
-./run_pi05.sh gate-v4
+ROS_DOMAIN_ID=30 ./run_pi05.sh run \
+  --model submitted-30k \
+  --shadow \
+  --seed 1001 \
+  --run-label submitted-30k-contract-shadow
 ```
 
-`train-v4` validates the immutable split, seven prompt strings, V2 checkpoint
-mapping, and dataset metadata before training. The V4-only collate resolves
-dataset task indices to prompt strings before PI0.5 tokenization. `gate-v4`
-runs all seven prompts at seven landmarks for every held-out episode, scores
-only hard5 actions 0--4, writes no ROS command, and exits `3` for a measured
-NO-GO. The 2026-08-14 V4 checkpoint failed orient-to-pregrasp direction and
-correct-prompt discriminability, so it must not be run in GUI; see
-`TASK2_PI05_V4_SEVEN_PROMPT_OFFLINE_GATE_LAB_RESULT_2026-08-14.md`.
+## Experimental hybrid transport
 
-Before a GUI run, one checkpoint shadow can exercise the real observation,
-postprocessing, action-bound, base-isolation, spine, and time-alignment
-contracts without publishing ROS commands:
+The current scheme-1 prototype lets `ours-20k` approach and close on the pad,
+waits for measured gripper closure, then transfers command ownership to a
+right-only RMPflow retain/lift/transfer/place/release state machine:
 
 ```bash
-docker run --rm --gpus all --ipc=host \
-  --entrypoint python \
-  -v "${PI05_CHECKPOINT}:/data/checkpoint:ro" \
-  -v "${PI05_RELATIVE_DATASET}:/data/dataset:ro" \
-  -v "${TASK2_PI05_ROOT}/evidence:/data/evidence" \
-  "${PI05_LIVE_IMAGE}" \
-  -m task2_isaacsim.baselines.pi05.live.policy_smoke \
-  --checkpoint /data/checkpoint --dataset-root /data/dataset \
-  --output /data/evidence/policy_shadow.json
+ROS_DOMAIN_ID=30 ./run_pi05.sh run \
+  --model ours-20k \
+  --hybrid-transport \
+  --seed 1001 \
+  --run-label ours-20k-hybrid-rmpflow-seed1001
 ```
 
-## Simulator and evaluator terminals
+This remains experimental and is not the submission default.  The formal
+2026-09-03 run passed VLA grasp detection, measured close confirmation,
+publisher handoff, and the RMPflow `retain` stage.  It then timed out in
+`peel_lift` after 180 wall seconds with the right gripper still closed
+(open-fraction 0.112).  Therefore this run is a pipeline milestone, not task
+success; the lift pose/orientation and collision path need redesign before
+another rollout.
 
-The live path uses a dataset-derived ROS staging trajectory before every
-policy rollout. It restores the demonstrated base, both arms, grippers, and
-spine state, then verifies the right end effector relative to the thermal pad.
-Restoring the complete recorded state is intentional: moving only the right
-arm would still leave PI0.5 with an out-of-distribution left-arm/spine state.
-No guessed inverse-kinematics target is used.
+## Measured results (2026-09-03)
 
-To inspect this initialization without running PI0.5, start the simulator and
-run the standalone staging command in another terminal:
+| Profile | Verified interface | Simulator observation | Status |
+|---|---|---|---|
+| `ours-20k`, horizon 15 | two cameras, state/action 8-D, relative-action inverse | grasped the pad, but did not transport it left consistently; stopped at the demonstrated workspace gate after 199 actions | manipulation NO-GO |
+| `submitted-30k` | saved 20-D whole-body transform, right 8-D publication slice; live shadow pipeline | one-inference shadow validation publishes no VLA actions | contract-only |
+| `robot-dreams-20k --robot-dreams-native` | three cameras, state 37-D, absolute action 20-D | 600 valid actions across 24 decisions with zero invalid actions; pad still did not move left reliably | manipulation NO-GO |
+| `ours-20k --hybrid-transport` | VLA grasp followed by measured RMPflow handoff | grasp/retain passed; `peel_lift` did not converge | experimental NO-GO |
 
-```bash
-./run_pi05.sh sim-up --gui
-./run_pi05.sh stage-init
-```
+These results distinguish a valid runtime contract from task success.  None of
+the three PI0.5 checkpoints currently demonstrates reliable end-to-end task
+completion in the simulator.
 
-Success is recorded as `success: true` with reason
-`stable_dataset_camera_ready` in the generated `stage_init_manifest.json`.
-Stop other teleoperation/policy publishers first; staging intentionally fails
-when another process is publishing arm commands.
+## Research direction
 
-Use three terminals for a GUI run:
+- [Code as Policies](https://code-as-policies.github.io/) supports the useful
+  part of scheme 1: a small reactive program can compose perception checks,
+  feedback loops, and waypoint primitives.  Here the generated-code idea is
+  replaced by a reviewed, bounded FSM; it must still use perception-relative
+  lift/place targets instead of the current fixed landmark.
+- [On-Policy Distillation](https://thinkingmachines.ai/blog/on-policy-distillation/)
+  suggests the stronger learning follow-up: collect states from the deployed
+  student's own failed rollouts and provide dense teacher targets there,
+  rather than adding more off-policy demonstrations from states the policy
+  never visits.
+- [Self-Distilled Reasoner](https://arxiv.org/abs/2601.18734) is an LLM
+  token-distillation method, not a drop-in robotics or diffusion-policy loss.
+  Its on-policy sampling and clipped dense-divergence ideas are relevant only
+  after defining a continuous-action PI0.5 teacher objective and simulator
+  safety envelope.
 
-```bash
-# Terminal 1
-./run_pi05.sh sim-up --gui
+The practical next experiment is therefore perception-relative RMPflow
+lifting, followed by an on-policy dataset of PI0.5 failure states labelled by
+the simulator controller.  Blindly increasing the same demonstration-only
+training steps is lower priority.
 
-# Terminal 2
-./run_pi05.sh run-task \
-  --runtime-mode hard5 \
-  --checkpoint /path/to/checkpoints/030000/pretrained_model \
-  --max-actions 600
-
-# Terminal 3
-./run_pi05.sh evaluate
-```
-
-`sim-up` mirrors Isaac/Kit output to the terminal and to a timestamped
-`isaac_gui_*.log` below
-`$TASK2_PI05_ROOT/evidence/task2_200_submit_20260812/launcher/`. The final log
-line records the launcher exit code, so a bridge-start or Kit crash remains
-diagnosable after the GUI closes. The Isaac ROS bridge uses UDPv4 like the
-helper/live containers; disabling its ineffective cross-container Fast DDS
-shared-memory transport prevents stale DDS files from filling the long-lived
-container's `/dev/shm` and causing a Kit `Bus error`.
-
-`run-task` requests a scene reset, returns the spine to the demonstrated
-near-zero starting height, checks the evaluation camera, and starts the runner.
-The runner loads the checkpoint before invoking the existing fixed base route
-to `(2.10, 3.05, -1.571)`. This moves the approximately two-minute PI0.5 load
-out of the post-base idle window. It discards staging-time observations and
-requires a fresh, settled camera/state tuple before warmup or inference.
-The route's command pulses, braking pauses, and settle duration use
-`/isaac/clock`; its bounded process timeout remains on host monotonic time.
-Short `0.05 s` correction pulses (`0.10 s` for forward/back) and `0.10 s`
-braking pauses keep the base trajectory consistent when GUI real-time factor
-changes without amplifying the previous wall-time pulse lengths.
-After manipulation begins, effective base output is always zero. Action 19 is
-clamped to the demonstrated `0.0–0.6 m` range and published to the existing
-`/isaac/spine_target` bridge interface, so PI0.5 controls the spine together
-with both arms and grippers. The runner creates no base publisher.
-
-Frame and per-stream state age use the host-monotonic clock. Capture alignment
-uses ROS simulator timestamps from all three images, full joint state, odom,
-and both EE poses; an observation is rejected if any state stream is missing
-or the combined capture skew exceeds `0.10 s`. Transport/callback delay is
-therefore not misreported as capture-time misalignment. Arm and gripper
-`JointState` commands carry the current `/isaac/clock` stamp. The default
-`hard5` mode executes only chunk indices 0--4, matching checkpoint
-`n_action_steps: 5`, then holds the last legal absolute target while the next
-fresh observation is inferred.
-All policy and hold publications are paced by `/isaac/clock`, so low GUI
-real-time factor cannot consume the trajectory too quickly. The optional
-`legacy` mode retains asynchronous full-chunk replacement for diagnostics.
-The manifest records policy indices, hold publications, both capture and
-arrival skew, capture-to-ready latency, and measured spine trajectory. Reset,
-freshness, action bounds, command contention, and operator interrupt stop
-publication safely.
-
-Stop with `Ctrl-C` in the runner terminal or close all services with:
+## Shutdown and overrides
 
 ```bash
 ./run_pi05.sh down
 ```
 
-Training output contains the relative dataset view, `train.log`, run manifest,
-and checkpoints. Runtime image contents never include the training dataset;
-`run-task` accepts a host checkpoint path as its single model entry point.
+Optional lab-layout overrides are:
+
+```bash
+TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+PI05_LIVE_IMAGE=ebim-task2-pi05-submit:local
+TASK2_PI05_DATASET=/absolute/path/to/task2_fixpos_200
+TASK2_PI05_STAGING_AUDIT=/absolute/path/to/startup_staging_audit.json
+TASK2_PI05_LEROBOT_SRC=/absolute/path/to/lerobot/src
+ROS_DOMAIN_ID=30
+```
+
+`Ctrl-C` stops the current policy runner.  The Phase-I submission container
+entrypoint remains separate because its Dockerfiles depend on it; it is not a
+Phase-II operator interface.

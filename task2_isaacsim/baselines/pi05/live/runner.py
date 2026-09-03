@@ -35,28 +35,38 @@ from task2_isaacsim.baselines.pi05.live.core import (
     FreshnessError,
     QueuedAction,
     ReadinessConfig,
+    RightGraspGuard,
     RunnerPhase,
     align_action_chunk,
+    apply_right_only_policy_ownership,
     freshness_metrics,
+    gripper_open_fraction_command,
     hard5_action_window,
     hard5_hold_action,
     policy_command_topics,
+    project_fr3_joint_step,
     replace_action_queue,
+    right_ee_within_demonstrated_workspace,
     safe_action,
     startup_inventory,
     validate_live_state,
     validate_rgb_frame,
 )
 from task2_isaacsim.baselines.pi05.live.policy import LivePi05Policy
+from task2_isaacsim.baselines.pi05.live.fixed_stage_observation import (
+    RMPFLOW_STAGE_PLAN,
+    load_reference as load_observation_reference,
+)
 from task2_isaacsim.baselines.pi05.live.staging import validate_staging_audit
 from task2_isaacsim.common.state_contract import (
-    GRIPPER_CLOSED_RAD,
     LEFT_GRIPPER_DRIVER,
     LEFT_JOINTS,
     RIGHT_GRIPPER_DRIVER,
     RIGHT_JOINTS,
     SPINE_JOINT,
     assemble_state,
+    gripper_open_fraction,
+    resolve_joint,
 )
 from task2_isaacsim.scripts.topics import camera_topic, load_topics
 
@@ -65,6 +75,7 @@ CAMERA_ENTRIES = TOPICS["cameras"]["robot"]
 COMMAND_ENTRIES = TOPICS["bridge"]["joint_groups"]
 SPINE_COMMAND_TOPIC = TOPICS["teleop"]["spine_target"]
 POLICY_COMMAND_TOPICS = policy_command_topics(TOPICS)
+EE_TARGET_TOPICS = TOPICS["cartesian_control"]["ee_target"]
 
 
 def _stamp_seconds(message: object) -> float:
@@ -110,7 +121,9 @@ class LiveObservationNode(Node):
         self.base_input_count = 0
         self.base_input_after_manipulation_count = 0
         self.publish_count = 0
+        self.ee_handoff_publish_count = 0
         self._command_publishers: dict[str, object] = {}
+        self._ee_handoff_publishers: dict[str, object] = {}
 
         for key, entry in CAMERA_ENTRIES.items():
             topic = camera_topic(TOPICS, entry["namespace"], "image")
@@ -174,7 +187,22 @@ class LiveObservationNode(Node):
         self._command_publishers["spine"] = self.create_publisher(
             Float64, SPINE_COMMAND_TOPIC, 10
         )
+        for side, topic in EE_TARGET_TOPICS.items():
+            self._ee_handoff_publishers[side] = self.create_publisher(
+                PoseStamped, topic, 10
+            )
         self.publish_enabled = True
+
+    def deactivate_publishers(self) -> None:
+        """Release command ownership before a subprocess takes over."""
+
+        for publisher in self._command_publishers.values():
+            self.destroy_publisher(publisher)
+        for publisher in self._ee_handoff_publishers.values():
+            self.destroy_publisher(publisher)
+        self._command_publishers.clear()
+        self._ee_handoff_publishers.clear()
+        self.publish_enabled = False
 
     def _on_image(self, key: str, message: Image) -> None:
         received_at = time.monotonic()
@@ -341,11 +369,11 @@ class LiveObservationNode(Node):
             "right_arm": (RIGHT_JOINTS, action[10:17]),
             "left_gripper": (
                 (LEFT_GRIPPER_DRIVER,),
-                ((1.0 - action[17]) * GRIPPER_CLOSED_RAD,),
+                gripper_open_fraction_command(action[17]),
             ),
             "right_gripper": (
                 (RIGHT_GRIPPER_DRIVER,),
-                ((1.0 - action[18]) * GRIPPER_CLOSED_RAD,),
+                gripper_open_fraction_command(action[18]),
             ),
         }
         for group, (names, positions) in groups.items():
@@ -356,6 +384,35 @@ class LiveObservationNode(Node):
             self._command_publishers[group].publish(message)
         self._command_publishers["spine"].publish(Float64(data=action[19]))
         self.publish_count += 5
+
+    def publish_ee_handoff_target(
+        self, side: str, pose_world_xyzw: tuple[float, ...]
+    ) -> None:
+        """Latch RMPflow at the measured pose after joint-command ownership."""
+
+        if not self.publish_enabled or self.sim_time is None:
+            raise RuntimeError("cannot publish EE handoff without live control")
+        if side not in self._ee_handoff_publishers:
+            raise ValueError(f"unsupported EE handoff side: {side}")
+        if len(pose_world_xyzw) != 7 or not all(
+            math.isfinite(value) for value in pose_world_xyzw
+        ):
+            raise ValueError("EE handoff pose must contain seven finite values")
+        x, y, z, qx, qy, qz, qw = pose_world_xyzw
+        message = PoseStamped()
+        message.header.stamp = Time(
+            nanoseconds=max(int(self.sim_time * 1e9), 0)
+        ).to_msg()
+        message.header.frame_id = "world"
+        message.pose.position.x = x
+        message.pose.position.y = y
+        message.pose.position.z = z
+        message.pose.orientation.x = qx
+        message.pose.orientation.y = qy
+        message.pose.orientation.z = qz
+        message.pose.orientation.w = qw
+        self._ee_handoff_publishers[side].publish(message)
+        self.ee_handoff_publish_count += 1
 
 
 def _percentile(values: list[float], fraction: float) -> float:
@@ -393,8 +450,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-coordinate-frame", required=True)
     parser.add_argument("--confirm-fixed-base-staging", action="store_true")
     parser.add_argument("--stage-base-after-policy-load", action="store_true")
+    parser.add_argument(
+        "--restage-base-after-manipulation", action="store_true"
+    )
+    parser.add_argument("--stage-spine-after-base", action="store_true")
     parser.add_argument("--stage-manipulation-after-base", action="store_true")
     parser.add_argument("--staging-audit", type=Path)
+    parser.add_argument(
+        "--staging-mode",
+        choices=("dataset_replay", "rmpflow_observation"),
+        default="dataset_replay",
+    )
+    parser.add_argument("--observation-reference", type=Path)
     parser.add_argument(
         "--confirm-right-wrist-pad-visible", action="store_true"
     )
@@ -402,22 +469,32 @@ def parse_args() -> argparse.Namespace:
         "--base-stage-max-duration-s", type=float, default=90.0
     )
     parser.add_argument(
+        "--spine-stage-max-duration-s", type=float, default=90.0
+    )
+    parser.add_argument(
         "--manipulation-stage-max-duration-s", type=float, default=300.0
     )
     parser.add_argument("--arm-simulator", action="store_true")
+    parser.add_argument("--right-only-policy-after-staging", action="store_true")
+    parser.add_argument("--whole-body-policy-after-staging", action="store_true")
+    parser.add_argument("--hybrid-rmpflow-transport", action="store_true")
     parser.add_argument(
         "--runtime-mode", choices=("legacy", "hard5"), default="hard5"
     )
     parser.add_argument("--warmup-decisions", type=int, default=3)
     parser.add_argument("--max-decisions", type=int, default=5)
     parser.add_argument("--max-publish-actions", type=int, default=50)
+    parser.add_argument("--execution-horizon", type=int, default=5)
     parser.add_argument("--queue-refill-actions", type=int, default=24)
     parser.add_argument("--max-duration-s", type=float, default=300.0)
     parser.add_argument("--startup-timeout-s", type=float, default=10.0)
     parser.add_argument("--startup-retries", type=int, default=1)
     parser.add_argument("--position-tolerance-m", type=float, default=0.05)
     parser.add_argument("--yaw-tolerance-rad", type=float, default=0.10)
-    parser.add_argument("--velocity-threshold", type=float, default=0.02)
+    # Odom reports linear m/s and angular rad/s in one legacy norm.  The GUI
+    # bridge shows a stable-pose angular floor around 0.022 rad/s, so retain a
+    # conservative 0.03 threshold while position/yaw gates remain unchanged.
+    parser.add_argument("--velocity-threshold", type=float, default=0.03)
     parser.add_argument("--settle-duration-s", type=float, default=1.0)
     parser.add_argument("--camera-max-age-s", type=float, default=0.65)
     parser.add_argument("--camera-max-skew-s", type=float, default=0.10)
@@ -431,17 +508,60 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:  # noqa: C901 - one bounded live control loop
     args = parse_args()
+    if (
+        args.right_only_policy_after_staging
+        and args.whole_body_policy_after_staging
+    ):
+        print("FAIL: choose exactly one post-staging policy ownership mode")
+        return 2
+    if args.hybrid_rmpflow_transport and (
+        not args.arm_simulator or not args.right_only_policy_after_staging
+    ):
+        print(
+            "FAIL: --hybrid-rmpflow-transport requires simulator publication "
+            "with right-only policy ownership"
+        )
+        return 2
     if not args.confirm_fixed_base_staging:
         print("FAIL: --confirm-fixed-base-staging is required")
         return 2
     if args.arm_simulator and args.max_publish_actions <= 0:
         print("FAIL: --max-publish-actions must be positive")
         return 2
-    if not args.stage_manipulation_after_base or args.staging_audit is None:
+    if not args.stage_manipulation_after_base:
         print(
-            "FAIL: dataset-derived --stage-manipulation-after-base and "
-            "--staging-audit are required"
+            "FAIL: --stage-manipulation-after-base is required"
         )
+        return 2
+    if args.staging_mode == "dataset_replay" and args.staging_audit is None:
+        print("FAIL: --staging-audit is required for dataset_replay staging")
+        return 2
+    if (
+        args.staging_mode == "rmpflow_observation"
+        and args.observation_reference is None
+    ):
+        print(
+            "FAIL: --observation-reference is required for "
+            "rmpflow_observation staging"
+        )
+        return 2
+    if args.staging_mode == "rmpflow_observation" and (
+        not args.stage_base_after_policy_load
+        or not args.stage_spine_after_base
+    ):
+        print(
+            "FAIL: RMPflow staging requires base then spine staging before "
+            "the post-spine base recheck"
+        )
+        return 2
+    if (
+        args.staging_mode == "rmpflow_observation"
+        and args.position_tolerance_m > 0.015
+    ):
+        print("FAIL: RMPflow staging requires a base tolerance <= 0.015 m")
+        return 2
+    if args.staging_mode == "rmpflow_observation" and args.restage_base_after_manipulation:
+        print("FAIL: base restaging is incompatible with the latched RMPflow base hold")
         return 2
     if args.arm_simulator and not args.confirm_right_wrist_pad_visible:
         print(
@@ -450,20 +570,49 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         )
         return 2
     try:
-        staging_audit = validate_staging_audit(
-            json.loads(args.staging_audit.read_text(encoding="utf-8"))
-        )
-        staged_spine_target = float(
-            staging_audit["final_target"]["measured_reference"]["spine_m"]
-        )
-        staged_spine_tolerance = float(
-            staging_audit["tolerances"]["spine_abs_m"]
-        )
+        if args.staging_mode == "dataset_replay":
+            assert args.staging_audit is not None
+            staging_audit = validate_staging_audit(
+                json.loads(args.staging_audit.read_text(encoding="utf-8"))
+            )
+            staged_spine_command = float(
+                staging_audit["final_target"]["spine_command_m"]
+            )
+            staged_spine_target = float(
+                staging_audit["final_target"]["measured_reference"]["spine_m"]
+            )
+            staged_spine_tolerance = float(
+                staging_audit["tolerances"]["spine_abs_m"]
+            )
+            deterministic_hold_command: tuple[float, ...] | None = tuple(
+                float(value)
+                for value in staging_audit["trajectory"][-1]["command"]
+            )
+            observation_reference = None
+        else:
+            assert args.observation_reference is not None
+            observation_reference = load_observation_reference(
+                args.observation_reference
+            )
+            staging_audit = None
+            staged_spine_command = float(
+                observation_reference["spine_command_m"]
+            )
+            staged_spine_target = float(
+                observation_reference["spine_measured_target_m"]
+            )
+            staged_spine_tolerance = float(
+                observation_reference["spine_tolerance_m"]
+            )
+            deterministic_hold_command = None
     except (KeyError, OSError, TypeError, ValueError) as error:
-        print(f"FAIL: invalid staging audit: {error}")
+        print(f"FAIL: invalid staging configuration: {error}")
         return 2
     if not 0 < args.queue_refill_actions <= PI05_CONTRACT.chunk_size:
         print("FAIL: --queue-refill-actions must be within the policy chunk")
+        return 2
+    if not 0 < args.execution_horizon <= PI05_CONTRACT.chunk_size:
+        print("FAIL: --execution-horizon must be within the policy chunk")
         return 2
     if args.startup_timeout_s <= 0.0 or args.startup_retries < 0:
         print("FAIL: startup timeout must be positive and retries non-negative")
@@ -568,11 +717,14 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     policy_load_started = time.monotonic()
     policy = LivePi05Policy(
         checkpoint=args.checkpoint,
-        dataset_root=args.dataset_root,
-        dataset_repo_id=args.dataset_repo_id,
         instruction=PI05_CONTRACT.task_instruction,
         seed=args.seed,
     )
+    if args.whole_body_policy_after_staging and policy.action_size != 20:
+        print("FAIL: whole-body policy ownership requires a 20-D checkpoint")
+        node.destroy_node()
+        rclpy.shutdown()
+        return 2
     policy_load_s = time.monotonic() - policy_load_started
     print(
         json.dumps({"startup": {"policy_loaded_s": policy_load_s}}),
@@ -581,6 +733,16 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     base_stage_s: float | None = None
     base_stage_output: Path | None = None
     if args.stage_base_after_policy_load:
+        base_stage_settle_duration_s = args.settle_duration_s
+        if args.staging_mode == "rmpflow_observation":
+            # The mobile base is not pose-held until the first Cartesian
+            # target latches the simulator-side base hold.  A long unheld
+            # dwell can coast back across the position threshold in GUI
+            # runs; the stricter post-spine recheck and RMPflow readiness
+            # gate still run before any arm motion.
+            base_stage_settle_duration_s = min(
+                base_stage_settle_duration_s, 0.10
+            )
         base_stage_output = (
             args.output_dir / "fixed_base_after_policy_load.json"
         )
@@ -599,7 +761,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 "--velocity-threshold",
                 str(args.velocity_threshold),
                 "--settle-duration-s",
-                str(args.settle_duration_s),
+                str(base_stage_settle_duration_s),
                 "--max-duration-s",
                 str(args.base_stage_max_duration_s),
                 "--output",
@@ -632,59 +794,334 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             rclpy.shutdown()
             print("FAIL: base staging after policy load failed", flush=True)
             return 2
-    manipulation_stage_output = (
-        args.output_dir / "dataset_pregrasp_staging_manifest.json"
-    )
+    spine_stage_s: float | None = None
+    spine_stage_output: Path | None = None
+    if args.stage_spine_after_base:
+        spine_stage_output = args.output_dir / "fixed_spine_after_base.json"
+        spine_stage_started = time.monotonic()
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "task2_isaacsim.baselines.pi05.live.fixed_stage_spine",
+                "--target-m",
+                str(staged_spine_command),
+                "--measured-target-m",
+                str(staged_spine_target),
+                "--tolerance-m",
+                str(staged_spine_tolerance),
+                "--max-duration-s",
+                str(args.spine_stage_max_duration_s),
+                "--output",
+                str(spine_stage_output),
+            ],
+            check=False,
+        )
+        spine_stage_s = time.monotonic() - spine_stage_started
+        spine_stage_result: dict[str, object] = {}
+        if spine_stage_output.is_file():
+            spine_stage_result = json.loads(
+                spine_stage_output.read_text(encoding="utf-8")
+            )
+        if result.returncode != 0 or spine_stage_result.get("success") is not True:
+            failure = {
+                "schema_version": 9,
+                "mode": mode,
+                "completed": False,
+                "decisions": 0,
+                "valid_decisions": 0,
+                "command_publications": 0,
+                "published_actions": 0,
+                "publish_blocked": "spine_stage_after_base_failed",
+                "spine_stage": spine_stage_result,
+                "startup_timing": {
+                    "policy_load_s": policy_load_s,
+                    "base_stage_s": base_stage_s,
+                    "spine_stage_s": spine_stage_s,
+                },
+            }
+            _write_json(args.output_dir / "live_runner_manifest.json", failure)
+            node.destroy_node()
+            rclpy.shutdown()
+            print("FAIL: spine staging after base failed", flush=True)
+            return 2
+    post_spine_base_stage_s: float | None = None
+    post_spine_base_stage_output: Path | None = None
+    if args.staging_mode == "rmpflow_observation":
+        post_spine_base_stage_output = (
+            args.output_dir / "fixed_base_after_spine.json"
+        )
+        # GUI rendering lowers the real-time factor enough that the wheeled
+        # base coasts about 1.5 mm during the stable dwell.  A 10 mm control
+        # threshold therefore chatters across its boundary even though the
+        # downstream RMPflow readiness gate is 15 mm.  Reuse that exact gate:
+        # stricter 12 and 14 mm inner gates both chattered indefinitely just
+        # outside their boundary despite satisfying the formal readiness
+        # contract and stable dwell requirement.
+        post_spine_control_position_tolerance_m = args.position_tolerance_m
+        post_spine_base_started = time.monotonic()
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "task2_isaacsim.baselines.pi05.live.fixed_stage_base",
+                "--target",
+                *(str(value) for value in args.base_target),
+                "--position-tolerance-m",
+                str(post_spine_control_position_tolerance_m),
+                "--yaw-tolerance-rad",
+                str(args.yaw_tolerance_rad),
+                "--velocity-threshold",
+                str(args.velocity_threshold),
+                "--settle-duration-s",
+                # Finish the corrective pulse with the same measured settle
+                # dwell as the initial route.  Exiting while the base is still
+                # coasting can move it back outside the 15 mm gate before the
+                # RMPflow process has published its first base-hold target.
+                str(args.settle_duration_s),
+                "--max-duration-s",
+                str(args.base_stage_max_duration_s),
+                "--output",
+                str(post_spine_base_stage_output),
+            ],
+            check=False,
+        )
+        post_spine_base_stage_s = time.monotonic() - post_spine_base_started
+        post_spine_base_result: dict[str, object] = {}
+        if post_spine_base_stage_output.is_file():
+            post_spine_base_result = json.loads(
+                post_spine_base_stage_output.read_text(encoding="utf-8")
+            )
+        if (
+            result.returncode != 0
+            or post_spine_base_result.get("success") is not True
+        ):
+            failure = {
+                "schema_version": 10,
+                "mode": mode,
+                "completed": False,
+                "decisions": 0,
+                "valid_decisions": 0,
+                "command_publications": 0,
+                "published_actions": 0,
+                "publish_blocked": "post_spine_base_recheck_failed",
+                "post_spine_base_stage": post_spine_base_result,
+                "startup_timing": {
+                    "policy_load_s": policy_load_s,
+                    "base_stage_s": base_stage_s,
+                    "spine_stage_s": spine_stage_s,
+                    "post_spine_base_stage_s": post_spine_base_stage_s,
+                },
+            }
+            _write_json(args.output_dir / "live_runner_manifest.json", failure)
+            node.destroy_node()
+            rclpy.shutdown()
+            print("FAIL: post-spine base recheck failed", flush=True)
+            return 2
     manipulation_stage_started = time.monotonic()
-    result = subprocess.run(
-        [
+    rmpflow_stage_results: list[dict[str, object]] = []
+    if args.staging_mode == "dataset_replay":
+        assert args.staging_audit is not None and staging_audit is not None
+        manipulation_stage_output = (
+            args.output_dir / "dataset_pregrasp_staging_manifest.json"
+        )
+        staging_command = [
             sys.executable,
             "-m",
-            (
-                "task2_isaacsim.baselines.pi05.live."
-                "fixed_stage_manipulation"
-            ),
+            "task2_isaacsim.baselines.pi05.live.fixed_stage_manipulation",
             "--audit",
             str(args.staging_audit),
             "--output",
             str(manipulation_stage_output),
             "--max-duration-s",
             str(args.manipulation_stage_max_duration_s),
-        ],
-        check=False,
-    )
-    manipulation_stage_s = time.monotonic() - manipulation_stage_started
-    stage_result: dict = {}
-    if manipulation_stage_output.is_file():
-        stage_result = json.loads(
-            manipulation_stage_output.read_text(encoding="utf-8")
+            "--hold-spine-command-m",
+            str(staged_spine_command),
+            *(
+                ["--defer-pad-relative-gate"]
+                if args.restage_base_after_manipulation
+                else []
+            ),
+        ]
+        result = subprocess.run(staging_command, check=False)
+        stage_result: dict = {}
+        if manipulation_stage_output.is_file():
+            stage_result = json.loads(
+                manipulation_stage_output.read_text(encoding="utf-8")
+            )
+        stage_feedback = stage_result.get("feedback") or {}
+        stage_feedback_pass = stage_feedback.get("within_tolerance") is True
+        staging_returncode = result.returncode
+    else:
+        assert args.observation_reference is not None
+        stage_result = {}
+        staging_returncode = 0
+        for target_kind, angular_speed in RMPFLOW_STAGE_PLAN:
+            manipulation_stage_output = (
+                args.output_dir
+                / f"rmpflow_{target_kind}_staging_manifest.json"
+            )
+            staging_command = [
+                sys.executable,
+                "-m",
+                "task2_isaacsim.baselines.pi05.live.fixed_stage_observation",
+                "--reference",
+                str(args.observation_reference),
+                "--target-kind",
+                target_kind,
+                "--output",
+                str(manipulation_stage_output),
+                "--max-duration-s",
+                str(args.manipulation_stage_max_duration_s),
+                "--max-linear-speed-m-s",
+                "0.10",
+                "--max-angular-speed-deg-s",
+                str(angular_speed),
+                "--maximum-transition-s",
+                "8.0",
+                "--minimum-transition-s",
+                "2.0",
+                "--position-tolerance-m",
+                "0.015" if target_kind == "observation" else "0.025",
+                "--base-position-tolerance-m",
+                str(args.position_tolerance_m),
+                "--base-yaw-tolerance-rad",
+                str(args.yaw_tolerance_rad),
+            ]
+            result = subprocess.run(staging_command, check=False)
+            stage_result = {}
+            if manipulation_stage_output.is_file():
+                stage_result = json.loads(
+                    manipulation_stage_output.read_text(encoding="utf-8")
+                )
+            rmpflow_stage_results.append(
+                {
+                    "target_kind": target_kind,
+                    "manifest": str(manipulation_stage_output),
+                    "returncode": result.returncode,
+                    "result": stage_result,
+                }
+            )
+            if (
+                result.returncode != 0
+                or stage_result.get("success") is not True
+                or stage_result.get("reason")
+                != "stable_rmpflow_observation_pose"
+            ):
+                staging_returncode = result.returncode or 2
+                break
+        stage_feedback_pass = (
+            len(rmpflow_stage_results) == len(RMPFLOW_STAGE_PLAN)
+            and all(
+                item["result"].get("success") is True
+                for item in rmpflow_stage_results
+            )
         )
+    manipulation_stage_s = time.monotonic() - manipulation_stage_started
     if (
-        result.returncode != 0
+        staging_returncode != 0
         or stage_result.get("success") is not True
-        or stage_result.get("feedback", {}).get("within_tolerance") is not True
+        or not stage_feedback_pass
     ):
         failure = {
-            "schema_version": 8,
+            "schema_version": 10,
             "mode": mode,
             "completed": False,
             "decisions": 0,
             "valid_decisions": 0,
             "command_publications": 0,
             "published_actions": 0,
-            "publish_blocked": "dataset_pregrasp_staging_failed",
-            "staging": stage_result,
+            "publish_blocked": f"{args.staging_mode}_staging_failed",
+            "staging": (
+                {"stages": rmpflow_stage_results}
+                if args.staging_mode == "rmpflow_observation"
+                else stage_result
+            ),
             "startup_timing": {
                 "policy_load_s": policy_load_s,
                 "base_stage_s": base_stage_s,
+                "spine_stage_s": spine_stage_s,
+                "post_spine_base_stage_s": post_spine_base_stage_s,
                 "manipulation_stage_s": manipulation_stage_s,
             },
         }
         _write_json(args.output_dir / "live_runner_manifest.json", failure)
         node.destroy_node()
         rclpy.shutdown()
-        print("FAIL: dataset pregrasp staging failed", flush=True)
+        print(f"FAIL: {args.staging_mode} staging failed", flush=True)
         return 2
+    if args.staging_mode == "rmpflow_observation":
+        deterministic_hold_command = tuple(
+            float(value)
+            for value in stage_result["final_hold_command_action_3_20"]
+        )
+        if len(deterministic_hold_command) != 17:
+            print("FAIL: invalid measured RMPflow staging hold", flush=True)
+            node.destroy_node()
+            rclpy.shutdown()
+            return 2
+    final_base_stage_s: float | None = None
+    final_base_stage_output: Path | None = None
+    if args.restage_base_after_manipulation:
+        final_base_stage_output = (
+            args.output_dir / "fixed_base_after_manipulation.json"
+        )
+        final_base_stage_started = time.monotonic()
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "task2_isaacsim.baselines.pi05.live.fixed_stage_base",
+                "--target",
+                *(str(value) for value in args.base_target),
+                "--position-tolerance-m",
+                str(args.position_tolerance_m),
+                "--yaw-tolerance-rad",
+                str(args.yaw_tolerance_rad),
+                "--velocity-threshold",
+                str(args.velocity_threshold),
+                "--settle-duration-s",
+                str(args.settle_duration_s),
+                "--max-duration-s",
+                str(args.base_stage_max_duration_s),
+                "--output",
+                str(final_base_stage_output),
+            ],
+            check=False,
+        )
+        final_base_stage_s = time.monotonic() - final_base_stage_started
+        final_base_stage_result: dict[str, object] = {}
+        if final_base_stage_output.is_file():
+            final_base_stage_result = json.loads(
+                final_base_stage_output.read_text(encoding="utf-8")
+            )
+        if (
+            result.returncode != 0
+            or final_base_stage_result.get("success") is not True
+        ):
+            failure = {
+                "schema_version": 9,
+                "mode": mode,
+                "completed": False,
+                "decisions": 0,
+                "valid_decisions": 0,
+                "command_publications": 0,
+                "published_actions": 0,
+                "publish_blocked": "base_restage_after_manipulation_failed",
+                "base_restage": final_base_stage_result,
+                "startup_timing": {
+                    "policy_load_s": policy_load_s,
+                    "base_stage_s": base_stage_s,
+                    "spine_stage_s": spine_stage_s,
+                    "manipulation_stage_s": manipulation_stage_s,
+                    "final_base_stage_s": final_base_stage_s,
+                },
+            }
+            _write_json(args.output_dir / "live_runner_manifest.json", failure)
+            node.destroy_node()
+            rclpy.shutdown()
+            print("FAIL: base restaging after manipulation failed", flush=True)
+            return 2
     if args.arm_simulator:
         try:
             node.activate_publishers()
@@ -694,7 +1131,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             rclpy.shutdown()
             return 2
     node.discard_staging_observations()
-    gate.reset("dataset_pregrasp_staging_complete")
+    gate.reset(f"{args.staging_mode}_staging_complete")
     started = time.monotonic()
     last_sequences: dict[str, int] = {}
     last_reset_count = node.reset_count
@@ -723,7 +1160,14 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     last_policy_action: tuple[float, ...] | None = None
     next_hold_sim_time: float | None = None
     hold_action_publications = 0
+    post_action_hold_publications = 0
     spine_trajectory: list[dict[str, float | int]] = []
+    right_ee_trajectory: list[dict[str, object]] = []
+    grasp_guard = (
+        RightGraspGuard() if args.right_only_policy_after_staging else None
+    )
+    right_workspace_stop_evidence: dict[str, object] | None = None
+    hybrid_grasp_latched = False
     first_published_sim_time: float | None = None
     last_published_sim_time: float | None = None
     last_actuator_publication_sim_time: float | None = None
@@ -831,8 +1275,104 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                         capture_to_ready_sim_s
                     )
                     validated = []
+                    previous_right_target = tuple(
+                        last_policy_action[10:17]
+                        if last_policy_action is not None
+                        else state[21:28]
+                    )
+                    previous_left_target = tuple(
+                        last_policy_action[3:10]
+                        if last_policy_action is not None
+                        else state[14:21]
+                    )
+                    left_slew_projected_actions = 0
+                    left_slew_max_correction_rad = 0.0
+                    right_slew_projected_actions = 0
+                    right_slew_max_correction_rad = 0.0
                     for validation_index, action in enumerate(chunk):
-                        validated.append(safe_action(action))
+                        raw, effective = safe_action(action)
+                        if args.right_only_policy_after_staging:
+                            assert deterministic_hold_command is not None
+                            effective = apply_right_only_policy_ownership(
+                                effective,
+                                deterministic_hold_command,
+                            )
+                            requested_right = tuple(effective[10:17])
+                            projected_right = project_fr3_joint_step(
+                                previous_right_target,
+                                requested_right,
+                                action_rate_hz=args.action_rate_hz,
+                            )
+                            corrections = [
+                                abs(after - before)
+                                for before, after in zip(
+                                    requested_right,
+                                    projected_right,
+                                    strict=True,
+                                )
+                            ]
+                            if any(value > 1e-9 for value in corrections):
+                                right_slew_projected_actions += 1
+                                right_slew_max_correction_rad = max(
+                                    right_slew_max_correction_rad,
+                                    max(corrections),
+                                )
+                            effective = (
+                                *effective[:10],
+                                *projected_right,
+                                *effective[17:],
+                            )
+                            previous_right_target = projected_right
+                        elif args.whole_body_policy_after_staging:
+                            requested_left = tuple(effective[3:10])
+                            requested_right = tuple(effective[10:17])
+                            projected_left = project_fr3_joint_step(
+                                previous_left_target,
+                                requested_left,
+                                action_rate_hz=args.action_rate_hz,
+                            )
+                            projected_right = project_fr3_joint_step(
+                                previous_right_target,
+                                requested_right,
+                                action_rate_hz=args.action_rate_hz,
+                            )
+                            left_corrections = [
+                                abs(after - before)
+                                for before, after in zip(
+                                    requested_left,
+                                    projected_left,
+                                    strict=True,
+                                )
+                            ]
+                            right_corrections = [
+                                abs(after - before)
+                                for before, after in zip(
+                                    requested_right,
+                                    projected_right,
+                                    strict=True,
+                                )
+                            ]
+                            if any(value > 1e-9 for value in left_corrections):
+                                left_slew_projected_actions += 1
+                                left_slew_max_correction_rad = max(
+                                    left_slew_max_correction_rad,
+                                    max(left_corrections),
+                                )
+                            if any(value > 1e-9 for value in right_corrections):
+                                right_slew_projected_actions += 1
+                                right_slew_max_correction_rad = max(
+                                    right_slew_max_correction_rad,
+                                    max(right_corrections),
+                                )
+                            effective = (
+                                *effective[:3],
+                                *projected_left,
+                                *projected_right,
+                                *effective[17:],
+                            )
+                            previous_left_target = projected_left
+                            previous_right_target = projected_right
+                        validated.append((raw, effective))
                     effective_actions = [
                         effective for _, effective in validated
                     ]
@@ -842,6 +1382,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                             effective_actions,
                             ready_at=ready_sim_at,
                             action_rate_hz=args.action_rate_hz,
+                            execution_horizon=args.execution_horizon,
                             max_actions=(
                                 args.max_publish_actions - published_actions
                                 if args.arm_simulator
@@ -885,7 +1426,23 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     "runtime_mode": args.runtime_mode,
                     "valid": True,
                     "fixed_base_staging": True,
-                    "policy_controlled_spine": True,
+                    "policy_controlled_spine": not args.right_only_policy_after_staging,
+                    "policy_owned_groups": (
+                        ["right_arm", "right_gripper"]
+                        if args.right_only_policy_after_staging
+                        else [
+                            "left_arm",
+                            "right_arm",
+                            "left_gripper",
+                            "right_gripper",
+                            "spine",
+                        ]
+                    ),
+                    "deterministic_hold_groups": (
+                        ["left_arm", "left_gripper", "spine"]
+                        if args.right_only_policy_after_staging
+                        else []
+                    ),
                     "readiness": future_context["readiness"],
                     "freshness": future_context["freshness"],
                     "observation_state": list(state),
@@ -917,6 +1474,18 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     "effective_actions": [
                         list(effective) for _, effective in validated
                     ],
+                    "right_slew_projected_actions": (
+                        right_slew_projected_actions
+                    ),
+                    "right_slew_max_correction_rad": (
+                        right_slew_max_correction_rad
+                    ),
+                    "left_slew_projected_actions": (
+                        left_slew_projected_actions
+                    ),
+                    "left_slew_max_correction_rad": (
+                        left_slew_max_correction_rad
+                    ),
                     "published_actions": 0,
                 }
                 events.append(event)
@@ -1006,7 +1575,57 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     if any(count > 1 for count in counts.values()):
                         publish_blocked = f"command_contention:{counts}"
                     else:
-                        node.publish_action(effective)
+                        if grasp_guard is not None:
+                            right_pose = node.ee_poses["right"]
+                            if (
+                                right_pose is None
+                                or not right_ee_within_demonstrated_workspace(
+                                    right_pose
+                                )
+                            ):
+                                right_workspace_stop_evidence = {
+                                    "published_action_attempt": published_actions + 1,
+                                    "right_ee_world_xyzw": (
+                                        list(right_pose)
+                                        if right_pose is not None
+                                        else None
+                                    ),
+                                    "grasp_guard": grasp_guard.summary(),
+                                }
+                                publish_blocked = (
+                                    "right_ee_outside_demonstrated_workspace"
+                                )
+                                gate.stop(publish_blocked)
+                            else:
+                                guarded_open, guard_event = grasp_guard.apply(
+                                    effective[18], right_pose
+                                )
+                                if (
+                                    guard_event["intervened"]
+                                    or guard_event["phase_changed"]
+                                ):
+                                    guard_event["published_action_attempt"] = (
+                                        published_actions + 1
+                                    )
+                                    events[event_index].setdefault(
+                                        "grasp_guard_events", []
+                                    ).append(guard_event)
+                                effective = (
+                                    *effective[:18],
+                                    guarded_open,
+                                    effective[19],
+                                )
+                                if (
+                                    args.hybrid_rmpflow_transport
+                                    and guard_event["phase_changed"]
+                                    and guard_event["phase_after"] == "latched"
+                                ):
+                                    hybrid_grasp_latched = True
+                        if publish_blocked is None:
+                            node.publish_action(effective)
+                        else:
+                            queue.clear()
+                            break
                         published_actions += 1
                         last_actuator_publication_sim_time = node.sim_time
                         last_policy_action = effective
@@ -1026,6 +1645,18 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                                 "target_m": effective[19],
                             }
                         )
+                        if node.ee_poses["right"] is not None:
+                            right_ee_trajectory.append(
+                                {
+                                    "published_action": published_actions,
+                                    "sim_time": float(node.sim_time),
+                                    "pose_world_xyzw_before_publish": list(
+                                        node.ee_poses["right"]
+                                    ),
+                                }
+                            )
+                        if hybrid_grasp_latched:
+                            queue.clear()
                 if publish_blocked:
                     queue.clear()
                     break
@@ -1039,6 +1670,9 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                         queue_underflow = True
                         queue_pause_count += 1
                         events[event_index]["queue_underflow"] = True
+
+            if hybrid_grasp_latched:
+                break
 
             hold_target = hard5_hold_action(
                 last_policy_action,
@@ -1173,29 +1807,290 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     finally:
         worker.shutdown(wait=True, cancel_futures=True)
 
+    post_action_handoff: dict[str, object] = {
+        "attempted": False,
+        "success": not args.arm_simulator or published_actions == 0,
+        "reason": "not_required",
+        "hold_publications": 0,
+        "ee_target_publications": 0,
+    }
+    safety_joint_hold = False
+    if (
+        publish_blocked is not None
+        and args.right_only_policy_after_staging
+        and last_policy_action is not None
+    ):
+        measured_right = tuple(
+            node.joints.get(name, math.nan) for name in RIGHT_JOINTS
+        )
+        if all(math.isfinite(value) for value in measured_right):
+            hold_open_fraction = last_policy_action[18]
+            if grasp_guard is not None:
+                if grasp_guard.phase == "latched":
+                    hold_open_fraction = 0.0
+                elif grasp_guard.phase == "released":
+                    hold_open_fraction = 1.0
+            last_policy_action = (
+                *last_policy_action[:10],
+                *measured_right,
+                last_policy_action[17],
+                hold_open_fraction,
+                last_policy_action[19],
+            )
+            safety_joint_hold = True
+    if (
+        args.arm_simulator
+        and published_actions > 0
+        and last_policy_action is not None
+        and node.sim_time is not None
+    ):
+        post_action_handoff.update(
+            {"attempted": True, "success": False, "reason": "in_progress"}
+        )
+        handoff_host_deadline = time.monotonic() + 20.0
+        # A policy-side close latch means that the close command was accepted,
+        # not that the physical gripper has already reached the pad.  Keep the
+        # final closed command under joint-command ownership until the measured
+        # driver is closed and stable before handing ownership to RMPflow.
+        hybrid_close_confirmed = not (
+            args.hybrid_rmpflow_transport and hybrid_grasp_latched
+        )
+        hybrid_close_stable_since: float | None = None
+        hybrid_close_deadline_sim = (
+            node.sim_time + 2.0 if not hybrid_close_confirmed else None
+        )
+        hold_until_sim = (
+            hybrid_close_deadline_sim
+            if hybrid_close_deadline_sim is not None
+            else node.sim_time + 0.20
+        )
+        next_post_hold_sim = node.sim_time
+        while (
+            node.sim_time is not None
+            and node.sim_time < hold_until_sim
+            and time.monotonic() < handoff_host_deadline
+        ):
+            rclpy.spin_once(node, timeout_sec=0.01)
+            if (
+                node.sim_time is not None
+                and node.sim_time >= next_post_hold_sim
+            ):
+                node.publish_action(last_policy_action)
+                hold_action_publications += 1
+                post_action_hold_publications += 1
+                next_post_hold_sim += 1.0 / args.action_rate_hz
+            if not hybrid_close_confirmed and node.sim_time is not None:
+                measured_open = gripper_open_fraction(
+                    resolve_joint(node.joints, RIGHT_GRIPPER_DRIVER)
+                )
+                if math.isfinite(measured_open) and measured_open <= 0.25:
+                    if hybrid_close_stable_since is None:
+                        hybrid_close_stable_since = node.sim_time
+                    elif node.sim_time - hybrid_close_stable_since >= 0.25:
+                        hybrid_close_confirmed = True
+                        hold_until_sim = node.sim_time
+                        break
+                else:
+                    hybrid_close_stable_since = None
+
+        pose_before_handoff = node.ee_poses["right"]
+        fresh_ee_after_last_action = bool(
+            last_published_sim_time is not None
+            and node.state_capture_times.get("ee_right", -math.inf)
+            > last_published_sim_time
+        )
+        post_action_handoff.update(
+            {
+                "hold_publications": post_action_hold_publications,
+                "fresh_ee_after_last_action": fresh_ee_after_last_action,
+                "pose_before_handoff_world_xyzw": (
+                    list(pose_before_handoff)
+                    if pose_before_handoff is not None
+                    else None
+                ),
+                "hybrid_close_confirmed": hybrid_close_confirmed,
+                "measured_right_gripper_open_fraction": gripper_open_fraction(
+                    resolve_joint(node.joints, RIGHT_GRIPPER_DRIVER)
+                ),
+            }
+        )
+        if safety_joint_hold:
+            post_action_handoff.update(
+                {
+                    "success": True,
+                    "reason": "measured_joint_safety_hold",
+                    "safety_stop": publish_blocked,
+                    "ee_target_publications": 0,
+                }
+            )
+        elif not hybrid_close_confirmed:
+            post_action_handoff["reason"] = "hybrid_gripper_close_timeout"
+        elif (
+            node.sim_time is None
+            or node.sim_time < hold_until_sim
+            or pose_before_handoff is None
+            or not fresh_ee_after_last_action
+        ):
+            post_action_handoff["reason"] = "fresh_post_action_pose_unavailable"
+        else:
+            latch_until_sim = node.sim_time + 0.50
+            next_latch_sim = node.sim_time
+            while (
+                node.sim_time is not None
+                and node.sim_time < latch_until_sim
+                and time.monotonic() < handoff_host_deadline
+            ):
+                rclpy.spin_once(node, timeout_sec=0.01)
+                if node.sim_time is not None and node.sim_time >= next_latch_sim:
+                    node.publish_ee_handoff_target(
+                        "right", pose_before_handoff
+                    )
+                    next_latch_sim += 0.10
+            pose_after_handoff = node.ee_poses["right"]
+            handoff_drift_m = (
+                math.dist(
+                    pose_before_handoff[:3], pose_after_handoff[:3]
+                )
+                if pose_after_handoff is not None
+                else math.inf
+            )
+            handoff_success = bool(
+                node.sim_time is not None
+                and node.sim_time >= latch_until_sim
+                and pose_after_handoff is not None
+                and math.isfinite(handoff_drift_m)
+                and handoff_drift_m <= 0.005
+            )
+            post_action_handoff.update(
+                {
+                    "success": handoff_success,
+                    "reason": (
+                        "current_pose_latched"
+                        if handoff_success
+                        else "rmpflow_handoff_drift_or_timeout"
+                    ),
+                    "ee_target_publications": node.ee_handoff_publish_count,
+                    "pose_after_handoff_world_xyzw": (
+                        list(pose_after_handoff)
+                        if pose_after_handoff is not None
+                        else None
+                    ),
+                    "position_drift_m": handoff_drift_m,
+                    "position_drift_limit_m": 0.005,
+                }
+            )
+        if post_action_handoff["success"] is not True and publish_blocked is None:
+            publish_blocked = "post_action_rmpflow_handoff_failed"
+
+    hybrid_transport: dict[str, object] = {
+        "attempted": False,
+        "success": not args.hybrid_rmpflow_transport,
+        "reason": "not_requested",
+    }
+    if args.hybrid_rmpflow_transport:
+        hybrid_output = args.output_dir / "hybrid_rmpflow_transport.json"
+        hybrid_transport = {
+            "attempted": False,
+            "success": False,
+            "reason": "grasp_latch_not_reached",
+            "manifest": str(hybrid_output),
+        }
+        if hybrid_grasp_latched and post_action_handoff["success"] is True:
+            assert args.observation_reference is not None
+            node.deactivate_publishers()
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "task2_isaacsim.baselines.pi05.live.fixed_hybrid_transport",
+                    "--reference",
+                    str(args.observation_reference),
+                    "--output",
+                    str(hybrid_output),
+                ],
+                check=False,
+            )
+            payload: dict[str, object] = {}
+            if hybrid_output.is_file():
+                payload = json.loads(hybrid_output.read_text(encoding="utf-8"))
+            hybrid_transport = {
+                "attempted": True,
+                "success": result.returncode == 0
+                and payload.get("success") is True,
+                "reason": payload.get("reason", "transport_process_failed"),
+                "returncode": result.returncode,
+                "manifest": str(hybrid_output),
+                "result": payload,
+            }
+            if hybrid_transport["success"] is not True and publish_blocked is None:
+                publish_blocked = "hybrid_rmpflow_transport_failed"
+
     elapsed = time.monotonic() - started
     refill_window_s = args.queue_refill_actions / args.action_rate_hz
     latency_contract_pass = bool(capture_to_ready_sim_latencies) and all(
         value <= refill_window_s for value in capture_to_ready_sim_latencies
     )
     summary = {
-        "schema_version": 8,
+        "schema_version": 10,
         "mode": mode,
         "runtime_mode": args.runtime_mode,
-        "execution_horizon": 5 if hard5 else "asynchronous_refill",
+        "execution_horizon": (
+            args.execution_horizon if hard5 else "asynchronous_refill"
+        ),
         "fixed_base_staging": True,
+        "right_only_policy_after_staging": args.right_only_policy_after_staging,
+        "whole_body_policy_after_staging": (
+            args.whole_body_policy_after_staging
+        ),
+        "hybrid_rmpflow_transport_requested": args.hybrid_rmpflow_transport,
+        "hybrid_grasp_latched": hybrid_grasp_latched,
+        "hybrid_transport": hybrid_transport,
+        "policy_owned_groups": (
+            ["right_arm", "right_gripper"]
+            if args.right_only_policy_after_staging
+            else [
+                "left_arm",
+                "right_arm",
+                "left_gripper",
+                "right_gripper",
+                "spine",
+            ]
+        ),
+        "deterministic_hold_command_action_3_20": (
+            list(deterministic_hold_command)
+            if args.right_only_policy_after_staging
+            and deterministic_hold_command is not None
+            else None
+        ),
         "manipulation_only": True,
-        "policy_controlled_groups": list(POLICY_COMMAND_TOPICS),
-        "forbidden_groups": ["base"],
+        "policy_controlled_groups": (
+            ["right_arm", "right_gripper"]
+            if args.right_only_policy_after_staging
+            else list(POLICY_COMMAND_TOPICS)
+        ),
+        "command_publication_groups": list(POLICY_COMMAND_TOPICS),
+        "forbidden_groups": (
+            ["base", "left_arm", "left_gripper", "spine"]
+            if args.right_only_policy_after_staging
+            else ["base"]
+        ),
         "checkpoint": str(args.checkpoint.resolve()),
-        "checkpoint_relative_action_state_indices": list(
-            policy.action_state_indices
+        "checkpoint_relative_action_state_indices": (
+            list(policy.relative_action_state_indices)
+            if policy.relative_action_state_indices is not None
+            else None
+        ),
+        "ignored_legacy_checkpoint_config_fields": list(
+            policy.ignored_legacy_config_fields
+        ),
+        "manual_mapped_relative_action_inverse": (
+            policy.manual_relative_inverse
         ),
         "dataset_root": str(args.dataset_root.resolve()),
         "dataset_repo_id": args.dataset_repo_id,
         "task_instruction": PI05_CONTRACT.task_instruction,
-        "chunk_size": PI05_CONTRACT.chunk_size,
-        "n_action_steps": PI05_CONTRACT.n_action_steps,
+        "chunk_size": policy.chunk_size,
+        "n_action_steps": policy.n_action_steps,
         "warmup_decisions": args.warmup_decisions,
         "warmup_policy_compute_host_s": warmup_latencies,
         "seed": args.seed,
@@ -1210,6 +2105,8 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         "startup_timing": {
             "policy_load_s": policy_load_s,
             "base_stage_s": base_stage_s,
+            "spine_stage_s": spine_stage_s,
+            "post_spine_base_stage_s": post_spine_base_stage_s,
             "manipulation_stage_s": manipulation_stage_s,
             "base_stage_order": (
                 "after_policy_load"
@@ -1221,11 +2118,38 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 if base_stage_output is not None
                 else None
             ),
+            "spine_stage_output": (
+                str(spine_stage_output)
+                if spine_stage_output is not None
+                else None
+            ),
+            "post_spine_base_stage_output": (
+                str(post_spine_base_stage_output)
+                if post_spine_base_stage_output is not None
+                else None
+            ),
+            "final_base_stage_s": final_base_stage_s,
+            "final_base_stage_output": (
+                str(final_base_stage_output)
+                if final_base_stage_output is not None
+                else None
+            ),
         },
         "staging": {
-            "audit": str(args.staging_audit.resolve()),
+            "mode": args.staging_mode,
+            "audit": (
+                str(args.staging_audit.resolve())
+                if args.staging_audit is not None
+                else None
+            ),
+            "observation_reference": (
+                str(args.observation_reference.resolve())
+                if args.observation_reference is not None
+                else None
+            ),
             "execution_manifest": str(manipulation_stage_output),
             "result": stage_result,
+            "rmpflow_waypoints": rmpflow_stage_results,
             "observations_discarded_after_staging": True,
             "settled_fresh_observation_images": staging_observation_images,
             "right_wrist_pad_visible_operator_attested": (
@@ -1312,6 +2236,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         },
         "command_publications": node.publish_count,
         "hold_action_publications": hold_action_publications,
+        "post_action_handoff": post_action_handoff,
         "published_actions": published_actions,
         "publish_blocked": publish_blocked,
         "freshness_stop_evidence": (
@@ -1325,7 +2250,7 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             node.base_input_after_manipulation_count
         ),
         "spine_control": {
-            "policy_controlled": True,
+            "policy_controlled": not args.right_only_policy_after_staging,
             "command_topic": SPINE_COMMAND_TOPIC,
             "initial_measured_m": initial_spine_position_m,
             "final_measured_m": (
@@ -1355,6 +2280,9 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             ),
             "trajectory": spine_trajectory,
         },
+        "right_ee_trajectory": right_ee_trajectory,
+        "grasp_guard": grasp_guard.summary() if grasp_guard is not None else None,
+        "right_workspace_stop_evidence": right_workspace_stop_evidence,
         "elapsed_s": elapsed,
         "inference_latency_clock": "simulator",
         "inference_latency_s": {
@@ -1389,8 +2317,16 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             (not args.arm_simulator and len(events) == args.max_decisions)
             or (
                 args.arm_simulator
+                and args.hybrid_rmpflow_transport
+                and hybrid_grasp_latched
+                and post_action_handoff["success"] is True
+                and hybrid_transport["success"] is True
+            )
+            or (
+                args.arm_simulator
                 and bool(events)
                 and published_actions == args.max_publish_actions
+                and post_action_handoff["success"] is True
             )
         ),
         "ros_publication": args.arm_simulator and node.publish_count > 0,

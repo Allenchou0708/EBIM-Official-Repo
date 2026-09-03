@@ -36,7 +36,12 @@ def angular_error(target: float, actual: float) -> float:
 
 class FixedBaseStager(Node):
     def __init__(
-        self, *, command_topic: str, odom_topic: str, clock_topic: str
+        self,
+        *,
+        command_topic: str,
+        odom_topic: str,
+        clock_topic: str,
+        use_live_pad_target: bool,
     ):
         super().__init__("pi05_fixed_base_stager")
         self.publisher = self.create_publisher(String, command_topic, 10)
@@ -44,12 +49,13 @@ class FixedBaseStager(Node):
         self.create_subscription(
             Clock, clock_topic, self._on_clock, qos_profile_sensor_data
         )
-        self.create_subscription(
-            String,
-            TOPICS["ground_truth"]["object_poses"],
-            self._on_objects,
-            10,
-        )
+        if use_live_pad_target:
+            self.create_subscription(
+                String,
+                TOPICS["ground_truth"]["object_poses"],
+                self._on_objects,
+                10,
+            )
         self.pose: tuple[float, float, float] | None = None
         self.velocity = (0.0, 0.0, 0.0)
         self.speed = math.inf
@@ -193,6 +199,7 @@ def main() -> int:
         command_topic=args.command_topic,
         odom_topic=args.odom_topic,
         clock_topic=args.clock_topic,
+        use_live_pad_target=args.target_from_live_pad,
     )
     signal.signal(
         signal.SIGTERM, lambda *_: setattr(node, "stop_requested", True)
@@ -380,7 +387,10 @@ def main() -> int:
             "phase": phase,
             "target": target,
             "target_source": target_source,
-            "thermalpad_pose_wxyz": node.thermalpad_pose,
+            "ground_truth_subscription_enabled": args.target_from_live_pad,
+            "thermalpad_pose_wxyz": (
+                node.thermalpad_pose if args.target_from_live_pad else None
+            ),
             "final_pose": final_pose,
             "final_speed": node.speed,
             "elapsed_s": time.monotonic() - wall_started,

@@ -247,6 +247,7 @@ class SceneResetController:
         self._yaw_jitter_deg = float(yaw_jitter_deg)
         self._rng = np.random.default_rng(seed)
         self._pending = False
+        self._pending_seed: int | None = None
         self._node = None
         self._event_pub = None
         self._reset_count = 0
@@ -350,8 +351,22 @@ class SceneResetController:
         )
 
     def _on_reset_request(self, msg) -> None:
-        del msg  # any message is a request
-        print("Scene reset requested over ROS", flush=True)
+        data = str(msg.data).strip()
+        if data.startswith("seed="):
+            try:
+                self._pending_seed = int(data.removeprefix("seed="))
+            except ValueError:
+                print(f"Ignoring invalid reset seed request: {data!r}")
+                return
+        print(
+            "Scene reset requested over ROS"
+            + (
+                f" with seed {self._pending_seed}"
+                if self._pending_seed is not None
+                else ""
+            ),
+            flush=True,
+        )
         self._pending = True
 
     def _on_keyboard_event(self, event, *args, **kwargs):
@@ -480,6 +495,10 @@ class SceneResetController:
             flush=True,
         )
         self._world.stop()
+        applied_seed = self._pending_seed
+        self._pending_seed = None
+        if applied_seed is not None:
+            self._rng = np.random.default_rng(applied_seed)
         offsets: dict[str, dict[str, float]] = {}
         target_slot: str | None = None
         if self._spawn_ops:
@@ -521,6 +540,7 @@ class SceneResetController:
                     "event": "scene_reset",
                     "reset_index": self._reset_count,
                     "sim_time": sim_time,
+                    "randomization_seed": applied_seed,
                     "randomized": bool(offsets) or target_slot is not None,
                     "target_slot": target_slot,
                     "offsets": offsets,

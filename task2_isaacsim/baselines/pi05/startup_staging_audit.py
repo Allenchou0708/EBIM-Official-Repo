@@ -33,7 +33,7 @@ ARM_VELOCITY_LIMITS_RAD_S = (
 ARM_STAGING_VELOCITY_FRACTION = 0.50
 SPINE_STAGING_VELOCITY_M_S = 0.05
 GRIPPER_STAGING_VELOCITY_FRACTION_S = 1.0
-CAMERA_READY_AFTER_ORIENTATION_FRAMES = 30
+PREGRASP_BEFORE_CLOSE_FRAMES = 30
 
 
 def _quantiles(values: Any) -> dict[str, Any]:
@@ -142,9 +142,13 @@ def build_startup_staging_audit(
         spine_high = int(events["spine_high"])
         orientation_entry = int(pose_record["orientation_entry_frame"])
         right_close = int(events["right_close"])
-        camera_ready = min(
-            orientation_entry + CAMERA_READY_AFTER_ORIENTATION_FRAMES,
-            right_close - 1,
+        # The earlier orientation-entry pose is kinematically valid but does
+        # not reliably put the pad inside the right-wrist image.  The
+        # multi-episode visibility audit samples this exact pregrasp landmark
+        # and observes the pad in all 200 eligible demonstrations.
+        camera_ready = max(
+            orientation_entry,
+            right_close - PREGRASP_BEFORE_CLOSE_FRAMES,
         )
         extras_path = root / "task2_extras" / f"episode_{episode:06d}.npz"
         if not extras_path.is_file():
@@ -344,14 +348,12 @@ def build_startup_staging_audit(
             "frame": int(selected["frame"]),
             "episode_time_s": float(selected["timestamp"]),
             "reason": (
-                "train-split camera-ready frame 30 frames after audited "
-                "orientation entry, nearest the robust multivariate "
+                "train-split pregrasp frame 30 frames before audited "
+                "right-gripper close, nearest the robust multivariate "
                 "median of both arms, spine, grippers, left wrist height, "
                 "right-EE-to-pad offset, and audited vertical orientation"
             ),
-            "camera_ready_after_orientation_frames": (
-                CAMERA_READY_AFTER_ORIENTATION_FRAMES
-            ),
+            "pregrasp_before_close_frames": PREGRASP_BEFORE_CLOSE_FRAMES,
             "robust_distance_score": selected["robust_distance_score"],
             "global_orientation_error_deg": selected[
                 "global_orientation_error_deg"

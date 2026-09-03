@@ -7,12 +7,46 @@
 from __future__ import annotations
 
 import json
+import inspect
 import os
 import sys
 from pathlib import Path
 
 from .phase_balance import PhaseBalancedSampler
 from .phase_conditioned_dataset import PHASE_PROMPTS
+
+
+def install_draccus_encode_compat(draccus_module=None) -> bool:
+    """Bridge LeRobot's two-argument save call to newer one-argument Draccus.
+
+    The archived LeRobot revision calls ``draccus.encode(value, schema)`` while
+    the container's Draccus exposes ``encode(value)``.  Training itself is
+    unaffected, but without this narrow shim a final checkpoint fails before
+    its weights are written.
+    """
+
+    if draccus_module is None:
+        import draccus as draccus_module
+
+    original = draccus_module.encode
+    positional = [
+        parameter
+        for parameter in inspect.signature(original).parameters.values()
+        if parameter.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+    if len(positional) != 1:
+        return False
+
+    def encode_compat(value, schema=None):
+        del schema
+        return original(value)
+
+    draccus_module.encode = encode_compat
+    return True
 
 
 def resolve_phase_task(sample: dict, prompts: list[str]) -> dict:
@@ -49,6 +83,7 @@ def main() -> None:
     if not manifest_path:
         raise ValueError("EBIM_PHASE_MANIFEST is required")
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    install_draccus_encode_compat()
     prompt_map = manifest.get("phase_prompts")
     if prompt_map is not None:
         prompts = ordered_phase_prompts(manifest)

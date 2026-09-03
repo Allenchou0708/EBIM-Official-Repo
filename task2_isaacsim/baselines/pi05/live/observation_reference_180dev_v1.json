@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "name": "task2_fixpos_180dev_robust_observation_v1",
+  "source": {
+    "audit": "/scratch1/2026_ebim/allen_task2_pi05/evidence/phase2_hybrid_multiepisode_20260828/multi_episode_audit.json",
+    "split": "development_only",
+    "support_unique_episodes": 180,
+    "support_by_source": {
+      "task2_fixpos_v1": 20,
+      "task2_fixpos_v2": 25,
+      "task2_fixpos_v3": 90,
+      "task2_fixpos_v4": 45
+    }
+  },
+  "base_xyyaw": [
+    2.1000518798828125,
+    3.0632177591323853,
+    -1.570482850074768
+  ],
+  "spine_command_m": 0.5,
+  "spine_measured_target_m": 0.4857,
+  "spine_tolerance_m": 0.015,
+  "left_safe_ee_world_xyzw": [
+    2.4581316709518433,
+    2.219500422477722,
+    0.9124234020709991,
+    -0.11192305758595467,
+    0.8912270069122314,
+    0.19218922406435013,
+    -0.3950611799955368
+  ],
+  "right_safe_orientation_waypoint_ee_world_xyzw": [
+    1.7451320886611938,
+    2.20240318775177,
+    0.9390774369239807,
+    -0.5563546717166901,
+    0.7065648138523102,
+    -0.14209728688001633,
+    0.41360124945640564
+  ],
+  "right_orientation_midpoint_waypoint_ee_world_xyzw": [
+    1.7480093836784363,
+    2.1750559210777283,
+    0.9398541152477264,
+    -0.3261193125905869,
+    0.7982113050395901,
+    -0.45531187308152504,
+    0.22180172382880772
+  ],
+  "right_orientation_midpoint_derivation": {
+    "position": "midpoint of safe-orientation and clearance waypoints",
+    "orientation": "quaternion geodesic midpoint of safe-orientation and clearance waypoints",
+    "purpose": "bound each RMPflow orientation change to 51.35 degrees and settle between IK updates"
+  },
+  "right_observation_derivation": {
+    "pose": "development pregrasp median",
+    "purpose": "reproduce the demonstrated right-wrist pregrasp view without replaying one episode",
+    "waypoint_policy": "safe orientation and clearance are transient RMPflow waypoints; only the final observation pose is exposed to PI0.5"
+  },
+  "right_clearance_waypoint_ee_world_xyzw": [
+    1.7508866786956787,
+    2.1477086544036865,
+    0.9406307935714722,
+    -0.031145595014095306,
+    0.7314038574695587,
+    -0.6781419217586517,
+    -0.01402794336900115
+  ],
+  "right_observation_ee_world_xyzw": [
+    1.7508866786956787,
+    2.1477086544036865,
+    0.8710396587848663,
+    -0.031145595014095306,
+    0.7314038574695587,
+    -0.6781419217586517,
+    -0.01402794336900115
+  ],
+  "right_hybrid_landmarks_world_xyzw": {
+    "peel_lift": [
+      1.7469679117,
+      2.0811520815,
+      0.9406307936,
+      -0.0292312279,
+      0.729927063,
+      -0.6801902354,
+      -0.0131533667
+    ],
+    "transfer": [
+      1.9538369775,
+      2.0424022675,
+      0.9693441093,
+      -0.0312802242,
+      0.7311241329,
+      -0.6791606843,
+      -0.0144583997
+    ],
+    "place": [
+      2.1442264318,
+      2.0220694542,
+      0.9239257872,
+      -0.0361394901,
+      0.9880775213,
+      -0.1483098567,
+      0.003070936
+    ],
+    "release": [
+      2.1440930367,
+      2.0223335028,
+      0.9222960472,
+      -0.0361647457,
+      0.9889929593,
+      -0.1427386925,
+      0.0031763504
+    ]
+  },
+  "right_hybrid_landmarks_derivation": {
+    "pose": "development-only median landmarks",
+    "support_unique_episodes": 180,
+    "purpose": "RMPflow lift, transfer, place, release after a policy-confirmed grasp latch"
+  }
+}

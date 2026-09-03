@@ -23,7 +23,9 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64, String
 
 from task2_isaacsim.baselines.pi05.live.staging import (
+    apply_staging_spine_hold,
     interpolate_staging_command,
+    project_entry_calibration_for_fixed_spine,
     staging_command_within_tolerance,
     staging_entry_duration_s,
     staging_feedback,
@@ -199,7 +201,9 @@ class ManipulationStager(Node):
             resolve_joint(self.joints, SPINE_JOINT),
         )
 
-    def calibrate_pad_relative_entry(self, audit: dict[str, Any]) -> None:
+    def calibrate_pad_relative_entry(
+        self, audit: dict[str, Any], *, fixed_spine: bool = False
+    ) -> None:
         if self.thermalpad_position_m is None:
             raise RuntimeError("thermalpad ground-truth pose unavailable")
         dataset_entry = audit["final_target"]["entry_calibration_reference"][
@@ -213,10 +217,15 @@ class ManipulationStager(Node):
                 strict=True,
             )
         )
-        self.right_ee_pad_relative_calibration_m = tuple(
+        calibration = tuple(
             live - float(dataset)
             for live, dataset in zip(live_entry, dataset_entry, strict=True)
         )
+        if fixed_spine:
+            calibration = project_entry_calibration_for_fixed_spine(
+                calibration
+            )
+        self.right_ee_pad_relative_calibration_m = calibration
 
     def feedback(self, audit: dict[str, Any]) -> dict[str, Any]:
         if self.thermalpad_position_m is None:
@@ -251,6 +260,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-duration-s", type=float, default=300.0)
     parser.add_argument("--spin-timeout-s", type=float, default=0.02)
+    parser.add_argument(
+        "--hold-spine-command-m",
+        type=float,
+        help=(
+            "Keep the separately staged spine at this actuator command while "
+            "replaying only the dataset-derived arm/gripper route."
+        ),
+    )
+    parser.add_argument(
+        "--defer-pad-relative-gate",
+        action="store_true",
+        help=(
+            "Defer the world-frame EE-to-pad check until after the final "
+            "base correction; preserve its raw result in the manifest."
+        ),
+    )
     return parser
 
 
@@ -260,6 +285,16 @@ def main() -> int:
         json.loads(args.audit.read_text(encoding="utf-8"))
     )
     route = audit["trajectory"]
+    source_spine_commands = [float(row["command"][16]) for row in route]
+
+    def projected_command(row: dict[str, Any]) -> tuple[float, ...]:
+        command = tuple(float(value) for value in row["command"])
+        if args.hold_spine_command_m is None:
+            return command
+        return apply_staging_spine_hold(command, args.hold_spine_command_m)
+
+    first_command = projected_command(route[0])
+    final_command = projected_command(route[-1])
     dwell_s = float(audit["tolerances"]["stable_dwell_sim_s"])
     rclpy.init()
     node = ManipulationStager()
@@ -305,7 +340,7 @@ def main() -> int:
                 initial_command = node.measured_command()
                 try:
                     entry_duration_s = staging_entry_duration_s(
-                        audit, initial_command, tuple(route[0]["command"])
+                        audit, initial_command, first_command
                     )
                 except (KeyError, RuntimeError, TypeError, ValueError) as error:
                     reason = f"invalid_measured_entry:{error}"
@@ -321,17 +356,17 @@ def main() -> int:
                 )
                 node.publish_command(
                     interpolate_staging_command(
-                        initial_command, tuple(route[0]["command"]), fraction
+                        initial_command, first_command, fraction
                     )
                 )
                 continue
             if node.right_ee_pad_relative_calibration_m is None:
-                node.publish_command(route[0]["command"])
+                node.publish_command(first_command)
                 try:
                     entry_ready = staging_command_within_tolerance(
                         audit,
                         node.measured_command(),
-                        tuple(route[0]["command"]),
+                        first_command,
                     )
                 except (KeyError, TypeError, ValueError) as error:
                     reason = f"invalid_entry_feedback:{error}"
@@ -342,7 +377,10 @@ def main() -> int:
                     entry_stable_since = node.sim_time
                 elif node.sim_time - entry_stable_since >= dwell_s:
                     try:
-                        node.calibrate_pad_relative_entry(audit)
+                        node.calibrate_pad_relative_entry(
+                            audit,
+                            fixed_spine=args.hold_spine_command_m is not None,
+                        )
                     except (KeyError, RuntimeError, TypeError, ValueError) as error:
                         reason = f"invalid_pad_relative_calibration:{error}"
                         break
@@ -354,11 +392,23 @@ def main() -> int:
             if route_index < len(route):
                 row = route[route_index]
                 if route_elapsed_sim >= float(row["scheduled_at_s"]):
-                    node.publish_command(row["command"])
+                    node.publish_command(projected_command(row))
                     route_index += 1
                 continue
-            node.publish_command(route[-1]["command"])
+            node.publish_command(final_command)
             feedback = node.feedback(audit)
+            if args.defer_pad_relative_gate:
+                feedback["all_groups_within_tolerance"] = feedback[
+                    "within_tolerance"
+                ]
+                feedback["deferred_groups"] = [
+                    "right_camera_ready_pad_relative_position"
+                ]
+                feedback["within_tolerance"] = all(
+                    value
+                    for name, value in feedback["groups"].items()
+                    if name != "right_camera_ready_pad_relative_position"
+                )
             if not feedback_reported:
                 print(
                     json.dumps({"staging_feedback": feedback}, sort_keys=True),
@@ -386,6 +436,9 @@ def main() -> int:
                 "object_poses"
             ],
             "object_pose_max_skew_s": 0.10,
+            "pad_relative_gate_deferred_until_after_base_restage": (
+                args.defer_pad_relative_gate
+            ),
             "entry_pad_relative_calibration_m": (
                 node.right_ee_pad_relative_calibration_m
             ),
@@ -406,6 +459,23 @@ def main() -> int:
             ),
             "elapsed_wall_s": time.monotonic() - wall_started,
             "command_publications": node.publish_count,
+            "spine_command_mode": (
+                "fixed_hold"
+                if args.hold_spine_command_m is not None
+                else "source_trajectory"
+            ),
+            "spine_hold_command_m": args.hold_spine_command_m,
+            "entry_calibration_vertical_mode": (
+                "zero_for_fixed_spine"
+                if args.hold_spine_command_m is not None
+                else "source_trajectory"
+            ),
+            "source_trajectory_spine_command_min_m": min(
+                source_spine_commands
+            ),
+            "source_trajectory_spine_command_max_m": max(
+                source_spine_commands
+            ),
             "feedback": feedback,
             "guessed_ik_used": False,
         }
