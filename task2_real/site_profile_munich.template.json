@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "site": "munich",
+  "status": "unverified_requires_on_site_calibration",
+  "calibration": {
+    "base": {
+      "verified": false,
+      "relative_waypoints": [],
+      "target_relative": null,
+      "note": "Record initial-relative waypoints on the actual evaluation robot; simulator world coordinates are forbidden."
+    },
+    "spine": {
+      "verified": false,
+      "target": 434.0,
+      "unit": null,
+      "tolerance": null,
+      "note": "434.0 is the train-only raw action value. Verify topic units and limits before use."
+    },
+    "staging": {
+      "collision_checked": false,
+      "left_safe_hold_joint_rad": [
+        1.6732145548,
+        0.5884252787,
+        -1.9764991999,
+        -1.7088645697,
+        1.4142683744,
+        1.3057006001,
+        -1.0840220451
+      ],
+      "left_gripper_open_percent": 1.0,
+      "right_observation_joint_rad": [
+        1.5318916440,
+        -0.6082447171,
+        -1.3307098150,
+        -1.8286261559,
+        -1.4095813632,
+        1.1007983685,
+        0.5642745197
+      ],
+      "right_gripper_open_percent": 1.0,
+      "fit": "train-only medians: left action over 119 valid episodes; right state over first 20 frames per train episode"
+    }
+  },
+  "runtime": {
+    "base_position_tolerance_m": 0.05,
+    "base_yaw_tolerance_rad": 0.10,
+    "base_linear_speed_max_mps": 0.02,
+    "base_angular_speed_max_rps": 0.03,
+    "base_settle_duration_s": 1.0,
+    "spine_velocity_max": 1.0,
+    "joint_position_tolerance_rad": 0.05,
+    "camera_max_age_s": 0.20,
+    "camera_max_skew_s": 0.10,
+    "state_max_age_s": 0.10
+  },
+  "safety": {
+    "right_joint_lower_rad": null,
+    "right_joint_upper_rad": null,
+    "max_right_joint_step_rad": 0.05,
+    "maximum_action_age_s": 0.25,
+    "external_joint_torque_max_abs_nm": null,
+    "force_norm_max_n": null,
+    "torque_norm_max_nm": null
+  }
+}

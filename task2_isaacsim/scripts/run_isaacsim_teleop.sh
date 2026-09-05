@@ -311,5 +311,9 @@ DOCKER_EXEC_ENV+=(
   "-e" "LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib"
   "-e" "ROS_HOME=/tmp/isaac_ros_home"
 )
-docker exec -it "${DOCKER_EXEC_ENV[@]}" "${ISAACSIM_CONTAINER}" \
+DOCKER_EXEC_TTY=()
+if [[ -t 0 && -t 1 ]]; then
+  DOCKER_EXEC_TTY=(-it)
+fi
+docker exec "${DOCKER_EXEC_TTY[@]}" "${DOCKER_EXEC_ENV[@]}" "${ISAACSIM_CONTAINER}" \
   /isaac-sim/python.sh "${CONTAINER_TASK2}/scripts/${BRIDGE_SCRIPT}" "${BRIDGE_ARGS[@]}"

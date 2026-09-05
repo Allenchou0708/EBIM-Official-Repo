@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "status": "design_only_not_hardware_validated",
+  "dataset": {
+    "repo_id": "ebim-benchmark/ebim_task2_realrobotdata",
+    "revision": "495ebb7b56fb9e2f3952398a63d86f08cacb9531",
+    "site": "munich",
+    "license": "cc-by-nc-nd-4.0",
+    "episodes": 238,
+    "frames": 144965,
+    "fps": 20,
+    "storage_bytes": 3599874308,
+    "raw_state_size": 42,
+    "raw_action_size": 17,
+    "documented_metadata_conflicts": [
+      "info_state_42_vs_modality_end_56",
+      "info_action_17_vs_modality_end_16",
+      "spine_action_without_spine_state"
+    ]
+  },
+  "policy_view": {
+    "instruction": "Pick up the thermal pad and place it on the target RAM board",
+    "images": {
+      "observation.images.head": [720, 1280, 3],
+      "observation.images.wrist_right": [480, 640, 3]
+    },
+    "state": {
+      "size": 8,
+      "raw_indices": [21, 22, 23, 24, 25, 26, 27, 28],
+      "names": [
+        "right_fr3_joint1",
+        "right_fr3_joint2",
+        "right_fr3_joint3",
+        "right_fr3_joint4",
+        "right_fr3_joint5",
+        "right_fr3_joint6",
+        "right_fr3_joint7",
+        "right_gripper"
+      ]
+    },
+    "action": {
+      "size": 8,
+      "raw_indices": [8, 9, 10, 11, 12, 13, 14, 15],
+      "names": [
+        "right_fr3_joint1_target",
+        "right_fr3_joint2_target",
+        "right_fr3_joint3_target",
+        "right_fr3_joint4_target",
+        "right_fr3_joint5_target",
+        "right_fr3_joint6_target",
+        "right_fr3_joint7_target",
+        "right_gripper_target_percent"
+      ]
+    },
+    "excluded_raw_inputs": [
+      "left_arm_state",
+      "left_gripper_state",
+      "external_joint_torques",
+      "external_wrenches"
+    ],
+    "excluded_raw_actions": [
+      "left_arm",
+      "left_gripper",
+      "spine_target_height"
+    ]
+  },
+  "ownership": {
+    "deterministic": [
+      "base",
+      "spine",
+      "left_arm",
+      "left_gripper"
+    ],
+    "pi05": [
+      "right_arm",
+      "right_gripper"
+    ],
+    "pi05_forbidden": [
+      "base",
+      "spine",
+      "left_arm",
+      "left_gripper",
+      "evaluation_camera",
+      "object_ground_truth",
+      "task_evaluator"
+    ]
+  },
+  "ros2_topics": {
+    "base_pose": ["/mobile_base/pose", "geometry_msgs/msg/PoseStamped"],
+    "base_twist": ["/mobile_base/twist", "geometry_msgs/msg/TwistStamped"],
+    "base_odom": ["/swerve_drive_controller/odom", "nav_msgs/msg/Odometry"],
+    "base_command": ["/swerve_drive_controller/cmd_vel", "geometry_msgs/msg/TwistStamped"],
+    "spine_command": ["/spine/target_height", "std_msgs/msg/Float32"],
+    "spine_state": ["/spine/joint_states", "sensor_msgs/msg/JointState"],
+    "left_arm_command": ["/left/gello/joint_states", "sensor_msgs/msg/JointState"],
+    "right_arm_command": ["/right/gello/joint_states", "sensor_msgs/msg/JointState"],
+    "left_arm_state": ["/left/franka_robot_state_broadcaster/measured_joint_states", "sensor_msgs/msg/JointState"],
+    "right_arm_state": ["/right/franka_robot_state_broadcaster/measured_joint_states", "sensor_msgs/msg/JointState"],
+    "right_external_joint_torques": ["/right/franka_robot_state_broadcaster/external_joint_torques", "sensor_msgs/msg/JointState"],
+    "right_external_wrench": ["/right/franka_robot_state_broadcaster/external_wrench_in_stiffness_frame", "geometry_msgs/msg/WrenchStamped"],
+    "left_gripper_command": ["/left/gripper/gripper_client/target_gripper_width_percent", "std_msgs/msg/Float32"],
+    "right_gripper_command": ["/right/gripper/gripper_client/target_gripper_width_percent", "std_msgs/msg/Float32"],
+    "left_gripper_state": ["/left/gripper/joint_states", "sensor_msgs/msg/JointState"],
+    "right_gripper_state": ["/right/gripper/joint_states", "sensor_msgs/msg/JointState"],
+    "head_rgb": ["/head_camera/zed_node/rgb/color/rect/image", "sensor_msgs/msg/Image"],
+    "right_wrist_rgb": ["/wrist_camera_right/camera/color/image_raw", "sensor_msgs/msg/Image"],
+    "tf": ["/tf", "tf2_msgs/msg/TFMessage"],
+    "tf_static": ["/tf_static", "tf2_msgs/msg/TFMessage"],
+    "lidar_front": ["/lidar_front/scan", "sensor_msgs/msg/LaserScan"],
+    "lidar_rear": ["/lidar_rear/scan", "sensor_msgs/msg/LaserScan"]
+  }
+}

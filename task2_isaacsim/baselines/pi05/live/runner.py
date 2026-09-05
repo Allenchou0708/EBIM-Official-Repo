@@ -47,6 +47,7 @@ from task2_isaacsim.baselines.pi05.live.core import (
     project_fr3_joint_step,
     replace_action_queue,
     right_ee_within_demonstrated_workspace,
+    right_wrist_grasp_evidence_within_development_envelope,
     safe_action,
     startup_inventory,
     validate_live_state,
@@ -56,6 +57,15 @@ from task2_isaacsim.baselines.pi05.live.policy import LivePi05Policy
 from task2_isaacsim.baselines.pi05.live.fixed_stage_observation import (
     RMPFLOW_STAGE_PLAN,
     load_reference as load_observation_reference,
+)
+from task2_isaacsim.baselines.pi05.live.language_gt import (
+    LANGUAGE_GT_MAX_WINDOW,
+    LANGUAGE_GT_TOKENIZER_MAX_LENGTH,
+    SOURCE_END_EXCLUSIVE,
+    SOURCE_EPISODE,
+    SOURCE_START_FRAME,
+    format_language_gt_window,
+    load_episode_19_actions,
 )
 from task2_isaacsim.baselines.pi05.live.staging import validate_staging_audit
 from task2_isaacsim.common.state_contract import (
@@ -92,6 +102,27 @@ def _image_array(message: Image) -> np.ndarray:
     if message.encoding.lower() == "bgr8":
         array = array[:, :, ::-1]
     return np.ascontiguousarray(array)
+
+
+def _right_wrist_pad_signature(image: np.ndarray) -> dict[str, float | int]:
+    """Return resolution-independent blue-pad geometry in the robot camera."""
+
+    rgb = np.asarray(image, dtype=np.uint8)
+    red = rgb[..., 0].astype(np.int16)
+    green = rgb[..., 1].astype(np.int16)
+    blue = rgb[..., 2].astype(np.int16)
+    mask = (blue >= 90) & (blue - red >= 35) & (blue - green >= 15)
+    rows, columns = np.nonzero(mask)
+    if len(rows) < 100:
+        return {"pixel_count": int(len(rows))}
+    height, width = mask.shape
+    area_fraction = float(len(rows) / mask.size)
+    return {
+        "pixel_count": int(len(rows)),
+        "centroid_u_fraction": float(np.median(columns) / width),
+        "centroid_v_fraction": float(np.median(rows) / height),
+        "log_area_fraction": math.log(area_fraction),
+    }
 
 
 class LiveObservationNode(Node):
@@ -478,6 +509,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--right-only-policy-after-staging", action="store_true")
     parser.add_argument("--whole-body-policy-after-staging", action="store_true")
     parser.add_argument("--hybrid-rmpflow-transport", action="store_true")
+    parser.add_argument("--code-policy-acquire", action="store_true")
+    parser.add_argument(
+        "--with-language-gt",
+        "--with_language_gt",
+        action="store_true",
+        help="condition PI0.5 on rolling numeric episode-19 GT actions",
+    )
     parser.add_argument(
         "--runtime-mode", choices=("legacy", "hard5"), default="hard5"
     )
@@ -522,6 +560,12 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             "with right-only policy ownership"
         )
         return 2
+    if args.code_policy_acquire and not args.hybrid_rmpflow_transport:
+        print("FAIL: --code-policy-acquire requires hybrid RMPflow transport")
+        return 2
+    if args.code_policy_acquire and args.with_language_gt:
+        print("FAIL: --with-language-gt requires PI0.5 inference")
+        return 2
     if not args.confirm_fixed_base_staging:
         print("FAIL: --confirm-fixed-base-staging is required")
         return 2
@@ -556,9 +600,9 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         return 2
     if (
         args.staging_mode == "rmpflow_observation"
-        and args.position_tolerance_m > 0.015
+        and args.position_tolerance_m > 0.020
     ):
-        print("FAIL: RMPflow staging requires a base tolerance <= 0.015 m")
+        print("FAIL: RMPflow staging requires a base tolerance <= 0.020 m")
         return 2
     if args.staging_mode == "rmpflow_observation" and args.restage_base_after_manipulation:
         print("FAIL: base restaging is incompatible with the latched RMPflow base hold")
@@ -614,6 +658,28 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
     if not 0 < args.execution_horizon <= PI05_CONTRACT.chunk_size:
         print("FAIL: --execution-horizon must be within the policy chunk")
         return 2
+    if args.with_language_gt and args.runtime_mode != "hard5":
+        print("FAIL: --with-language-gt requires hard5 execution")
+        return 2
+    if args.with_language_gt and args.execution_horizon > LANGUAGE_GT_MAX_WINDOW:
+        print(
+            "FAIL: --with-language-gt execution horizon must not exceed "
+            f"{LANGUAGE_GT_MAX_WINDOW}"
+        )
+        return 2
+    language_gt_trajectory = None
+    if args.with_language_gt:
+        try:
+            language_gt_trajectory = load_episode_19_actions(args.dataset_root)
+        except (OSError, TypeError, ValueError) as error:
+            print(f"FAIL: cannot load numeric language GT: {error}")
+            return 2
+        if args.max_publish_actions > len(language_gt_trajectory):
+            print(
+                "FAIL: --with-language-gt cannot publish beyond its "
+                f"{len(language_gt_trajectory)} GT frames"
+            )
+            return 2
     if args.startup_timeout_s <= 0.0 or args.startup_retries < 0:
         print("FAIL: startup timeout must be positive and retries non-negative")
         return 2
@@ -714,18 +780,56 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         print(json.dumps(failure["startup"], sort_keys=True), flush=True)
         return 2
 
-    policy_load_started = time.monotonic()
-    policy = LivePi05Policy(
-        checkpoint=args.checkpoint,
-        instruction=PI05_CONTRACT.task_instruction,
-        seed=args.seed,
+    language_gt_initial_frames: tuple[int, ...] = ()
+    if language_gt_trajectory is not None:
+        task_instruction, language_gt_initial_frames = format_language_gt_window(
+            language_gt_trajectory,
+            executed_actions=0,
+            window=args.execution_horizon,
+        )
+    else:
+        task_instruction = PI05_CONTRACT.task_instruction
+    print(
+        json.dumps(
+            {
+                "startup": {
+                    "with_language_gt": args.with_language_gt,
+                    "language_gt_source_episode": (
+                        SOURCE_EPISODE if args.with_language_gt else None
+                    ),
+                    "language_gt_frames": list(language_gt_initial_frames),
+                    "task_instruction": task_instruction,
+                }
+            },
+            sort_keys=True,
+        ),
+        flush=True,
     )
-    if args.whole_body_policy_after_staging and policy.action_size != 20:
-        print("FAIL: whole-body policy ownership requires a 20-D checkpoint")
-        node.destroy_node()
-        rclpy.shutdown()
-        return 2
-    policy_load_s = time.monotonic() - policy_load_started
+    policy: LivePi05Policy | None = None
+    policy_load_s = 0.0
+    if not args.code_policy_acquire:
+        policy_load_started = time.monotonic()
+        policy = LivePi05Policy(
+            checkpoint=args.checkpoint,
+            instruction=task_instruction,
+            seed=args.seed,
+            tokenizer_max_length=(
+                LANGUAGE_GT_TOKENIZER_MAX_LENGTH
+                if args.with_language_gt
+                else None
+            ),
+        )
+        if args.with_language_gt and policy.action_size != 8:
+            print("FAIL: numeric language GT requires the 8-D right-only policy")
+            node.destroy_node()
+            rclpy.shutdown()
+            return 2
+        if args.whole_body_policy_after_staging and policy.action_size != 20:
+            print("FAIL: whole-body policy ownership requires a 20-D checkpoint")
+            node.destroy_node()
+            rclpy.shutdown()
+            return 2
+        policy_load_s = time.monotonic() - policy_load_started
     print(
         json.dumps({"startup": {"policy_loaded_s": policy_load_s}}),
         flush=True,
@@ -982,7 +1086,11 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                 "--minimum-transition-s",
                 "2.0",
                 "--position-tolerance-m",
-                "0.015" if target_kind == "observation" else "0.025",
+                (
+                    "0.015"
+                    if target_kind in {"observation", "continuous_observation"}
+                    else "0.025"
+                ),
                 "--base-position-tolerance-m",
                 str(args.position_tolerance_m),
                 "--base-yaw-tolerance-rad",
@@ -1060,6 +1168,59 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
             node.destroy_node()
             rclpy.shutdown()
             return 2
+    if args.code_policy_acquire:
+        assert args.observation_reference is not None
+        code_policy_output = args.output_dir / "code_policy_transport.json"
+        node.destroy_node()
+        rclpy.shutdown()
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "task2_isaacsim.baselines.pi05.live.fixed_hybrid_transport",
+                "--reference",
+                str(args.observation_reference),
+                "--output",
+                str(code_policy_output),
+                "--max-duration-s",
+                str(args.manipulation_stage_max_duration_s),
+                "--code-policy-acquire",
+            ],
+            check=False,
+        )
+        payload: dict[str, object] = {}
+        if code_policy_output.is_file():
+            payload = json.loads(
+                code_policy_output.read_text(encoding="utf-8")
+            )
+        success = result.returncode == 0 and payload.get("success") is True
+        summary = {
+            "schema_version": 10,
+            "mode": mode,
+            "completed": success,
+            "code_policy_acquire": True,
+            "policy_inference_decisions": 0,
+            "command_publications": payload.get("command_publications", 0),
+            "published_actions": 0,
+            "publish_blocked": (
+                None if success else "code_policy_transport_failed"
+            ),
+            "startup_timing": {
+                "policy_load_s": policy_load_s,
+                "base_stage_s": base_stage_s,
+                "spine_stage_s": spine_stage_s,
+                "post_spine_base_stage_s": post_spine_base_stage_s,
+                "manipulation_stage_s": manipulation_stage_s,
+            },
+            "code_policy_transport": {
+                "returncode": result.returncode,
+                "manifest": str(code_policy_output),
+                "result": payload,
+            },
+        }
+        _write_json(args.output_dir / "live_runner_manifest.json", summary)
+        print(json.dumps(summary, sort_keys=True), flush=True)
+        return 0 if success else 2
     final_base_stage_s: float | None = None
     final_base_stage_output: Path | None = None
     if args.restage_base_after_manipulation:
@@ -1446,6 +1607,13 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                     "readiness": future_context["readiness"],
                     "freshness": future_context["freshness"],
                     "observation_state": list(state),
+                    "language_gt_frames": future_context.get(
+                        "language_gt_frames", []
+                    ),
+                    "language_gt_reference_right_joints": future_context.get(
+                        "language_gt_reference_right_joints"
+                    ),
+                    "language_prompt": future_context.get("language_prompt"),
                     "inference_latency_s": capture_to_ready_sim_s,
                     "inference_latency_clock": "simulator",
                     "policy_compute_host_s": latency,
@@ -1597,8 +1765,19 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                                 )
                                 gate.stop(publish_blocked)
                             else:
+                                wrist_evidence = _right_wrist_pad_signature(
+                                    node.images["wrist_right"]
+                                )
+                                wrist_ready = (
+                                    right_wrist_grasp_evidence_within_development_envelope(
+                                        wrist_evidence
+                                    )
+                                )
                                 guarded_open, guard_event = grasp_guard.apply(
-                                    effective[18], right_pose
+                                    effective[18],
+                                    right_pose,
+                                    camera_grasp_ready=wrist_ready,
+                                    camera_grasp_evidence=wrist_evidence,
                                 )
                                 if (
                                     guard_event["intervened"]
@@ -1779,6 +1958,18 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                             flush=True,
                         )
                     last_sequences = dict(node.image_sequences)
+                    inference_instruction = task_instruction
+                    language_gt_frames: tuple[int, ...] = ()
+                    if language_gt_trajectory is not None:
+                        (
+                            inference_instruction,
+                            language_gt_frames,
+                        ) = format_language_gt_window(
+                            language_gt_trajectory,
+                            executed_actions=published_actions,
+                            window=args.execution_horizon,
+                            reference_joint_state=tuple(state[21:28]),
+                        )
                     future_context = {
                         "state": state,
                         "capture_at": capture_at,
@@ -1786,13 +1977,27 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
                         "readiness": dict(gate.last_evidence),
                         "freshness": metrics,
                         "hold_action_publications": 0,
+                        "language_gt_frames": list(language_gt_frames),
+                        "language_gt_reference_right_joints": (
+                            list(state[21:28])
+                            if language_gt_trajectory is not None
+                            else None
+                        ),
+                        "language_prompt": (
+                            inference_instruction
+                            if language_gt_trajectory is not None
+                            else None
+                        ),
                     }
                     if args.arm_simulator and not manipulation_latched:
                         gate.arm()
                         manipulation_latched = True
                         future_context["readiness"] = dict(gate.last_evidence)
                     future = worker.submit(
-                        policy.predict_chunk, images=images, state=state
+                        policy.predict_chunk,
+                        images=images,
+                        state=state,
+                        instruction=inference_instruction,
                     )
 
             if not args.arm_simulator:
@@ -2088,7 +2293,20 @@ def main() -> int:  # noqa: C901 - one bounded live control loop
         ),
         "dataset_root": str(args.dataset_root.resolve()),
         "dataset_repo_id": args.dataset_repo_id,
-        "task_instruction": PI05_CONTRACT.task_instruction,
+        "task_instruction": task_instruction,
+        "with_language_gt": args.with_language_gt,
+        "language_gt": (
+            {
+                "source_episode": SOURCE_EPISODE,
+                "source_frame_start": SOURCE_START_FRAME,
+                "source_frame_end_inclusive": SOURCE_END_EXCLUSIVE - 1,
+                "trajectory_frames": len(language_gt_trajectory),
+                "rolling_window": args.execution_horizon,
+                "tokenizer_max_length": LANGUAGE_GT_TOKENIZER_MAX_LENGTH,
+            }
+            if language_gt_trajectory is not None
+            else None
+        ),
         "chunk_size": policy.chunk_size,
         "n_action_steps": policy.n_action_steps,
         "warmup_decisions": args.warmup_decisions,

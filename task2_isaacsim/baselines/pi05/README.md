@@ -32,6 +32,36 @@ ROS_DOMAIN_ID=30 ./run_pi05.sh run \
   --run-label ours-20k-seed1001-h15
 ```
 
+To diagnose whether richer language conditioning helps that same checkpoint,
+add a rolling, per-frame numeric GT trajectory prompt:
+
+```bash
+ROS_DOMAIN_ID=30 ./run_pi05.sh run \
+  --model ours-20k \
+  --execution-horizon 15 \
+  --with_language_gt \
+  --seed 1001 \
+  --run-label ours-20k-language-gt-seed1001-h15
+```
+
+This option changes only the PI0.5 `task` string. It does not replay actions or
+subscribe to simulator ground truth. At every policy decision, the prompt lists
+the next 15 exact episode-19 outputs as
+`[delta_joint1_rad,...,delta_joint7_rad,gripper_open_fraction_absolute]`.
+Every joint target in a window is relative to the live measured right-joint
+state captured at the start of that inference, matching the checkpoint's
+training transform; the gripper remains absolute. The first window is source
+frames 370-384, the second is 385-399, and so on through frame 949. These are
+the 580 rows in the manipulation-only training crop; the prompt window advances
+by the number of actions actually published. The flag raises only this run's
+tokenizer limit from the trained value of 200 to 1024 tokens and caps the run
+at the 580 available GT actions. Each event in `live_runner_manifest.json`
+records `language_gt_frames`, `language_gt_reference_right_joints`, and
+`language_prompt`.
+Treat this as an out-of-distribution language-conditioning ablation, not action
+replay or evidence of generalization: the checkpoint was not trained to parse
+numeric trajectory tables.
+
 The submitted 30k checkpoint loads its saved whole-body 20-D transform.  The
 normal live mode deliberately publishes only its right-arm/right-gripper
 slice; base and spine stay fixed and the left arm stays in its staged hold:

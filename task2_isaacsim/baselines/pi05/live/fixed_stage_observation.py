@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
@@ -54,9 +55,7 @@ GRIPPER_TARGET_TOPICS = TOPICS["cartesian_control"][
 SPINE_TARGET_TOPIC = TOPICS["teleop"]["spine_target"]
 ARM_JOINTS = (*LEFT_JOINTS, *RIGHT_JOINTS)
 RMPFLOW_STAGE_PLAN = (
-    ("safe_orientation", 30.0),
-    ("clearance", 30.0),
-    ("observation", 30.0),
+    ("continuous_observation", 30.0),
 )
 MINIMUM_JERK_PEAK_DERIVATIVE = 1.875
 
@@ -88,6 +87,70 @@ def transition_duration_s(
             / max_angular_speed_deg_s,
         )
         for side in ("left", "right")
+    )
+    return max(minimum_s, min(maximum_s, required))
+
+
+def continuous_landmark_pose(
+    poses: list[tuple[float, ...]], fraction: float
+) -> tuple[float, ...]:
+    """Interpolate a chord-parameterized C1 path without waypoint stops."""
+
+    if len(poses) < 2:
+        raise ValueError("continuous pose path requires at least two poses")
+    values = [np.asarray(pose, dtype=np.float64) for pose in poses]
+    points = np.asarray([value[:3] for value in values], dtype=np.float64)
+    chords = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    if np.any(chords <= 1.0e-9):
+        raise ValueError("continuous pose path has duplicate xyz landmarks")
+    distances = np.concatenate(([0.0], np.cumsum(chords)))
+    distance = max(0.0, min(1.0, float(fraction))) * float(distances[-1])
+    segment = min(
+        max(int(np.searchsorted(distances, distance, side="right") - 1), 0),
+        len(values) - 2,
+    )
+    local = (distance - distances[segment]) / chords[segment]
+    tangents = np.empty_like(points)
+    tangents[0] = (points[1] - points[0]) / chords[0]
+    tangents[-1] = (points[-1] - points[-2]) / chords[-1]
+    for index in range(1, len(points) - 1):
+        tangents[index] = (
+            (points[index + 1] - points[index - 1])
+            / (distances[index + 1] - distances[index - 1])
+        )
+    local2 = local * local
+    local3 = local2 * local
+    position = (
+        (2.0 * local3 - 3.0 * local2 + 1.0) * points[segment]
+        + (local3 - 2.0 * local2 + local)
+        * chords[segment]
+        * tangents[segment]
+        + (-2.0 * local3 + 3.0 * local2) * points[segment + 1]
+        + (local3 - local2) * chords[segment] * tangents[segment + 1]
+    )
+    orientation = _slerp(
+        values[segment][3:7], values[segment + 1][3:7], float(local)
+    )
+    return (*position.tolist(), *orientation)
+
+
+def continuous_path_duration_s(
+    poses: list[tuple[float, ...]],
+    *,
+    max_linear_speed_m_s: float,
+    max_angular_speed_deg_s: float,
+    minimum_s: float,
+    maximum_s: float,
+) -> float:
+    points = np.asarray([pose[:3] for pose in poses], dtype=np.float64)
+    path_m = float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+    path_deg = sum(
+        _orientation_error_deg(first, second)
+        for first, second in zip(poses, poses[1:])
+    )
+    required = MINIMUM_JERK_PEAK_DERIVATIVE * max(
+        path_m / max_linear_speed_m_s,
+        path_deg / max_angular_speed_deg_s,
     )
     return max(minimum_s, min(maximum_s, required))
 
@@ -297,6 +360,7 @@ def build_parser() -> argparse.ArgumentParser:
             "orientation_midpoint",
             "clearance",
             "observation",
+            "continuous_observation",
         ),
         default="observation",
     )
@@ -328,6 +392,7 @@ def main() -> int:  # noqa: C901 - bounded live controller and evidence loop
         ),
         "clearance": "right_clearance_waypoint_ee_world_xyzw",
         "observation": "right_observation_ee_world_xyzw",
+        "continuous_observation": "right_observation_ee_world_xyzw",
     }[args.target_kind]
     targets = {
         "left": tuple(float(v) for v in reference["left_safe_ee_world_xyzw"]),
@@ -348,6 +413,7 @@ def main() -> int:  # noqa: C901 - bounded live controller and evidence loop
     duration_s: float | None = None
     stable_since: float | None = None
     stable_origin: dict[str, tuple[float, ...]] = {}
+    right_pose_path: list[tuple[float, ...]] | None = None
     previous_joint_sample: tuple[float, tuple[float, ...]] | None = None
     transition_max_joint_speed = 0.0
     settle_max_joint_speed = 0.0
@@ -422,6 +488,28 @@ def main() -> int:  # noqa: C901 - bounded live controller and evidence loop
                     minimum_s=args.minimum_transition_s,
                     maximum_s=args.maximum_transition_s,
                 )
+                if args.target_kind == "continuous_observation":
+                    right_pose_path = [
+                        initial["right"],
+                        tuple(
+                            float(value) for value in reference[
+                                "right_safe_orientation_waypoint_ee_world_xyzw"
+                            ]
+                        ),
+                        tuple(
+                            float(value) for value in reference[
+                                "right_clearance_waypoint_ee_world_xyzw"
+                            ]
+                        ),
+                        targets["right"],
+                    ]
+                    duration_s = continuous_path_duration_s(
+                        right_pose_path,
+                        max_linear_speed_m_s=args.max_linear_speed_m_s,
+                        max_angular_speed_deg_s=args.max_angular_speed_deg_s,
+                        minimum_s=args.minimum_transition_s,
+                        maximum_s=args.maximum_transition_s,
+                    )
                 transition_started = node.sim_time
             assert initial is not None and transition_started is not None
             assert duration_s is not None
@@ -438,6 +526,10 @@ def main() -> int:  # noqa: C901 - bounded live controller and evidence loop
                 )
                 for side in ("left", "right")
             }
+            if right_pose_path is not None:
+                commanded["right"] = continuous_landmark_pose(
+                    right_pose_path, fraction
+                )
             node.publish(commanded, spine_target)
             errors = {
                 side: {
@@ -513,6 +605,11 @@ def main() -> int:  # noqa: C901 - bounded live controller and evidence loop
             "final_errors": errors,
             "base_errors": base_errors,
             "transition_duration_s": duration_s,
+            "continuous_right_path_landmarks": (
+                ["initial", "safe_orientation", "clearance", "observation"]
+                if right_pose_path is not None
+                else None
+            ),
             "transition_max_measured_joint_speed_rad_s": transition_max_joint_speed,
             "settle_max_measured_joint_speed_rad_s": settle_max_joint_speed,
             "settle_max_ee_drift_m": settle_max_ee_drift,

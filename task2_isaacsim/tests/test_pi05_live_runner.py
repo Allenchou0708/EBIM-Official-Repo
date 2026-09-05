@@ -19,6 +19,10 @@ from task2_isaacsim.baselines.pi05.contract import (
     STATE_NAMES,
     V2_RELATIVE_ACTION_STATE_INDICES,
 )
+from task2_isaacsim.baselines.pi05.live.language_gt import (
+    TrajectoryRow,
+    format_language_gt_window,
+)
 from task2_isaacsim.baselines.pi05.live.core import (
     BaseReadinessGate,
     FreshnessConfig,
@@ -36,6 +40,7 @@ from task2_isaacsim.baselines.pi05.live.core import (
     project_fr3_joint_step,
     replace_action_queue,
     right_ee_within_demonstrated_workspace,
+    right_wrist_grasp_evidence_within_development_envelope,
     safe_action,
     startup_inventory,
     validate_rgb_frame,
@@ -77,6 +82,40 @@ def valid_action() -> list[float]:
 
 
 class StateContractTest(unittest.TestCase):
+    def test_language_gt_prompt_contains_each_numeric_output_row(self) -> None:
+        trajectory = (
+            TrajectoryRow(
+                370,
+                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                (0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, 1.0),
+            ),
+            TrajectoryRow(
+                371,
+                (0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7),
+                (0.2, -0.3, 0.4, -0.5, 0.6, -0.7, 0.8, 0.0),
+            ),
+            TrajectoryRow(
+                372,
+                (0.2, -0.3, 0.4, -0.5, 0.6, -0.7, 0.8),
+                (0.3, -0.4, 0.5, -0.6, 0.7, -0.8, 0.9, 0.0),
+            ),
+        )
+        prompt, frames = format_language_gt_window(
+            trajectory,
+            executed_actions=1,
+            window=2,
+            reference_joint_state=(0.15, -0.25, 0.35, -0.45, 0.55, -0.65, 0.75),
+        )
+        self.assertEqual(frames, (371, 372))
+        self.assertIn(
+            "F371=[0.050,-0.050,0.050,-0.050,0.050,-0.050,0.050,0.000]",
+            prompt,
+        )
+        self.assertIn(
+            "F372=[0.150,-0.150,0.150,-0.150,0.150,-0.150,0.150,0.000]",
+            prompt,
+        )
+
     def test_assembler_matches_every_official_index(self) -> None:
         joints = {
             name: 0.01 * index
@@ -147,6 +186,10 @@ class LiveSafetyTest(unittest.TestCase):
         blocked, evidence = guard.apply(0.0, carry_pose)
         self.assertEqual(blocked, 1.0)
         self.assertEqual(evidence["reason"], "close_blocked_outside_grasp_gate")
+        too_deep_pose = (1.75, 2.12, 0.87)
+        blocked, evidence = guard.apply(0.0, too_deep_pose)
+        self.assertEqual(blocked, 1.0)
+        self.assertEqual(evidence["reason"], "close_blocked_outside_grasp_gate")
         for _ in range(3):
             effective, evidence = guard.apply(0.0, grasp_pose)
         self.assertEqual(effective, 0.0)
@@ -164,6 +207,29 @@ class LiveSafetyTest(unittest.TestCase):
         effective, evidence = guard.apply(0.0, release_pose)
         self.assertEqual(effective, 1.0)
         self.assertEqual(evidence["reason"], "reclose_blocked_after_release")
+
+    def test_grasp_camera_geometry_uses_development_envelope(self) -> None:
+        nominal = {
+            "centroid_u_fraction": 0.39,
+            "centroid_v_fraction": 0.15,
+            "log_area_fraction": -2.95,
+        }
+        self.assertTrue(
+            right_wrist_grasp_evidence_within_development_envelope(nominal)
+        )
+        off_center = {**nominal, "centroid_u_fraction": 0.70}
+        self.assertFalse(
+            right_wrist_grasp_evidence_within_development_envelope(off_center)
+        )
+        guard = RightGraspGuard(close_confirm_actions=1)
+        effective, evidence = guard.apply(
+            0.0,
+            (1.75, 2.14, 0.87),
+            camera_grasp_ready=False,
+            camera_grasp_evidence=off_center,
+        )
+        self.assertEqual(effective, 1.0)
+        self.assertEqual(evidence["reason"], "close_blocked_camera_pad_geometry")
 
     def _staging_audit(self) -> dict:
         left = [0.0, -0.7, 0.1, -2.3, 0.0, 1.6, 0.8]
@@ -456,11 +522,7 @@ class LiveSafetyTest(unittest.TestCase):
 
     def test_shadow_gate_accepts_complete_rmpflow_waypoint_chain(self) -> None:
         stage_results = []
-        for target_kind in (
-            "safe_orientation",
-            "clearance",
-            "observation",
-        ):
+        for target_kind in ("continuous_observation",):
             result = {
                 "success": True,
                 "reason": "stable_rmpflow_observation_pose",
@@ -558,7 +620,7 @@ class LiveSafetyTest(unittest.TestCase):
             )
             manifest["spine_control"]["policy_controlled"] = False
 
-            manifest["staging"]["rmpflow_waypoints"][1]["result"][
+            manifest["staging"]["rmpflow_waypoints"][0]["result"][
                 "success"
             ] = False
             (root / "live_runner_manifest.json").write_text(

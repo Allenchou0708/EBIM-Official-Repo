@@ -35,15 +35,26 @@ RIGHT_ARM_SLEW_VELOCITY_FRACTION = 0.50
 
 # Development-only envelopes measured over all 90,028 manipulation frames
 # from the 180-episode split.  The workspace adds roughly 3 cm beyond the
-# observed extrema; the acquisition/release gates add margin around their
-# corresponding event distributions.  They are simulator-world coordinates,
-# so the real-robot adapter must derive equivalent gates in its task frame.
+# observed extrema.  The grasp gate covers the complete 180-development-
+# episode close-pose distribution (x=[1.7381, 1.7618], y=[2.1309, 2.1492],
+# z=[0.8485, 0.8953] m) with a small margin.  Camera-relative pad evidence,
+# rather than a narrower absolute pose, rejects poorly aligned closes.  These
+# are simulator-world coordinates; the real-robot adapter must derive
+# equivalent task-frame gates.
 RIGHT_EE_WORKSPACE_MIN_XYZ = (1.70, 1.86, 0.82)
 RIGHT_EE_WORKSPACE_MAX_XYZ = (2.21, 2.23, 1.17)
-RIGHT_GRASP_GATE_MIN_XYZ = (1.70, 2.10, 0.82)
-RIGHT_GRASP_GATE_MAX_XYZ = (1.80, 2.22, 0.93)
+RIGHT_GRASP_GATE_MIN_XYZ = (1.733, 2.125, 0.843)
+RIGHT_GRASP_GATE_MAX_XYZ = (1.767, 2.155, 0.901)
 RIGHT_RELEASE_GATE_MIN_XYZ = (2.08, 1.97, 0.87)
 RIGHT_RELEASE_GATE_MAX_XYZ = (2.19, 2.12, 0.98)
+# Fit on 180 development demonstrations at their first grasp frame.  The
+# held-out 20/20 episodes pass this q01..q99 + 20%-span envelope.  Log area is
+# resolution-independent, as are the normalized image coordinates.
+RIGHT_GRASP_IMAGE_ENVELOPE = {
+    "centroid_u_fraction": (0.27466981132075463, 0.5064622641509439),
+    "centroid_v_fraction": (0.07166666666666667, 0.24083333333333334),
+    "log_area_fraction": (-4.243418708219198, -2.3565484492147495),
+}
 TimedAction = tuple[tuple[float, ...], float, int]
 QueuedAction = tuple[tuple[float, ...], float, float, int, int]
 
@@ -98,6 +109,21 @@ def right_ee_within_demonstrated_workspace(pose: Any) -> bool:
     )
 
 
+def right_wrist_grasp_evidence_within_development_envelope(
+    evidence: dict[str, Any],
+) -> bool:
+    """Validate camera-relative pad geometry fitted without held-out leakage."""
+
+    for key, (lower, upper) in RIGHT_GRASP_IMAGE_ENVELOPE.items():
+        try:
+            value = float(evidence[key])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not math.isfinite(value) or not lower <= value <= upper:
+            return False
+    return True
+
+
 @dataclass
 class RightGraspGuard:
     """Latch one grasp and allow one release only in demonstrated regions."""
@@ -117,6 +143,9 @@ class RightGraspGuard:
         self,
         requested_open_fraction: float,
         ee_pose: Any,
+        *,
+        camera_grasp_ready: bool = True,
+        camera_grasp_evidence: dict[str, Any] | None = None,
     ) -> tuple[float, dict[str, Any]]:
         requested = float(requested_open_fraction)
         if not math.isfinite(requested) or not 0.0 <= requested <= 1.0:
@@ -137,7 +166,7 @@ class RightGraspGuard:
 
         if self.phase == "pregrasp":
             if requested <= self.close_threshold:
-                if in_grasp_gate:
+                if in_grasp_gate and camera_grasp_ready:
                     self.close_evidence_actions += 1
                     if self.close_evidence_actions >= self.close_confirm_actions:
                         self.phase = "latched"
@@ -145,7 +174,11 @@ class RightGraspGuard:
                 else:
                     self.close_evidence_actions = 0
                     effective = 1.0
-                    reason = "close_blocked_outside_grasp_gate"
+                    reason = (
+                        "close_blocked_camera_pad_geometry"
+                        if in_grasp_gate and not camera_grasp_ready
+                        else "close_blocked_outside_grasp_gate"
+                    )
             else:
                 self.close_evidence_actions = 0
         elif self.phase == "latched":
@@ -188,6 +221,8 @@ class RightGraspGuard:
             "reason": reason,
             "ee_world_xyz": list(xyz),
             "in_grasp_gate": in_grasp_gate,
+            "camera_grasp_ready": bool(camera_grasp_ready),
+            "camera_grasp_evidence": camera_grasp_evidence,
             "in_release_gate": in_release_gate,
             "held_actions": self.held_actions,
         }

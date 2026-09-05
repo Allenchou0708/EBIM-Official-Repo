@@ -1,5 +1,10 @@
 # EBiM Benchmark
 
+**The current Phase II real-robot work is defined in
+[`task2_real/`](task2_real/README.md).** It retains deterministic staging and
+hands manipulation ownership to a right-arm-only PI0.5 policy. The material
+below is the archived Phase I simulator submission workflow.
+
 **Phase I Task 2 submission instructions are below.**  For the wider
 benchmark repository's component status, see [STATUS.md](STATUS.md).
 
@@ -115,144 +120,34 @@ select Task 2 and answer **“Yes — we use the simulator's ground-truth object
 poses.”**  File only one Option A issue for this team/task; if replacing an
 earlier issue, explicitly state that it supersedes the previous submission.
 
-## Archived PI0.5 learned-policy workflow (not the Phase I submission)
+## Current Task 2 PI0.5 simulator workflow
 
-The following section documents the separate learned-policy research path.
-It requires an out-of-band checkpoint, did not complete the task, and is not
-the submitted Option A entry point.
-
-For the Phase I simulator-ground-truth control route, current results and the
-email-compliant submission procedure are documented in
-[`GROUND_TRUTH_PHASE1.md`](task2_isaacsim/baselines/pi05/GROUND_TRUTH_PHASE1.md),
-[`PHASE1_POLICY_REPORT.md`](task2_isaacsim/baselines/pi05/PHASE1_POLICY_REPORT.md),
-and
-[`PHASE1_SUBMISSION_RUNBOOK.md`](task2_isaacsim/baselines/pi05/PHASE1_SUBMISSION_RUNBOOK.md).
-This route must be disclosed as using privileged Isaac Sim state and is not a
-Phase II perception solution.
-
-The `submit` branch contains the complete official benchmark tree plus the
-team's code-only PI0.5 training and live runtime. It does not contain datasets,
-caches, logs, tokens, or model weights.
-
-### Requirements and image build
-
-- Linux with Docker Engine, the NVIDIA Container Toolkit, and an NVIDIA GPU.
-- A driver compatible with the pinned CUDA 12.8 training base image.
-- Isaac Sim 5.1.0 with this repository mounted at
-  `/workspace/EBiM_Challenge`, as described in
-  [`task2_isaacsim/README.md`](task2_isaacsim/README.md).
-
-From a clean clone of `submit`, including the official submodules:
-
-```bash
-git clone --branch submit --recurse-submodules \
-  git@github.com:Allenchou0708/EBIM-Official-Repo.git ebim-task2-submit
-cd ebim-task2-submit
-docker build -t ebim-task2-pi05-submit:local .
-docker run --rm ebim-task2-pi05-submit:local health
-```
-
-The root [`Dockerfile`](Dockerfile) now builds the Phase I GT submission shown
-above.  In the archived learned-policy workflow, `run-task` was the PI0.5
-evaluation command; `run_pi05.sh` performed reset, fixed-base and initial-spine
-staging, and camera preflight before invoking it.  That command is retained
-for research compatibility and is not the submitted Task 2 policy.
-
-### Checkpoint and environment
-
-Obtain the team's 30k checkpoint out of band and keep it outside this clone.
-The checkpoint directory must contain the LeRobot PI0.5 pretrained-model files,
-including `model.safetensors`, and the matching `relative_dataset` must be
-available locally. There is currently **no public, no-login checkpoint URL**;
-publishing a model ID is a submission blocker that requires the team's explicit
-hosting decision. The repository never downloads or embeds a token.
+The learned-policy path has one operator entry point and three supported model
+profiles.  Checkpoints, datasets, output, and evidence remain outside Git under
+`/scratch1/2026_ebim/allen_task2_pi05/`.
 
 ```bash
 cd task2_isaacsim/baselines/pi05
-cp .env.pi05.example .env.pi05
-```
 
-Edit `.env.pi05` with absolute host paths:
-
-```dotenv
-TASK2_PI05_ROOT=/absolute/path/to/task2-pi05-runtime
-PI05_LIVE_IMAGE=ebim-task2-pi05-submit:local
-PI05_CHECKPOINT=/absolute/path/to/checkpoints/030000/pretrained_model
-PI05_RELATIVE_DATASET=/absolute/path/to/relative_dataset
-ROS_DOMAIN_ID=0
-ISAACSIM_CONTAINER=isaac-sim-5-1-0-workshop
-```
-
-`TASK2_PI05_ROOT` is the configurable cache/output/evidence root. A future
-public model may be recorded as `PI05_MODEL_ID`, but the present runner uses the
-local `PI05_CHECKPOINT` mount.
-
-### Three-terminal evaluation
-
-Run all commands from `task2_isaacsim/baselines/pi05`:
-
-```bash
-# Terminal 1: launch the Task 2 GUI scene and ROS bridge
+./run_pi05.sh models
 ./run_pi05.sh sim-up --gui
-
-# Terminal 2: reset, stage, validate health, and publish at most 600 actions
-./run_pi05.sh run-task --runtime-mode hard5 --max-actions 600
-
-# Terminal 3, after Terminal 2 completes: capture the official local metric
-./run_pi05.sh evaluate
-```
-
-The runner keeps the base isolated, lets PI0.5 control both arms, grippers and
-spine, and executes the checkpoint's five-action receding horizon on simulator
-time. Camera age uses host monotonic time, while cross-camera synchronization
-uses ROS header simulator timestamps. Use `Ctrl-C` in Terminal 2 for the operator stop. To inspect
-the image contract without ROS control, run the documented checkpoint shadow
-command in [`task2_isaacsim/baselines/pi05/README.md`](task2_isaacsim/baselines/pi05/README.md).
-Container health can be checked at any time with:
-
-```bash
-docker run --rm ebim-task2-pi05-submit:local health
-```
-
-Stop and remove the evaluator/helper services with:
-
-```bash
+./run_pi05.sh run --model ours-20k --seed 1001
 ./run_pi05.sh down
 ```
 
-### Training reproduction
+The retained profiles are our right-only manipulation 20k checkpoint, our
+submitted 30k checkpoint, and the locally evaluated ROBOT DREAMS full-FT 20k
+checkpoint.  Each uses its own saved camera mapping, normalization, and
+relative/absolute action processor.
 
-With a pinned training image in `.env.pi05`, the code-only reproduction path is:
-
-```bash
-./run_pi05.sh doctor
-./run_pi05.sh dataset --config configs/task2_fixpos_200_expert.yaml
-./run_pi05.sh train --config configs/task2_fixpos_200_expert.yaml \
-  --run task2_200_30k_v1
-```
-
-The config pins the dataset and base-policy revisions, 180/20 episode split,
-expert-only frozen-vision profile, and 30,000 steps. Training data and outputs
-remain below `TASK2_PI05_ROOT`, outside Git and the runtime image.
-
-The phase-balanced absolute-spine V2 experiment uses the same audited split
-and base policy, with only two checkpoints:
-
-```bash
-./run_pi05.sh train --config configs/task2_fixpos_200_v2.yaml \
-  --run task2_pi05_v2_12k
-```
-
-### Validated status and known limits
-
-The V3 hard5 GUI run completed 600/600 actions with 120/120 valid policy
-decisions, 0 invalid actions, no queue replacement, and effective base output
-zero. Every decision executed exactly indices 0--4. Accepted three-camera
-capture skew was at most 0.0834 s. Spine reached the demonstrated range, but
-the right gripper never closed and right joint 4 eventually reached its lower
-bound; the pad was not grasped. This validates the runtime/input contract but
-is not a task-success claim. The remaining leading cause is policy phase
-progression and closed-loop robustness.
+All profiles share deterministic base navigation, fixed spine staging,
+RMPflow left-safe-hold/right-observation staging, and a right-wrist visibility
+gate.  The default mode publishes only right-arm and right-gripper commands;
+the explicit Robot Dreams native mode instead preserves its trained
+three-camera, 37-D-state, 20-D-action contract while forcing base motion to
+zero.  The default execution horizon is 15.  See the concise
+[`PI0.5 controller README`](task2_isaacsim/baselines/pi05/README.md) for model
+selection and shadow mode.
 
 ## Competition tasks
 

@@ -157,6 +157,7 @@ class LivePi05Policy:
         checkpoint: Path,
         instruction: str,
         seed: int,
+        tokenizer_max_length: int | None = None,
     ):
         import torch
         from lerobot.configs import PreTrainedConfig
@@ -206,12 +207,17 @@ class LivePi05Policy:
             "device_processor": {"device": "cuda"}
         }
         local_tokenizer = checkpoint / "tokenizer"
+        tokenizer_overrides: dict[str, object] = {}
         if local_tokenizer.is_dir():
             # Older LeRobot processor loaders do not resolve a saved relative
             # tokenizer artifact against the checkpoint directory.
-            preprocessor_overrides["tokenizer_processor"] = {
-                "tokenizer_name": str(local_tokenizer)
-            }
+            tokenizer_overrides["tokenizer_name"] = str(local_tokenizer)
+        if tokenizer_max_length is not None:
+            if tokenizer_max_length <= 0:
+                raise ValueError("tokenizer_max_length must be positive")
+            tokenizer_overrides["max_length"] = tokenizer_max_length
+        if tokenizer_overrides:
+            preprocessor_overrides["tokenizer_processor"] = tokenizer_overrides
         with tempfile.TemporaryDirectory(prefix="pi05-processors-") as directory:
             compatibility_path = Path(directory)
             self.manual_relative_inverse = _write_compatible_processor_bundle(
@@ -231,7 +237,11 @@ class LivePi05Policy:
         self.decision_index = 0
 
     def predict_chunk(
-        self, *, images: dict[str, Any], state: tuple[float, ...]
+        self,
+        *,
+        images: dict[str, Any],
+        state: tuple[float, ...],
+        instruction: str | None = None,
     ) -> tuple[list[list[float]], float]:
         """Return one complete postprocessed absolute action chunk."""
 
@@ -245,7 +255,7 @@ class LivePi05Policy:
             "observation.state": torch.tensor(
                 policy_state, dtype=torch.float32
             ),
-            "task": self.instruction,
+            "task": self.instruction if instruction is None else instruction,
         }
         for key, image in images.items():
             if self.action_size == 8 and key == "wrist_left":

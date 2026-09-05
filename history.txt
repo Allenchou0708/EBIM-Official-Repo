@@ -1,0 +1,1000 @@
+  923  clear
+  924  cd /home/robot/2026_ebim_ssd/benchmark
+  925  pwd
+  926  git rev-parse --show-toplevel
+  927  git rev-parse HEAD
+  928  git log -1 --date=iso --format='%H%n%ad%n%s'
+  929  git branch --show-current
+  930  git status --short --branch
+  931  git remote -v
+  932  git diff --stat
+  933  git diff --name-status
+  934  git submodule status --recursive
+  935  git fetch --prune origin
+  936  git rev-parse origin/main
+  937  git rev-list --left-right --count HEAD...origin/main
+  938  git log --oneline --decorate HEAD..origin/main -n 30
+  939  git log --oneline --decorate origin/main..HEAD -n 30
+  940  git diff --stat HEAD..origin/main
+  941  git diff --name-status HEAD..origin/main
+  942  clear
+  943  cd /home/robot/2026_ebim_ssd/benchmark
+  944  git diff --cached --stat
+  945  git diff --cached --name-status
+  946  git lfs status
+  947  df -h /home/robot/2026_ebim_ssd
+  948  git worktree list
+  949  git worktree add --detach /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc origin/main
+  950  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+  951  git rev-parse HEAD
+  952  git status --short --branch
+  953  git lfs status
+  954  clear
+  955  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+  956  ls -lh task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+  957  file task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+  958  ls -lh assets/task2_objects/task2_objects_base.usda
+  959  docker --version
+  960  docker compose version
+  961  nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+  962  docker compose --env-file docker/.env.base -f docker/docker-compose.yaml config --profiles
+  963  docker compose --env-file docker/.env.base -f docker/docker-compose.yaml config --services
+  964  docker ps -a --filter "name=isaac-sim-5-1-0-workshop" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+  965  docker image inspect isaac-sim-5.1.0:ebim2026 --format "{{.Id}} {{.Created}}"
+  966  docker inspect isaac-sim-5-1-0-workshop --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+  967  clear
+  968  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+  969  realpath .
+  970  docker compose --env-file docker/.env.base -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0 config --services
+  971  docker inspect isaac-sim-5-1-0-workshop   --format 'OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}} Error={{.State.Error}} FinishedAt={{.State.FinishedAt}}'
+  972  task1_isaacsim/scripts/download_large_assets.sh
+  973  ls -lh task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+  974  ls -lh task1_isaacsim/cable_world/assets/table_board_fixture/Assets/board_segment.usd
+  975  ls -lh task1_isaacsim/cable_world/assets/table_board_fixture/Assets/board_segment_upper_right.usd
+  976  git status --short
+  977  clear
+  978  ls -lh /home/robot/2026_ebim_ssd/benchmark/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+  979  file /home/robot/2026_ebim_ssd/benchmark/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+  980  sha256sum /home/robot/2026_ebim_ssd/benchmark/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+  981  clear
+  982  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+  983  git rev-parse origin/Robotiq_DEMO
+  984  git cat-file -s   origin/Robotiq_DEMO:DEMO/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+  985  git show   origin/Robotiq_DEMO:DEMO/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd   > task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+  986  ls -lh task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+  987  file task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+  988  sha256sum task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+  989  git status --short
+  990  clear
+  991  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+  992  xhost +local:docker
+  993  export DISPLAY="${DISPLAY:-:0}"
+  994  export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+  995  touch "$XAUTHORITY"
+  996  docker compose --env-file docker/.env.base -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0 up -d --force-recreate isaac-sim-5-1-0
+  997  docker ps --filter "name=isaac-sim-5-1-0-workshop"   --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+  998  docker inspect isaac-sim-5-1-0-workshop   --format 'Status={{.State.Status}} OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}}'
+  999  docker inspect isaac-sim-5-1-0-workshop   --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+ 1000  docker exec isaac-sim-5-1-0-workshop   test -f /workspace/EBiM_Challenge/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1001  docker exec isaac-sim-5-1-0-workshop   ls -lh /workspace/EBiM_Challenge/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1002  docker exec isaac-sim-5-1-0-workshop   nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+ 1003  clear
+ 1004  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1005  bash task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene barebone   --with-keyboard-teleop   --with-arm-keyboard-teleop   --controller-mode none   --no-republisher   --no-browser
+ 1006  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1007  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1008  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1009  git fetch origin main
+ 1010  git rev-parse HEAD
+ 1011  git rev-parse origin/main
+ 1012  git status --short
+ 1013  git log --oneline HEAD..origin/main
+ 1014  git diff --name-status HEAD..origin/main
+ 1015  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1016  docker exec isaac-sim-5-1-0-workshop   bash -lc "pgrep -af '[s]cene_(barebone|room)\.py|[i]saacsim_fr3duo_teleop' || true"
+ 1017  docker ps --filter "name=task2_"   --format "table {{.Names}}\t{{.Status}}"
+ 1018  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1019  bash task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room   --with-keyboard-teleop   --with-arm-keyboard-teleop   --controller-mode none   --no-republisher   --no-browser   -- --enable-scene-cameras
+ 1020  clear
+ 1021  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1022  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1023  task2_isaacsim/scripts/run_recorder.sh build
+ 1024  bash task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room   --with-keyboard-teleop   --with-arm-keyboard-teleop   --controller-mode none   --no-republisher   --no-browser   -- --record
+ 1025  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1026  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1027  docker ps --filter "name=task2_"   --format "table {{.Names}}\t{{.Status}}"
+ 1028  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1029  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room   --controller-mode none   --no-browser   --no-republisher   -- --record
+ 1030  docker ps
+ 1031  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1032  clear
+ 1033  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1034  scene="scripts/scenes/scene_robot_room_keyboard.py"
+ 1035  if ! grep -q 'SemanticPublish.inputs:semanticLabelsTopicName' "$scene"; then   perl -0pi -e     's/(                \("SemanticPublish\.inputs:enableSemanticLabels", True\),\n)/$1                (\n                    "SemanticPublish.inputs:semanticLabelsTopicName",\n                    "semantic_segmentation_labels",\n                ),\n/'     "$scene"; fi
+ 1036  if ! grep -q 'Bbox2dTightPublish.inputs:semanticLabelsTopicName' "$scene"; then   perl -0pi -e     's/(                \("Bbox2dTightPublish\.inputs:enableSemanticLabels", True\),\n)/$1                (\n                    "Bbox2dTightPublish.inputs:semanticLabelsTopicName",\n                    "semantic_labels",\n                ),\n/'     "$scene"; fi
+ 1037  git diff --check
+ 1038  git status --short
+ 1039  git diff -- "$scene"
+ 1040  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room   --controller-mode none   --no-browser   --no-republisher   -- --record
+ 1041  bash scripts/evaluation/task2/run.sh down
+ 1042  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1043  docker ps
+ 1044  bash scripts/evaluation/task2/run.sh down
+ 1045  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1046  docker ps
+ 1047  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1048  git status --short
+ 1049  git diff --check
+ 1050  git diff --stat
+ 1051  git diff --   task2_isaacsim/docker-compose.yml   scripts/evaluation/task2/docker-compose.yml   scripts/scenes/scene_robot_room_keyboard.py
+ 1052  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1053  git switch -c task2-fixes-20260724
+ 1054  git add --   scripts/evaluation/task2/docker-compose.yml   scripts/scenes/scene_robot_room_keyboard.py   task2_isaacsim/docker-compose.yml
+ 1055  git diff --cached --check
+ 1056  git diff --cached --stat
+ 1057  git commit -m "Fix Task 2 recorder and evaluation runtime"
+ 1058  git status --short
+ 1059  git log -1 --oneline
+ 1060  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1061  git config --local user.name "Allen_HZL"
+ 1062  git config --local user.email "hungzilun@gmail.com"
+ 1063  git commit -m "Fix Task 2 recorder and evaluation runtime"
+ 1064  git status --short
+ 1065  git log -1 --format='%h %an <%ae> %s'
+ 1066  clear
+ 1067  cd /home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc
+ 1068  git fetch origin main
+ 1069  git worktree list
+ 1070  git branch --list task2-pilot-591def2
+ 1071  if [[ -e /home/robot/2026_ebim_ssd/benchmark_task2_591def2 ]]; then   echo "Target worktree path already exists; stop and inspect it.";   exit 1; fi
+ 1072  if git show-ref --verify --quiet refs/heads/task2-pilot-591def2; then   echo "Branch task2-pilot-591def2 already exists; stop and inspect it.";   exit 1; fi
+ 1073  git worktree add   -b task2-pilot-591def2   /home/robot/2026_ebim_ssd/benchmark_task2_591def2   591def249a04bddb022b9bcf87f74f3a0cd9174a
+ 1074  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1075  if ! git cherry-pick 72c0319b38f2bef62aa4353113027e4eff2b0947; then   git status --short;   git diff --name-only --diff-filter=U;   exit 1; fi
+ 1076  git status --short
+ 1077  git log -3 --oneline --decorate
+ 1078  git diff --check 591def2..HEAD
+ 1079  git diff --stat 591def2..HEAD
+ 1080  git diff 591def2..HEAD --   scripts/evaluation/task2/docker-compose.yml   scripts/scenes/scene_robot_room_keyboard.py   task2_isaacsim/docker-compose.yml
+ 1081  docker inspect isaac-sim-5-1-0-workshop   --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+ 1082  clear
+ 1083  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1084  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1085  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1086  old_asset="/home/robot/2026_ebim_ssd/benchmark_task2_4b3abcc/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd"
+ 1087  new_asset="/home/robot/2026_ebim_ssd/benchmark_task2_591def2/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd"
+ 1088  expected_sha="aa1a833de48cc543c73957461dab82fe0979320b7c0b6a0a113d24b500075e5c"
+ 1089  if [[ ! -f "$old_asset" ]]; then   echo "Verified source asset is missing; stop.";   exit 1; fi
+ 1090  source_sha="$(sha256sum "$old_asset" | awk '{print $1}')"
+ 1091  echo "source_sha=$source_sha"
+ 1092  if [[ "$source_sha" != "$expected_sha" ]]; then   echo "Source checksum mismatch; stop.";   exit 1; fi
+ 1093  if [[ -e "$new_asset" ]]; then   new_sha="$(sha256sum "$new_asset" | awk '{print $1}')";   if [[ "$new_sha" != "$expected_sha" ]]; then     echo "Destination exists with unexpected checksum; stop.";     exit 1;   fi; else   install -D -m 0664 "$old_asset" "$new_asset"; fi
+ 1094  ls -lh "$new_asset"
+ 1095  file "$new_asset"
+ 1096  sha256sum "$new_asset"
+ 1097  git check-ignore -v   task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd || true
+ 1098  git status --short
+ 1099  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1100  clear
+ 1101  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1102  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room   --with-arm-keyboard-teleop   -- --record
+ 1103  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1104  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1105  docker ps --format "table {{.Names}}\t{{.Status}}"
+ 1106  clear
+ 1107  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1108  export HOST_UID="$(id -u)"
+ 1109  export HOST_GID="$(id -g)"
+ 1110  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   up -d isaac-sim-5-1-0
+ 1111  docker ps   --filter "name=isaac-sim-5-1-0-workshop"   --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+ 1112  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1113  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1114  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1115  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   down
+ 1116  clear
+ 1117  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1118  export HOST_UID="$(id -u)"
+ 1119  export HOST_GID="$(id -g)"
+ 1120  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   up -d isaac-sim-5-1-0
+ 1121  docker ps   --filter "name=isaac-sim-5-1-0-workshop"   --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+ 1122  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1123  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1124  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1125  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   down
+ 1126  clear
+ 1127  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1128  export HOST_UID="$(id -u)"
+ 1129  export HOST_GID="$(id -g)"
+ 1130  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   up -d isaac-sim-5-1-0
+ 1131  docker ps   --filter "name=isaac-sim-5-1-0-workshop"   --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+ 1132  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1133  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1134  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1135  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1136  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   down
+ 1137  clear
+ 1138  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1139  export HOST_UID="$(id -u)"
+ 1140  export HOST_GID="$(id -g)"
+ 1141  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   up -d isaac-sim-5-1-0
+ 1142  docker ps   --filter "name=isaac-sim-5-1-0-workshop"   --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+ 1143  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1144  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1145  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1146  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1147  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   down
+ 1148  clear
+ 1149  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1150  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1151  clear
+ 1152  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1153  git status
+ 1154  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room -- --record --arm-keyboard-teleop
+ 1155  clear
+ 1156  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1157  bash scripts/evaluation/task2/run.sh down
+ 1158  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1159  docker restart isaac-sim-5-1-0-workshop
+ 1160  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room   --with-arm-keyboard-teleop   -- --record
+ 1161  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1162  task2_isaacsim/scripts/run_helper_containers.sh down
+ 1163  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   down
+ 1164  clear
+ 1165  docker ps -a
+ 1166  df -h .
+ 1167  clear
+ 1168  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --checkpoint "$PI05_CHECKPOINT"   --dataset-root "$PI05_RELATIVE_DATASET"   --max-actions 100   --max-duration-s 300
+ 1169  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1170  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1171  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1172  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1173  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1174  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:first-chunk-fix-20260812
+ 1175  export ROS_DOMAIN_ID=61
+ 1176  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --checkpoint "$PI05_CHECKPOINT"   --dataset-root "$PI05_RELATIVE_DATASET"   --max-actions 100   --max-duration-s 300
+ 1177  cd /scratch1/2026_ebim/
+ 1178  code .
+ 1179  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1180  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1181  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1182  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1183  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1184  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:first-chunk-fix-20260812
+ 1185  export ROS_DOMAIN_ID=61
+ 1186  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --summary-only
+ 1187  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --align-only
+ 1188  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --max-frames 30
+ 1189  clear
+ 1190  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET"
+ 1191  clear
+ 1192  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1193  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1194  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1195  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1196  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1197  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:hard5-20260813
+ 1198  export ROS_DOMAIN_ID=62
+ 1199  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --episode 9
+ 1200  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --checkpoint "$PI05_CHECKPOINT"   --dataset-root "$PI05_RELATIVE_DATASET"   --max-actions 25   --max-duration-s 60
+ 1201  cd /scratch1/2026_ebim/
+ 1202  ls
+ 1203  cd allen_task2_pi05/
+ 1204  ls
+ 1205  cd evidence/
+ 1206  ls
+ 1207  cd ..
+ 1208  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1209  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1210  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1211  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1212  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1213  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:first-chunk-fix-20260812
+ 1214  export ROS_DOMAIN_ID=61
+ 1215  bash task2_isaacsim/baselines/pi05/run_pi05.sh sim-up --gui
+ 1216  clear
+ 1217  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1218  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1219  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1220  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1221  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1222  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:hard5-20260813
+ 1223  export ROS_DOMAIN_ID=62
+ 1224  bash task2_isaacsim/baselines/pi05/run_pi05.sh sim-up --gui
+ 1225  clear
+ 1226  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1227  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1228  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1229  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1230  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1231  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:hard5-20260813
+ 1232  export ROS_DOMAIN_ID=62
+ 1233  bash task2_isaacsim/baselines/pi05/run_pi05.sh sim-up --gui
+ 1234  clear
+ 1235  df -h .
+ 1236  bash task2_isaacsim/baselines/pi05/run_pi05.sh down
+ 1237  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --episode 9
+ 1238  clear
+ 1239  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1240  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1241  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1242  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1243  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1244  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:hard5-20260813
+ 1245  export ROS_DOMAIN_ID=62
+ 1246  bash task2_isaacsim/baselines/pi05/run_pi05.sh down
+ 1247  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --episode 9
+ 1248  clear
+ 1249  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1250  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1251  export PI05_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1252  export PI05_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1253  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1254  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:hard5-20260813
+ 1255  export ROS_DOMAIN_ID=62
+ 1256  bash task2_isaacsim/baselines/pi05/run_pi05.sh replay-dataset   --dataset-root "$PI05_RAW_DATASET" --episode 9
+ 1257  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --checkpoint "$PI05_CHECKPOINT" --dataset-root "$PI05_RELATIVE_DATASET"   --max-actions 600 --max-duration-s 60
+ 1258  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --checkpoint "$PI05_CHECKPOINT" --dataset-root "$PI05_RELATIVE_DATASET"   --max-actions 600 --max-duration-s 120
+ 1259  clear
+ 1260  bash task2_isaacsim/baselines/pi05/run_pi05.sh down
+ 1261  clear
+ 1262  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1263  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1264  export PI05_V1_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1265  export PI05_V1_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1266  export PI05_V3_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/training/checkpoints/003000/pretrained_model"
+ 1267  export PI05_V3_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/relative_dataset"
+ 1268  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1269  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1270  export ROS_DOMAIN_ID=62
+ 1271  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_CHECKPOINT"   --dataset-root "$PI05_V1_RELATIVE_DATASET"   --max-actions 600   --max-duration-s 300
+ 1272  clear
+ 1273  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V3_CHECKPOINT"   --dataset-root "$PI05_V3_RELATIVE_DATASET"   --max-actions 600   --max-duration-s 300
+ 1274  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task down
+ 1275  bash task2_isaacsim/baselines/pi05/run_pi05.sh down
+ 1276  clear
+ 1277  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1278  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1279  export PI05_V1_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1280  export PI05_V1_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1281  export PI05_V3_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/training/checkpoints/003000/pretrained_model"
+ 1282  export PI05_V3_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/relative_dataset"
+ 1283  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1284  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1285  export ROS_DOMAIN_ID=62
+ 1286  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_CHECKPOINT"   --dataset-root "$PI05_V1_RELATIVE_DATASET"   --shadow --max-actions 5 --max-duration-s 60
+ 1287  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V3_CHECKPOINT"   --dataset-root "$PI05_V3_RELATIVE_DATASET"   --max-actions 600   --max-duration-s 300
+ 1288  bash task2_isaacsim/baselines/pi05/run_pi05.sh down
+ 1289  clear
+ 1290  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1291  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1292  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1293  export ROS_DOMAIN_ID=62
+ 1294  export PI05_V1_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1295  export PI05_V1_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1296  export PI05_V3_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/training/checkpoints/003000/pretrained_model"
+ 1297  export PI05_V3_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/relative_dataset"
+ 1298  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_CHECKPOINT"   --dataset-root "$PI05_V1_RELATIVE_DATASET"   --shadow   --max-actions 5   --max-duration-s 60
+ 1299  PI05_LAST_RUN="$(ls -dt "$TASK2_PI05_ROOT"/outputs/live_submit_* | head -1)"
+ 1300  python3 - "$PI05_LAST_RUN/live_runner_manifest.json" <<'PY'
+ 1301  import json
+ 1302  import sys
+ 1303  m = json.load(open(sys.argv[1], encoding="utf-8"))
+ 1304  e = m["events"][0]
+ 1305  f = e["freshness"]
+ 1306  print("manifest:", sys.argv[1])
+ 1307  print("valid:", e["valid"])
+ 1308  print("camera stamps:", f["camera_capture_times_s"])
+ 1309  print("state stamps:", f["state_capture_times_s"])
+ 1310  print("camera skew:", f["inter_camera_capture_skew_s"])
+ 1311  print("camera/state skew:", f["observation_capture_skew_s"])
+ 1312  print("capture-to-ready sim:", e["capture_to_ready_sim_s"])
+ 1313  print("commands:", m["command_publications"])
+ 1314  assert e["valid"]
+ 1315  assert len(f["state_capture_times_s"]) == 4
+ 1316  assert f["observation_capture_skew_s"] <= 0.10
+ 1317  assert m["command_publications"] == 0
+ 1318  print("CLOCK ALIGNMENT SHADOW PASS")
+ 1319  PY
+ 1320  PI05_LAST_RUN="$(ls -dt "$TASK2_PI05_ROOT"/outputs/live_submit_* | head -1)"
+ 1321  python3 - "$PI05_LAST_RUN/live_runner_manifest.json" <<'PY'
+ 1322  import json
+ 1323  import sys
+ 1324  m = json.load(open(sys.argv[1], encoding="utf-8"))
+ 1325  e = m["events"][0]
+ 1326  f = e["freshness"]
+ 1327  print("manifest:", sys.argv[1])
+ 1328  print("valid:", e["valid"])
+ 1329  print("camera stamps:", f["camera_capture_times_s"])
+ 1330  print("state stamps:", f["state_capture_times_s"])
+ 1331  print("camera skew:", f["inter_camera_capture_skew_s"])
+ 1332  print("camera/state skew:", f["observation_capture_skew_s"])
+ 1333  print("capture-to-ready sim:", e["capture_to_ready_sim_s"])
+ 1334  print("commands:", m["command_publications"])
+ 1335  assert e["valid"]
+ 1336  assert len(f["state_capture_times_s"]) == 4
+ 1337  assert f["observation_capture_skew_s"] <= 0.10
+ 1338  assert m["command_publications"] == 0
+ 1339  print("CLOCK ALIGNMENT SHADOW PASS")
+ 1340  PY
+ 1341  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V3_CHECKPOINT"   --dataset-root "$PI05_V3_RELATIVE_DATASET"   --shadow   --max-actions 5   --max-duration-s 60
+ 1342  bash task2_isaacsim/baselines/pi05/run_pi05.sh down
+ 1343  df -h .
+ 1344  docker ps
+ 1345  clear
+ 1346  watch -n 5 nvidia-smi
+ 1347  clear
+ 1348  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1349  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1350  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1351  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1352  export ROS_DOMAIN_ID=62
+ 1353  export PI05_V1_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1"
+ 1354  export PI05_V1_30K_CKPT="$PI05_V1_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1355  export PI05_V1_DATASET="$PI05_V1_30K_ROOT/relative_dataset"
+ 1356  export PI05_V2_30K_CONFIG=configs/task2_fixpos_200_v2_expert_30k.yaml
+ 1357  export PI05_V2_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_pi05_v2_expert_30k"
+ 1358  export PI05_V2_30K_CKPT="$PI05_V2_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1359  export PI05_V2_DATASET="$PI05_V2_30K_ROOT/relative_dataset"
+ 1360  export PI05_STAGING_AUDIT="$TASK2_PI05_ROOT/evidence/task2_pi05_v2_full_30k_preflight/startup_staging_audit.json"
+ 1361  export PI05_TEST_EVIDENCE="$TASK2_PI05_ROOT/evidence/task2_pi05_v1_v2_30k"
+ 1362  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_30K_CKPT"   --dataset-root "$PI05_V1_DATASET"   --staging-audit "$PI05_STAGING_AUDIT"   --run-label v1-030000-shadow   --shadow --max-actions 5 --max-duration-s 60
+ 1363  export PI05_V1_SHADOW="$(ls -dt "$TASK2_PI05_ROOT"/outputs/live_submit_v1-030000-shadow_* | head -1)"
+ 1364  bash task2_isaacsim/baselines/pi05/run_pi05.sh verify-shadow   --run-dir "$PI05_V1_SHADOW" --contract v1
+ 1365  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_30K_CKPT"   --dataset-root "$PI05_V1_DATASET"   --staging-audit "$PI05_STAGING_AUDIT"   --run-label v1-030000-shadow   --shadow --max-actions 5 --max-duration-s 60
+ 1366  export PI05_V1_SHADOW="$(ls -dt "$TASK2_PI05_ROOT"/outputs/live_submit_v1-030000-shadow_* | head -1)"
+ 1367  bash task2_isaacsim/baselines/pi05/run_pi05.sh verify-shadow   --run-dir "$PI05_V1_SHADOW" --contract v1
+ 1368  clear
+ 1369  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_30K_CKPT"   --dataset-root "$PI05_V1_DATASET"   --staging-audit "$PI05_STAGING_AUDIT"   --run-label v1-030000-camera-ready-shadow-final   --shadow --max-actions 5 --max-duration-s 60
+ 1370  export PI05_V1_SHADOW="$(ls -dt "$TASK2_PI05_ROOT"/outputs/live_submit_v1-030000-camera-ready-shadow-final_* | head -1)"
+ 1371  bash task2_isaacsim/baselines/pi05/run_pi05.sh verify-shadow   --run-dir "$PI05_V1_SHADOW" --contract v1
+ 1372  clear
+ 1373  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1374  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1375  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1376  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1377  export ROS_DOMAIN_ID=62
+ 1378  export PI05_V1_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1"
+ 1379  export PI05_V1_30K_CKPT="$PI05_V1_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1380  export PI05_V1_DATASET="$PI05_V1_30K_ROOT/relative_dataset"
+ 1381  export PI05_V2_30K_CONFIG=configs/task2_fixpos_200_v2_expert_30k.yaml
+ 1382  export PI05_V2_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_pi05_v2_expert_30k"
+ 1383  export PI05_V2_30K_CKPT="$PI05_V2_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1384  export PI05_V2_DATASET="$PI05_V2_30K_ROOT/relative_dataset"
+ 1385  export PI05_STAGING_AUDIT="$TASK2_PI05_ROOT/evidence/task2_pi05_camera_ready_pad_relative_20260815/startup_staging_audit.json"
+ 1386  export PI05_TEST_EVIDENCE="$TASK2_PI05_ROOT/evidence/task2_pi05_v1_v2_30k"
+ 1387  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_30K_CKPT"   --dataset-root "$PI05_V1_DATASET"   --staging-audit "$PI05_STAGING_AUDIT"   --run-label v1-030000-camera-ready-shadow-final   --shadow --max-actions 5 --max-duration-s 60
+ 1388  history
+ 1389  clear
+ 1390  df -h .
+ 1391  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1392  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1393  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1394  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1395  export ROS_DOMAIN_ID=62
+ 1396  export PI05_V1_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1"
+ 1397  export PI05_V1_30K_CKPT="$PI05_V1_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1398  export PI05_V1_DATASET="$PI05_V1_30K_ROOT/relative_dataset"
+ 1399  export PI05_V2_30K_CONFIG=configs/task2_fixpos_200_v2_expert_30k.yaml
+ 1400  export PI05_V2_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_pi05_v2_expert_30k"
+ 1401  export PI05_V2_30K_CKPT="$PI05_V2_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1402  export PI05_V2_DATASET="$PI05_V2_30K_ROOT/relative_dataset"
+ 1403  export PI05_STAGING_AUDIT="$TASK2_PI05_ROOT/evidence/task2_pi05_camera_ready_pad_relative_20260815/startup_staging_audit.json"
+ 1404  export PI05_TEST_EVIDENCE="$TASK2_PI05_ROOT/evidence/task2_pi05_v1_v2_30k"
+ 1405  bash task2_isaacsim/baselines/pi05/run_pi05.sh run-task   --runtime-mode hard5   --checkpoint "$PI05_V1_30K_CKPT"   --dataset-root "$PI05_V1_DATASET"   --staging-audit "$PI05_STAGING_AUDIT"   --run-label v1-030000-hard5   --confirm-right-wrist-pad-visible   --max-actions 600 --max-duration-s 300
+ 1406  git remote
+ 1407  git remote -v
+ 1408  git branch
+ 1409  git branch -vv
+ 1410  git status
+ 1411  git add .
+ 1412  git commit -m "HZL v1 v2 30000 steps"
+ 1413  git push
+ 1414  git branch
+ 1415  git fetch collab 30033allen_submit
+ 1416  git switch -c 30033allen_submit --track collab/30033allen_submit
+ 1417  git branch
+ 1418  git log
+ 1419  git pull
+ 1420  ls
+ 1421  cd task2_isaacsim/baselines/pi05
+ 1422  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1423  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1424  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1425  ./run_pi05.sh doctor --profile expert
+ 1426  ./run_pi05.sh dataset --config configs/task2_fixpos_200_v2_expert_30k.yaml
+ 1427  ./run_pi05.sh train --config configs/task2_fixpos_200_v2_expert_30k.yaml --run task2_pi05_fixed_init_30k
+ 1428  LS
+ 1429  git branch
+ 1430  git remote -v
+ 1431  git checkout main
+ 1432  git log
+ 1433  git status
+ 1434  git push
+ 1435  git checkout main
+ 1436  git branch
+ 1437  history
+ 1438  history > aaa.txt
+ 1439  git add .
+ 1440  git push
+ 1441  git commit -m "aaa.txt"
+ 1442  git push
+ 1443  ls /scratch1/2026_ebim/allen_task2_pi05/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model/
+ 1444  ls ~
+ 1445  cp -r /scratch1/2026_ebim/allen_task2_pi05/outputs/task2_200_30k_v1/training/checkpoints/030000/ ~
+ 1446  clear
+ 1447  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1448  export ROS_DOMAIN_ID=0
+ 1449  export EBIM_REPO="$PWD"
+ 1450  export EBIM_RUN="/scratch1/2026_ebim/allen_task2_pi05/evidence/task2_ground_truth_controller_20260820/gui_repro_$(date +%Y%m%d_%H%M%S)"
+ 1451  mkdir -p "$EBIM_RUN"
+ 1452  GT_ROS=(   docker run --rm --network host --ipc host   --user "$(id -u):$(id -g)"   -e HOME=/tmp   -e ROS_DOMAIN_ID=0   -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp   -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4   -e PYTHONPATH=/repo   -v "$EBIM_REPO:/repo:ro"   -v "$EBIM_RUN:/data/evidence"   -w /repo   ros:jazzy-ros-base )
+ 1453  "${GT_ROS[@]}" bash -lc   'source /opt/ros/jazzy/setup.bash &&
+ 1454     ros2 topic pub --once /isaac/task2/scene_reset_request \
+ 1455     std_msgs/msg/String "{data: reset}"'
+ 1456  "${GT_ROS[@]}" bash -lc   'source /opt/ros/jazzy/setup.bash &&
+ 1457     python3 task2_isaacsim/baselines/pi05/live/fixed_stage_spine.py \
+ 1458     --output /data/evidence/spine.json'
+ 1459  clear
+ 1460  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1461  GT_RUN=(   docker run --rm --network host --ipc=host   --user "$(id -u):$(id -g)"   --entrypoint /bin/bash   -e HOME=/tmp/ebim-live-home   -e USER=robot   -e LOGNAME=robot   -e ROS_DOMAIN_ID=0   -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp   -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4   -e PYTHONPATH=/workspace/EBiM_Challenge:/opt/ros/jazzy/lib/python3.12/site-packages   -v "$PWD:/workspace/EBiM_Challenge:ro"   ebim-task2-pi05-live:queue-replace-20260812   -lc )
+ 1462  "${GT_RUN[@]}"   "source /opt/ros/jazzy/setup.bash;
+ 1463     ros2 topic pub --once /isaac/task2/scene_reset_request \
+ 1464     std_msgs/msg/String '{data: reset}'"
+ 1465  "${GT_RUN[@]}"   "source /opt/ros/jazzy/setup.bash;
+ 1466     /opt/lerobot/.venv/bin/python \
+ 1467     /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_base.py \
+ 1468     --target 2.10 3.05 -1.571 \
+ 1469     --position-tolerance-m 0.04 \
+ 1470     --yaw-tolerance-rad 0.08"
+ 1471  "${GT_RUN[@]}"   "source /opt/ros/jazzy/setup.bash;
+ 1472     /opt/lerobot/.venv/bin/python \
+ 1473     /workspace/EBiM_Challenge/task2_isaacsim/baselines/pi05/live/fixed_stage_base.py \
+ 1474     --target 2.10 3.05 -1.571 \
+ 1475     --position-tolerance-m 0.04 \
+ 1476     --yaw-tolerance-rad 0.08"
+ 1477  clear
+ 1478  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1479  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:phase1
+ 1480  export ROS_DOMAIN_ID=0
+ 1481  export TASK2_EVIDENCE_DIR=/scratch1/2026_ebim/allen_task2_pi05/evidence/my_nominal_run
+ 1482  mkdir -p "$TASK2_EVIDENCE_DIR"
+ 1483  set -o pipefail
+ 1484  bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh   nominal 1   | tee "$TASK2_EVIDENCE_DIR/run.log"
+ 1485  clear
+ 1486  cd /scratch1/allen_chou/
+ 1487  ls
+ 1488  cd ebim-task2-phase1/
+ 1489  export PI05_LIVE_IMAGE=ebim-task2-phase1-gt:latest
+ 1490  export ROS_DOMAIN_ID=0
+ 1491  export EVIDENCE_ROOT=/absolute/path/to/task2-phase1-evidence
+ 1492  for run in 1 2 3; do   TASK2_EVIDENCE_DIR="$EVIDENCE_ROOT/run_$run"     bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh       nominal 1 || exit $?; done
+ 1493  cd /scratch1/allen_chou/ebim-task2-phase1/
+ 1494  export PI05_LIVE_IMAGE=ebim-task2-phase1-gt:latest
+ 1495  export ROS_DOMAIN_ID=0
+ 1496  export EVIDENCE_ROOT=/absolute/path/to/task2-phase1-evidence
+ 1497  for run in 1 2 3; do   TASK2_EVIDENCE_DIR="$EVIDENCE_ROOT/run_$run"     bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh       nominal 1 || exit $?; done
+ 1498  cd /scratch1/allen_chou/
+ 1499  cd ebim-task2-phase1/
+ 1500  export PI05_LIVE_IMAGE=ebim-task2-phase1-gt:latest
+ 1501  export ROS_DOMAIN_ID=0
+ 1502  export EVIDENCE_ROOT=/absolute/path/to/task2-phase1-evidence
+ 1503  ls
+ 1504  mkdir test_output
+ 1505  export EVIDENCE_ROOT=/scratch1/allen_chou/ebim-task2-phase1/test_output/
+ 1506  for run in 1 2 3; do   TASK2_EVIDENCE_DIR="$EVIDENCE_ROOT/run_$run"     bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh       nominal 1 || exit $?; done
+ 1507  cd 2026_ebim_ssd/
+ 1508  ls
+ 1509  cd benchmark_task2_591def2/
+ 1510  clear
+ 1511  cd ..
+ 1512  ls
+ 1513  cd LeRobot_v0.6.0/
+ 1514  ls
+ 1515  clear
+ 1516  cd ..
+ 1517  watch -n 5 nvidia-smi
+ 1518  df -h .
+ 1519  nvidia-smi
+ 1520  clear
+ 1521  df -h .
+ 1522  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1523  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1524  export PI05_V1_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1525  export PI05_V1_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1526  export PI05_V3_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/training/checkpoints/003000/pretrained_model"
+ 1527  export PI05_V3_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/relative_dataset"
+ 1528  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1529  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1530  export ROS_DOMAIN_ID=62
+ 1531  bash task2_isaacsim/baselines/pi05/run_pi05.sh sim-up --gui
+ 1532  clear
+ 1533  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1534  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1535  export PI05_V1_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/training/checkpoints/030000/pretrained_model"
+ 1536  export PI05_V1_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1/relative_dataset"
+ 1537  export PI05_V3_CHECKPOINT="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/training/checkpoints/003000/pretrained_model"
+ 1538  export PI05_V3_RELATIVE_DATASET="$TASK2_PI05_ROOT/outputs/task2_pi05_v3_from_v1_3k/relative_dataset"
+ 1539  export PI05_RAW_DATASET="$TASK2_PI05_ROOT/datasets/task2_fixpos_200_46ab41f"
+ 1540  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1541  export ROS_DOMAIN_ID=62
+ 1542  bash task2_isaacsim/baselines/pi05/run_pi05.sh sim-up --gui
+ 1543  clear
+ 1544  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1545  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1546  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1547  export ROS_DOMAIN_ID=62
+ 1548  bash task2_isaacsim/baselines/pi05/run_pi05.sh sim-up --gui
+ 1549  clear
+ 1550  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1551  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1552  export PI05_CONFIG=configs/task2_fixpos_200_v2_full_30k.yaml
+ 1553  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1554  bash task2_isaacsim/baselines/pi05/run_pi05.sh train   --config "$PI05_CONFIG"   --run task2_pi05_v2_full_30k_smoke_1step   --one-step-smoke
+ 1555  bash task2_isaacsim/baselines/pi05/run_pi05.sh verify-smoke   --run task2_pi05_v2_full_30k_smoke_1step
+ 1556  clear
+ 1557  conda env list
+ 1558  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1559  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1560  export PI05_CONFIG=configs/task2_fixpos_200_v2_full_30k.yaml
+ 1561  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1562  export PI05_SMOKE_RUN=task2_pi05_v2_full_30k_smoke_retry1
+ 1563  bash task2_isaacsim/baselines/pi05/run_pi05.sh train   --config "$PI05_CONFIG"   --run "$PI05_SMOKE_RUN"   --one-step-smoke
+ 1564  bash task2_isaacsim/baselines/pi05/run_pi05.sh verify-smoke   --run "$PI05_SMOKE_RUN"
+ 1565  clear
+ 1566  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1567  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1568  export PI05_CONFIG=configs/task2_fixpos_200_v2_expert_30k.yaml
+ 1569  export PI05_RUN=task2_pi05_v2_expert_30k
+ 1570  export PI05_RUN_ROOT="$TASK2_PI05_ROOT/outputs/$PI05_RUN"
+ 1571  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1572  test ! -e "$PI05_RUN_ROOT"
+ 1573  bash task2_isaacsim/baselines/pi05/run_pi05.sh train   --config "$PI05_CONFIG"   --run "$PI05_RUN"
+ 1574  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1575  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1576  export PI05_CONFIG=configs/task2_fixpos_200_v2_expert_30k.yaml
+ 1577  export PI05_RUN=task2_pi05_v2_expert_30k
+ 1578  export PI05_RUN_ROOT="$TASK2_PI05_ROOT/outputs/$PI05_RUN"
+ 1579  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1580  test ! -e "$PI05_RUN_ROOT"
+ 1581  bash task2_isaacsim/baselines/pi05/run_pi05.sh train   --config "$PI05_CONFIG"   --run "$PI05_RUN"
+ 1582  rm -rf -- /scratch1/2026_ebim/allen_task2_pi05/outputs/task2_pi05_v2_expert_30k
+ 1583  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1584  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1585  export PI05_CONFIG=configs/task2_fixpos_200_v2_expert_30k.yaml
+ 1586  export PI05_RUN=task2_pi05_v2_expert_30k
+ 1587  export PI05_RUN_ROOT="$TASK2_PI05_ROOT/outputs/$PI05_RUN"
+ 1588  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1589  test ! -e "$PI05_RUN_ROOT"
+ 1590  bash task2_isaacsim/baselines/pi05/run_pi05.sh train   --config "$PI05_CONFIG"   --run "$PI05_RUN"
+ 1591  clear
+ 1592  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1593  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1594  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1595  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1596  export ROS_DOMAIN_ID=62
+ 1597  export PI05_V1_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1"
+ 1598  export PI05_V1_30K_CKPT="$PI05_V1_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1599  export PI05_V1_DATASET="$PI05_V1_30K_ROOT/relative_dataset"
+ 1600  export PI05_V2_30K_CONFIG=configs/task2_fixpos_200_v2_expert_30k.yaml
+ 1601  export PI05_V2_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_pi05_v2_expert_30k"
+ 1602  export PI05_V2_30K_CKPT="$PI05_V2_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1603  export PI05_V2_DATASET="$PI05_V2_30K_ROOT/relative_dataset"
+ 1604  export PI05_STAGING_AUDIT="$TASK2_PI05_ROOT/evidence/task2_pi05_v2_full_30k_preflight/startup_staging_audit.json"
+ 1605  export PI05_TEST_EVIDENCE="$TASK2_PI05_ROOT/evidence/task2_pi05_v1_v2_30k"
+ 1606  bash task2_isaacsim/baselines/pi05/run_pi05.sh sim-up --gui
+ 1607  clear
+ 1608  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1609  export TASK2_PI05_ROOT=/scratch1/2026_ebim/allen_task2_pi05
+ 1610  export PI05_TRAIN_IMAGE=ebim-task2-pi05:200-submit-20260812
+ 1611  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:v3-hard5-20260814
+ 1612  export ROS_DOMAIN_ID=62
+ 1613  export PI05_V1_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_200_30k_v1"
+ 1614  export PI05_V1_30K_CKPT="$PI05_V1_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1615  export PI05_V1_DATASET="$PI05_V1_30K_ROOT/relative_dataset"
+ 1616  export PI05_V2_30K_CONFIG=configs/task2_fixpos_200_v2_expert_30k.yaml
+ 1617  export PI05_V2_30K_ROOT="$TASK2_PI05_ROOT/outputs/task2_pi05_v2_expert_30k"
+ 1618  export PI05_V2_30K_CKPT="$PI05_V2_30K_ROOT/training/checkpoints/030000/pretrained_model"
+ 1619  export PI05_V2_DATASET="$PI05_V2_30K_ROOT/relative_dataset"
+ 1620  export PI05_STAGING_AUDIT="$TASK2_PI05_ROOT/evidence/task2_pi05_camera_ready_pad_relative_20260815/startup_staging_audit.json"
+ 1621  export PI05_TEST_EVIDENCE="$TASK2_PI05_ROOT/evidence/task2_pi05_v1_v2_30k"
+ 1622  bash task2_isaacsim/baselines/pi05/run_pi05.sh sim-up --gui
+ 1623  clear
+ 1624  bash task2_isaacsim/baselines/pi05/run_pi05.sh sim-up --gui
+ 1625  clear
+ 1626  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1627  export ROS_DOMAIN_ID=0
+ 1628  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room   --controller-mode none   --no-browser   --no-republisher   --   --arm-pose-command-control   --publish-recording-topics   --publish-ground-truth   --scene-reset-hotkey   --randomize-objects
+ 1629  clear
+ 1630  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1631  export ROS_DOMAIN_ID=0
+ 1632  task2_isaacsim/scripts/run_isaacsim_teleop.sh   --scene room --controller-mode none --no-browser --no-republisher --   --arm-pose-command-control   --configure-gripper-drives   --arm-teleop-gripper-closed 0.804   --publish-recording-topics   --publish-ground-truth   --scene-reset-hotkey   --randomize-objects
+ 1633  df -h .
+ 1634  clear
+ 1635  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1636  git switch task2_gt_control_20260820
+ 1637  git status --short --branch
+ 1638  docker ps --filter name=isaac-sim-5-1-0-workshop
+ 1639  docker exec isaac-sim-5-1-0-workshop   test -d /workspace/EBiM_Challenge
+ 1640  docker build -t ebim-task2-pi05-submit:phase1 .
+ 1641  docker run --rm   ebim-task2-pi05-submit:phase1 health
+ 1642  cd /home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1643  export PI05_LIVE_IMAGE=ebim-task2-pi05-submit:phase1
+ 1644  export ROS_DOMAIN_ID=0
+ 1645  echo "$DISPLAY"
+ 1646  bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh   launch-nominal
+ 1647  clear
+ 1648  df -h .
+ 1649  clear
+ 1650  # 不用刪除舊 Docker image、cache 或 volume。
+ 1651  # 只需重新建立 Isaac Sim container，讓它掛載新 clone。
+ 1652  export REPRO_ROOT=/home/robot/2026_ebim_ssd/ebim-task2-phase1-repro
+ 1653  cd /home/robot/2026_ebim_ssd
+ 1654  git clone --branch main --recurse-submodules   https://github.com/Allenchou0708/EBIM-Official-Repo.git   "$REPRO_ROOT"
+ 1655  cd "$REPRO_ROOT"
+ 1656  git rev-parse HEAD
+ 1657  # 預期：24c16076027165ec94e1cc16f511ccb211d7baa8
+ 1658  # 建置並檢查提交映像
+ 1659  cd "$REPRO_ROOT"
+ 1660  docker build --pull   -f task2_submission/Dockerfile   -t ebim-task2-phase1-gt:repro .
+ 1661  docker run --rm ebim-task2-phase1-gt:repro health
+ 1662  docker run --rm ebim-task2-phase1-gt:repro unit-tests
+ 1663  # 準備 X11 與 Isaac Sim container
+ 1664  # --force-recreate 只重建 container，不刪除既有 image/cache。
+ 1665  cd "$REPRO_ROOT"
+ 1666  export HOST_UID="$(id -u)"
+ 1667  export HOST_GID="$(id -g)"
+ 1668  export DISPLAY="${DISPLAY:-:0}"
+ 1669  export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+ 1670  touch "$XAUTHORITY"
+ 1671  xhost +local:docker
+ 1672  python3 scripts/tools/validate_docker_runtimes.py   --prepare-dirs   --skip-script-check
+ 1673  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   build isaac-sim-5-1-0
+ 1674  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   up -d --force-recreate isaac-sim-5-1-0
+ 1675  # 確認 Isaac Sim container 掛載的是新 clone
+ 1676  docker inspect   --format '{{range .Mounts}}{{if eq .Destination "/workspace/EBiM_Challenge"}}{{.Source}}{{end}}{{end}}'   isaac-sim-5-1-0-workshop
+ 1677  # 預期：
+ 1678  # /home/robot/2026_ebim_ssd/ebim-task2-phase1-repro
+ 1679  export REPRO_ROOT=/home/robot/2026_ebim_ssd/ebim-task2-phase1-repro
+ 1680  cd "$REPRO_ROOT"
+ 1681  export PI05_LIVE_IMAGE=ebim-task2-phase1-gt:repro
+ 1682  export ROS_DOMAIN_ID=0
+ 1683  bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh   launch-nominal
+ 1684  clear
+ 1685  cd "$REPRO_ROOT"
+ 1686  bash task1_isaacsim/scripts/download_large_assets.sh
+ 1687  test -s   task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1688  ls -lh   task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1689  cd "$REPRO_ROOT"
+ 1690  bash task1_isaacsim/scripts/download_large_assets.sh
+ 1691  test -s   task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1692  ls -lh   task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd
+ 1693  clear
+ 1694  export REPRO_ROOT=/home/robot/2026_ebim_ssd/ebim-task2-phase1-repro
+ 1695  export OLD_REPO=/home/robot/2026_ebim_ssd/benchmark_task2_591def2
+ 1696  install -Dm644   "$OLD_REPO/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd"   "$REPRO_ROOT/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd"
+ 1697  sha256sum   "$REPRO_ROOT/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd"
+ 1698  cd "$REPRO_ROOT"
+ 1699  export PI05_LIVE_IMAGE=ebim-task2-phase1-gt:repro
+ 1700  export ROS_DOMAIN_ID=0
+ 1701  bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh   launch-nominal
+ 1702  clear
+ 1703  # 共用設定
+ 1704  export REPRO_ROOT=/home/robot/2026_ebim_ssd/ebim-task2-phase1-repro
+ 1705  cd "$REPRO_ROOT"
+ 1706  export HOST_UID="$(id -u)"
+ 1707  export HOST_GID="$(id -g)"
+ 1708  export DISPLAY="${DISPLAY:-:0}"
+ 1709  export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+ 1710  touch "$XAUTHORITY"
+ 1711  xhost +local:docker
+ 1712  # 重新建立 Isaac Sim container，確保掛載 fresh clone
+ 1713  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   up -d --force-recreate isaac-sim-5-1-0
+ 1714  # 確認 container 正在運行
+ 1715  docker ps   --filter name=isaac-sim-5-1-0-workshop
+ 1716  # 確認掛載來源是 fresh clone
+ 1717  docker inspect   --format '{{range .Mounts}}{{if eq .Destination "/workspace/EBiM_Challenge"}}{{.Source}}{{end}}{{end}}'   isaac-sim-5-1-0-workshop
+ 1718  export REPRO_ROOT=/home/robot/2026_ebim_ssd/ebim-task2-phase1-repro
+ 1719  cd "$REPRO_ROOT"
+ 1720  export PI05_LIVE_IMAGE=ebim-task2-phase1-gt:repro
+ 1721  export ROS_DOMAIN_ID=0
+ 1722  export DISPLAY="${DISPLAY:-:0}"
+ 1723  export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+ 1724  bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh   launch-nominal
+ 1725  # 測試完成後：Terminal 1 按 Ctrl-C，再停止 container
+ 1726  cd "$REPRO_ROOT"
+ 1727  docker compose   --env-file docker/.env.base   -f docker/docker-compose.yaml   --profile isaac-sim-5.1.0   stop isaac-sim-5-1-0
+ 1728  xhost -local:docker
+ 1729  df -h .
+ 1730  clear
+ 1731  docker run --rm ebim-task2-phase1-gt:latest health
+ 1732  docker run --rm ebim-task2-phase1-gt:latest unit-tests
+ 1733  nvitop
+ 1734  cd ..
+ 1735  ls
+ 1736  ls | grep submity
+ 1737  ls | grep submit
+ 1738  git clone --branch submit --recurse-submodules git@github.com:Allenchou0708/EBIM-Official-Repo.git ebim-task2-submit
+ 1739  ls -al ~/.ssh
+ 1740  cd ebim-task2-submit
+ 1741  docker run --rm ebim-task2-pi05-submit:local health
+ 1742  docker build -t ebim-task2-pi05-submit:local .
+ 1743  docker run --rm ebim-task2-pi05-submit:local health
+ 1744  df -h .
+ 1745  cd ..
+ 1746  ls
+ 1747  mkdir ebim-task2-submit-allenchou-storage
+ 1748  cd ebim-task2-submit-allenchou-storage/
+ 1749  hf --version
+ 1750  ls
+ 1751  hf download Allenchou/EBIM_task2_model_academia_sinica_boys_v1_30000     --local-dir ~/EBIM_task2_model_academia_sinica_boys_v1_30000
+ 1752  ld
+ 1753  ls
+ 1754  cd ../../EBIM_task2_model_academia_sinica_boys_v1_30000/
+ 1755  cd -
+ 1756  cp -r ../../EBIM_task2_model_academia_sinica_boys_v1_30000/ .
+ 1757  la
+ 1758  ls
+ 1759  cd ..
+ 1760  cd ebim-task2-submit
+ 1761  ls
+ 1762  ls task2_isaacsim/baselines/pi05/ | grep .env
+ 1763  cd task2_isaacsim/baselines/pi05/
+ 1764  ls -la | grep .env
+ 1765  cp .env.pi05.example .env.pi05
+ 1766  code .env.pi05
+ 1767  cd ..
+ 1768  cd ebim-task2-submit-allenchou-storage/
+ 1769  ls
+ 1770  mkdir output
+ 1771  cd output/
+ 1772  pwd
+ 1773  cd ..
+ 1774  ls
+ 1775  cd EBIM_task2_model_academia_sinica_boys_v1_30000/
+ 1776  ls
+ 1777  pwd
+ 1778  find ~ -name ".env.pi05" -type f
+ 1779  cd ~/2026_ebim_ssd/ebim-task2-submit/
+ 1780  ls
+ 1781  # 共用設定
+ 1782  export REPRO_ROOT=/home/robot/2026_ebim_ssd/ebim-task2-phase1-repro
+ 1783  cd "$REPRO_ROOT"
+ 1784  export HOST_UID="$(id -u)"
+ 1785  export HOST_GID="$(id -g)"
+ 1786  export DISPLAY="${DISPLAY:-:0}"
+ 1787  export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+ 1788  touch "$XAUTHORITY"
+ 1789  xhost +local:docker
+ 1790  df -h .
+ 1791  clear
+ 1792  export REPRO_ROOT=/home/robot/2026_ebim_ssd/ebim-task2-phase1-repro
+ 1793  export EVIDENCE_ROOT=/home/robot/2026_ebim_ssd/ebim-task2-repro-evidence
+ 1794  cd "$REPRO_ROOT"
+ 1795  export PI05_LIVE_IMAGE=ebim-task2-phase1-gt:repro
+ 1796  export ROS_DOMAIN_ID=0
+ 1797  mkdir -p "$EVIDENCE_ROOT/run_1"
+ 1798  TASK2_EVIDENCE_DIR="$EVIDENCE_ROOT/run_1"   bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh   nominal 1
+ 1799  [200~# 查看結果
+ 1800  python3 -m json.tool   "$EVIDENCE_ROOT/run_1/base_stage.json"
+ 1801  python3 -m json.tool   "$EVIDENCE_ROOT/run_1/spine_stage.json"
+ 1802  python3 -m json.tool   "$EVIDENCE_ROOT/run_1/controller_result.json"~
+ 1803  cd /scratch1/2026_ebim/
+ 1804  ls
+ 1805  cd allen_task2_pi05/
+ 1806  ls
+ 1807  cd datasets/
+ 1808  ls
+ 1809  cd task2_fixpos_200_46ab41f/
+ 1810  ls
+ 1811  cd ..
+ 1812  ls
+ 1813  cd task2_fixpos_200_46ab41f/
+ 1814  clear
+ 1815  cd ..
+ 1816  cd ../checkpoints/
+ 1817  ls
+ 1818  du -sh .
+ 1819  clear
+ 1820  cd ..
+ 1821  df -h .
+ 1822  cd outputs/
+ 1823  ls
+ 1824  cd task2_200_30k_v1/
+ 1825  df -h .
+ 1826  du -sh .
+ 1827  clear
+ 1828  pwd
+ 1829  cd ..
+ 1830  cd task2_fixpos_200_v2_expert_30k
+ 1831  ls
+ 1832  cd task2_pi05_v2_expert_30k/
+ 1833  ls
+ 1834  clear
+ 1835  cd ../..
+ 1836  ls
+ 1837  cd evidence/
+ 1838  ls
+ 1839  cd ..
+ 1840  pwd
+ 1841  cd tmp
+ 1842  ls
+ 1843  pwd
+ 1844  df -h .
+ 1845  clear
+ 1846  df -h .
+ 1847  cd ..
+ 1848  pwd
+ 1849  ls
+ 1850  history > history.txt
+ 1851  xdg-open .
+ 1852  curl ifconfig.me
+ 1853  nvitop
+ 1854  pip install nvitop
+ 1855  nvitop
+ 1856  ls
+ 1857  history | grep ebim-task2-phase1
+ 1858  df -h .
+ 1859  cd ..
+ 1860  ls
+ 1861  mkdir allen_chou
+ 1862  cd allen_chou/
+ 1863  ls
+ 1864  git clone --branch main --recurse-submodules   https://github.com/Allenchou0708/EBIM-Official-Repo.git ebim-task2-phase1
+ 1865  cd ebim-task2-phase1
+ 1866  docker build --pull -t ebim-task2-phase1-gt:latest .
+ 1867  docker run --rm ebim-task2-phase1-gt:latest health
+ 1868  docker run --rm ebim-task2-phase1-gt:latest unit-tests
+ 1869  export PI05_LIVE_IMAGE=ebim-task2-phase1-gt:latest
+ 1870  export ROS_DOMAIN_ID=0
+ 1871  bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh   launch-nominal
+ 1872  bash task1_isaacsim/scripts/download_large_assets.sh
+ 1873  cp /home/robot/2026_ebim_ssd/benchmark_task2_591def2/task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd task1_isaacsim/assets/
+ 1874  ls task1_isaacsim/assets/
+ 1875  export PI05_LIVE_IMAGE=ebim-task2-phase1-gt:latest
+ 1876  export ROS_DOMAIN_ID=0
+ 1877  bash task2_isaacsim/baselines/pi05/live/run_ground_truth_random_gui.sh   launch-nominal
+ 1878  df -h .
+ 1879  clear
+ 1880  df -h /
+ 1881  df -h .
+ 1882  clear
+ 1883  cd /scratch1/
+ 1884  df -h .
+ 1885  clear
+ 1886  df -h .
+ 1887  cd ~
+ 1888  df -h .
+ 1889  clear
+ 1890  cd ~
+ 1891  df -h .
+ 1892  pwd
+ 1893  history > history.txt
+ 1894  cd /scratch1/
+ 1895  df -h .
+ 1896  clear
+ 1897  docker compose --env-file docker/.env.base -f docker/docker-compose.yaml --profile isaac-sim-5.1.0 up -d
+ 1898  git branch
+ 1899  git status
+ 1900  git log
+ 1901  git branch
+ 1902  history 
+ 1903  history > history.txt
+ 1904  code history.txt
+ 1905  git log
+ 1906  git push
+ 1907  git branch
+ 1908  git push --set-upstream origin task2_phase2_real_pi05_hybrid_20260830
+ 1909  ls
+ 1910  git branch
+ 1911  history | grep push
+ 1912  [200~git remote -v
+ 1913  git remote -v
+ 1914  git push -u collab task2_phase2_real_pi05_hybrid_20260830
+ 1915  git log
+ 1916  clear
+ 1917  sudo apt update
+ 1918  sudo apt install -y apt-transport-https ca-certificates gnupg curl
+ 1919  sudo snap install google-cloud-cli --classic
+ 1920  gcloud init
+ 1921  gcloud compute ssh instance-20260901-061230     --zone=asia-southeast1-c
+ 1922  history > history.txt

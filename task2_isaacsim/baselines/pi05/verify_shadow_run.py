@@ -79,11 +79,7 @@ def verify_shadow_run(
         "right_camera_ready_orientation",
     }
     if staging.get("mode") == "rmpflow_observation":
-        expected_kinds = [
-            "safe_orientation",
-            "clearance",
-            "observation",
-        ]
+        expected_kinds = ["continuous_observation"]
         staging_valid = (
             len(rmpflow_waypoints) == len(expected_kinds)
             and [item.get("target_kind") for item in rmpflow_waypoints]
@@ -99,7 +95,7 @@ def verify_shadow_run(
                 == []
                 for item in rmpflow_waypoints
             )
-            and stage_result.get("target_kind") == "observation"
+            and stage_result.get("target_kind") == "continuous_observation"
             and stage_result.get("success") is True
         )
     else:

@@ -1,0 +1,31 @@
+{
+  "base_position_error_m": 0.0,
+  "base_yaw_error_rad": 0.0,
+  "base_linear_speed_mps": 0.0,
+  "base_angular_speed_rps": 0.0,
+  "base_settled_for_s": 0.0,
+  "spine_position": 0.0,
+  "spine_velocity": 0.0,
+  "left_joint_positions_rad": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+  "right_joint_positions_rad": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+  "left_gripper_open_fraction": 0.0,
+  "right_gripper_open_fraction": 0.0,
+  "post_settle_observation": false,
+  "capture_times_s": {
+    "head": 0.0,
+    "wrist_right": 0.0,
+    "right_joints": 0.0,
+    "right_gripper": 0.0
+  },
+  "publisher_counts": {
+    "base": 0,
+    "spine": 0,
+    "left_arm": 0,
+    "left_gripper": 0,
+    "right_arm": 0,
+    "right_gripper": 0
+  },
+  "right_external_joint_torques_nm": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+  "right_external_force_n": [0.0, 0.0, 0.0],
+  "right_external_torque_nm": [0.0, 0.0, 0.0]
+}

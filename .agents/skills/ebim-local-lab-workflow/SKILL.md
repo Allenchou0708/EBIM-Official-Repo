@@ -10,9 +10,9 @@ description: Coordinate EBiM work split between a local planning and Obsidian ma
 Use one owner for each kind of work:
 
 - The local coordinator owns scope, acceptance criteria, project decisions, and Obsidian notes.
-- The lab executor owns code debugging, code review, tests, local images, experiments, the final code commit, and the branch push.
+- The lab executor owns code debugging, code review, tests, local images, experiments, evidence capture, and milestone commits and pushes when the result warrants them.
 
-Do not shuttle an unverified patch back to the local machine for a second implementation or review cycle. Keep runtime-dependent work on the lab machine from first edit through final push.
+Do not shuttle an unverified patch back to the local machine for a second implementation or review cycle. Keep runtime-dependent work on the lab machine from first edit through evidence return or a warranted milestone push.
 
 ## Competition-Speed Policy
 
@@ -25,6 +25,18 @@ Optimize for finishing a working robotics competition entry before the deadline.
 - Do not calculate or report SHA-256 hashes by default. Use a checksum only when the user explicitly requests it, corruption is suspected, or a submission/download interface specifically requires integrity verification. Never produce several equivalent hashes for the same run.
 - Use one minimal smoke test that exercises the changed path. Add a second targeted test only for a distinct high-risk interface. Do not run broad suites, repeated resume tests, clean-clone rehearsals, or GitHub Actions during iteration unless the change reaches a release/submission boundary or a failure makes them necessary.
 - Stop expanding infrastructure once the current gate is measurable. Move quickly to simulator evidence and task success.
+
+## Evidence-First Commit Policy
+
+Treat experiment evidence, not Git history, as the default record of lab progress.
+
+- Do not commit or push merely because a lab session is ending, a gate failed, a blocker was diagnosed, or an intermediate implementation exists.
+- Save the decisive run configuration, key metrics, concise logs, artifact paths, and working-tree state in the designated local evidence directory. Preserve a patch there only when the uncommitted source state is needed to reproduce or resume the experiment.
+- Create a commit only for a major breakthrough, a coherent reusable milestone, a validated new-branch deliverable, a release/submission boundary, or an explicit user request.
+- Treat a previously blocked task-level gate passing, a strategy gaining decisive simulator or hardware evidence, or a reusable interface becoming the next validated baseline as a major breakthrough. Routine lint or focused unit-test success alone is not a breakthrough.
+- Creating or switching to a branch does not by itself justify a commit. Commit when that branch has a meaningful validated deliverable.
+- Keep milestone commits coherent. Do not create session-end, checkpoint, evidence-only, or repeated NO-GO commits.
+- Push only a milestone commit that should be shared, and only when the destination and exact branch are authorized. Otherwise return the local evidence path and exact resumable working-tree state.
 
 ## Select the Role
 
@@ -69,14 +81,14 @@ Let the lab executor inspect the repository and choose the concrete debug steps.
 
 Treat the lab executor as the code owner for the handoff. Do not independently recreate its patch, rerun GPU/simulator tests locally, or trigger intermediate GitHub Actions.
 
-Accept the handoff when it reports the final commit, intended diff, the agreed minimal gate, experiment evidence, and pushed remote ref. Require CI only when it is already part of the release path or the user asks for it. If required CI fails, return ownership to the lab executor for the minimal correction and final re-push.
+Accept the handoff when it reports the intended diff or working-tree state, the agreed minimal gate, and experiment evidence. Require a final commit and pushed remote ref only when the result meets the Evidence-First Commit Policy or the user explicitly requested them. Require CI only when it is already part of the release path or the user asks for it. If required CI fails, return ownership to the lab executor for the minimal correction; re-push only at the same milestone boundary.
 
 ### 4. Interpret and close the notes
 
 Check that the returned evidence satisfies the Definition of Done. Update HOME and the relevant project/experiment note with:
 
-- base and final commit;
-- branch and pushed ref;
+- base, current HEAD, and final commit only when one was created;
+- branch and pushed ref only when one was shared;
 - concise diff scope;
 - pass/fail gates and key metrics;
 - dataset/image/checkpoint identifiers needed to reproduce the result;
@@ -114,15 +126,24 @@ Run the smallest test that can disprove the fix. A normal debug cycle is: reprod
 
 Keep useful logs and experiment artifacts in the HDD evidence/output directories. Do not preserve duplicate logs, failed scratch outputs, or routine hashes unless they are needed to diagnose the result.
 
-### 3. Commit and push from the lab
+### 3. Decide whether to commit and push
 
-The lab executor owns completion of the code change:
+First apply the Evidence-First Commit Policy. The default for an ordinary experiment, failed gate, or intermediate WIP is to save evidence and leave the source uncommitted.
 
-1. Confirm the agreed minimal gate passes and the working tree contains only intended source changes.
+When the result qualifies as a milestone:
+
+1. Confirm the milestone gate passes and the working tree contains only intended source changes.
 2. Run the final code review and inspect the staged diff.
-3. Create or amend the final commit with the configured repository identity.
-4. Push the completed branch to the collaboration fork once the local result is ready.
+3. Create or amend one coherent milestone commit with the configured repository identity.
+4. Push the completed branch to the collaboration fork only when that exact destination is authorized.
 5. Check the pushed ref. Check CI only when required for this boundary.
+
+When the result does not qualify:
+
+1. Save the decisive evidence and a concise result report outside the competition repository.
+2. Record the branch, base/current HEAD, intended modified files, working-tree status, last passing gate, exact blocker, and next action.
+3. Keep or discard WIP according to the handoff stop condition. If it must remain resumable, preserve the necessary patch in the evidence directory without turning it into a Git commit.
+4. Do not push an evidence-only or failed-experiment branch.
 
 Avoid micro-pushes during debugging. If CI finds a real issue, fix and retest it on the lab machine, then push the correction. Use force-with-lease only on a private feature branch when rewriting it is explicitly acceptable.
 
@@ -132,8 +153,8 @@ Return a self-contained report containing:
 
 ```text
 Outcome:
-Repository / branch / base / final commit:
-Remote ref and push result:
+Repository / branch / base / current HEAD / milestone commit if any:
+Remote ref and push result, or why no push was appropriate:
 Working tree:
 Changed interfaces:
 Minimal smoke/runtime gate:
@@ -148,6 +169,6 @@ Include failure evidence only when it explains a decision. Do not paste complete
 ## Completion Rules
 
 - A local handoff is complete when the lab has an unambiguous objective and measurable Definition of Done.
-- A lab implementation is complete after a focused review, the agreed minimal gate, final commit, push, and compact evidence return. Do not delay simulator progress for optional hardening.
+- A lab experiment cycle is complete after a focused review, the agreed minimal gate or exact blocker, saved local evidence, a resumable working-tree report, and compact evidence return. A commit and push are completion requirements only at a milestone defined by the Evidence-First Commit Policy or when explicitly requested.
 - A project cycle is complete only after the local coordinator interprets the evidence and updates the single cross-day next action.
 - If a required gate cannot run, report the exact blocker and last passing gate; do not label the work complete.

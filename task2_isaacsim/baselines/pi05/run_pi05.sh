@@ -33,7 +33,7 @@ Task 2 PI0.5 simulator controller
 
 Usage:
   ./run_pi05.sh models
-  ./run_pi05.sh sim-up --gui
+  ./run_pi05.sh sim-up --gui [--randomized]
   ./run_pi05.sh run [OPTIONS]
   ./run_pi05.sh down
 
@@ -45,6 +45,10 @@ Run options:
                                     fixed-base output, async horizon 50
   --hybrid-transport                VLA approach/grasp, then RMPflow
                                     lift/transfer/place/release
+  --code-policy                     camera RGB-D/RMPflow acquire, probe,
+                                    bounded target retarget and placement
+  --with_language_gt                condition ours-20k on rolling numeric
+                                    episode-19 GT action rows (horizon <= 15)
   --shadow                          infer once; do not publish VLA actions
   --run-label LABEL
   --max-actions N                   default: 600
@@ -107,11 +111,33 @@ live_shell() {
 }
 
 command_sim_up() {
-  [[ "${1:-}" = "--gui" && $# -eq 1 ]] || {
-    echo "sim-up requires exactly --gui" >&2
+  local gui=false randomized=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --gui) gui=true; shift ;;
+      --randomized) randomized=true; shift ;;
+      *) echo "Unknown sim-up option: $1" >&2; exit 2 ;;
+    esac
+  done
+  ${gui} || {
+    echo "sim-up requires --gui" >&2
     exit 2
   }
   local log_dir log_path status
+  local -a scene_args=(
+    --disable-browser-command-topics --arm-pose-command-control
+    --robot-camera-depth --record
+  )
+  if ${randomized}; then
+    # One explicit generalization profile: swap the target among all four
+    # board slots, jitter every board, and move the deformable pad together
+    # with its base.  A conservative 1 cm pad/board jitter stays inside the
+    # wrist-camera acquisition envelope while exercising real retargeting.
+    scene_args+=(
+      --randomize-objects --randomize-boards --randomize-board-swap
+      --randomize-pad --randomize-xy-cm 1.0 --randomize-yaw-deg 0.0
+    )
+  fi
   log_dir="${TASK2_PI05_ROOT}/evidence/pi05_controller/launcher"
   log_path="${log_dir}/isaac_gui_$(date +%Y%m%d_%H%M%S).log"
   mkdir -p "${log_dir}"
@@ -119,8 +145,7 @@ command_sim_up() {
   set +e
   "${REPO_ROOT}/task2_isaacsim/scripts/run_isaacsim_teleop.sh" \
     --scene room --controller-mode none --no-browser --no-republisher -- \
-    --disable-browser-command-topics --arm-pose-command-control \
-    --record 2>&1 | tee "${log_path}"
+    "${scene_args[@]}" 2>&1 | tee "${log_path}"
   status="${PIPESTATUS[0]}"
   set -e
   echo "isaac_gui_exit_code=${status}" | tee -a "${log_path}"
@@ -150,6 +175,8 @@ command_run() {
   local manipulation_stage_max_duration_s=240
   local run_label="" shadow=false robot_dreams_native=false
   local hybrid_transport=false
+  local code_policy=false
+  local with_language_gt=false
   local execution_horizon_explicit=false
 
   while [[ $# -gt 0 ]]; do
@@ -160,6 +187,10 @@ command_run() {
         execution_horizon="$2"; execution_horizon_explicit=true; shift 2 ;;
       --robot-dreams-native) robot_dreams_native=true; shift ;;
       --hybrid-transport) hybrid_transport=true; shift ;;
+      --code-policy)
+        code_policy=true; hybrid_transport=true; shift ;;
+      --with-language-gt|--with_language_gt)
+        with_language_gt=true; shift ;;
       --shadow) shadow=true; shift ;;
       --run-label) run_label="$2"; shift 2 ;;
       --max-actions) max_actions="$2"; shift 2 ;;
@@ -187,13 +218,28 @@ command_run() {
     echo "--robot-dreams-native and --hybrid-transport are mutually exclusive" >&2
     exit 2
   fi
+  if ${code_policy} && ${with_language_gt}; then
+    echo "--with_language_gt requires PI0.5 inference, not --code-policy" >&2
+    exit 2
+  fi
+  if ${with_language_gt} && [[ "${MODEL_NAME}" != "ours-20k" ]]; then
+    echo "--with_language_gt currently requires --model ours-20k" >&2
+    exit 2
+  fi
   require_positive_integer "--execution-horizon" "${execution_horizon}"
   (( execution_horizon <= 50 )) || {
     echo "--execution-horizon must not exceed 50" >&2
     exit 2
   }
+  if ${with_language_gt} && (( execution_horizon > 15 )); then
+    echo "--with_language_gt requires --execution-horizon <= 15" >&2
+    exit 2
+  fi
   [[ "${seed}" =~ ^[0-9]+$ ]] || { echo "--seed must be a non-negative integer" >&2; exit 2; }
   require_positive_integer "--max-actions" "${max_actions}"
+  if ${with_language_gt} && (( max_actions > 580 )); then
+    max_actions=580
+  fi
   require_nonnegative_number "--max-duration-s" "${max_duration_s}"
   require_nonnegative_number "--base-stage-max-duration-s" "${base_stage_max_duration_s}"
   require_nonnegative_number "--spine-stage-max-duration-s" "${spine_stage_max_duration_s}"
@@ -250,6 +296,7 @@ command_run() {
   echo "checkpoint=${MODEL_PATH}"
   echo "output=${output}"
   echo "policy_execution_horizon=${execution_horizon}"
+  echo "policy_with_language_gt=${with_language_gt}"
   if ${robot_dreams_native}; then
     echo "policy_input_contract=three_cameras_plus_37d_state"
     echo "policy_command_ownership=left_and_right_arms_grippers_spine_base_fixed"
@@ -257,7 +304,11 @@ command_run() {
     echo "policy_command_ownership=right_arm_and_right_gripper_only"
   fi
   if ${hybrid_transport}; then
-    echo "post_grasp_control=rmpflow_lift_transfer_place_release"
+    if ${code_policy}; then
+      echo "control=camera_code_policy_acquire_probe_retarget_place"
+    else
+      echo "post_grasp_control=rmpflow_lift_transfer_place_release"
+    fi
   fi
 
   live_shell "ros2 topic pub --once /isaac/task2/scene_reset_request std_msgs/msg/String '{data: seed=${seed}}'"
@@ -267,8 +318,16 @@ command_run() {
   if ${hybrid_transport}; then
     hybrid_args=(--hybrid-rmpflow-transport)
   fi
+  if ${code_policy}; then
+    hybrid_args+=(--code-policy-acquire)
+  fi
+  if ${with_language_gt}; then
+    hybrid_args+=(--with-language-gt)
+  fi
 
-  exec docker run --rm --gpus all --network host --ipc=host \
+  local runner_status evaluation_status=0
+  set +e
+  docker run --rm --gpus all --network host --ipc=host \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp/ebim-live-home -e USER=ebim -e LOGNAME=ebim \
     -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
@@ -307,12 +366,35 @@ command_run() {
     "${ownership_mode[@]}" \
     "${hybrid_args[@]}" \
     --confirm-right-wrist-pad-visible \
-    --position-tolerance-m 0.015 \
+    --position-tolerance-m 0.020 \
     --yaw-tolerance-rad 0.04 \
     "${runner_mode[@]}" \
     --max-decisions "${max_decisions}" \
     --max-publish-actions "${max_actions}" \
     --max-duration-s "${max_duration_s}"
+  runner_status=$?
+  set -e
+
+  # Always capture the final task metric after the arm has released and moved
+  # back to its clearance pose.  This is the decisive early-drop signal: the
+  # evaluator sees the unobstructed pad/target result rather than an
+  # intermediate RGB-D heuristic.  Shadow mode deliberately leaves the scene
+  # untouched and therefore does not create an evaluation sample.
+  if ! ${shadow} && (( runner_status == 0 )); then
+    set +e
+    live_shell "timeout 30s ros2 service call /isaac/eval_camera/evaluate std_srvs/srv/Trigger '{}'" \
+      2>&1 | tee "${output}/evaluation_service.txt"
+    evaluation_status="${PIPESTATUS[0]}"
+    set -e
+  fi
+  {
+    echo "runner_exit_code=${runner_status}"
+    echo "evaluation_exit_code=${evaluation_status}"
+  } | tee "${output}/run_exit_status.txt"
+  if (( runner_status != 0 )); then
+    return "${runner_status}"
+  fi
+  return "${evaluation_status}"
 }
 
 command_down() {
