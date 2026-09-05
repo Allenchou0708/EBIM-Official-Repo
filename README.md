@@ -87,6 +87,8 @@ The implementation is primarily in:
 - An NVIDIA GPU supported by the official Isaac Sim 5.1.0 environment.
 - The official simulator container running as `isaac-sim-5-1-0-workshop` and
   mounting this repository at `/workspace/EBiM_Challenge`.
+- The robot USD
+  `task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd`.
 - X11 access for the Isaac Sim GUI.
 - The policy image `ebim-task2-pi05-submit:local`.
 - The development artifacts under
