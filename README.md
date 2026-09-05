@@ -91,10 +91,10 @@ The implementation is primarily in:
   `task1_isaacsim/assets/Robotiq_2f_85_with_d405_mobile_fr3_duo_v0_2.usd`.
 - X11 access for the Isaac Sim GUI.
 - The policy image `ebim-task2-pi05-submit:local`.
-- The development artifacts under
-  `/scratch1/2026_ebim/allen_task2_pi05/`: the retained 20k checkpoint,
-  simulator dataset metadata, staging audit, pinned LeRobot source, cache, and
-  evidence/output directories expected by `run_pi05.sh`.
+- A writable artifact root configured with `TASK2_PI05_ROOT`. It must contain
+  the retained 20k checkpoint, simulator dataset metadata, staging audit,
+  pinned LeRobot source, cache, and evidence/output directories expected by
+  `run_pi05.sh`.
 
 No Internet access is required during policy execution. The current
 development launcher still validates and mounts the retained Pi0.5 artifacts
