@@ -14,7 +14,7 @@ We present a fully autonomous mobile manipulation system for EBiM Challenge 2026
 
 The task requires the robot to autonomously approach the workspace, manipulate a deformable thermal pad, and accurately place it onto a designated region of a PCB. Our final simulator system combines closed-loop deterministic staging with a camera-conditioned, Code-as-Policy-inspired manipulation controller.
 
-At the beginning of each episode, the mobile robot approaches the table from a predefined corner. A hard-coded ROS controller is then used to raise the robot's spine and position both arms at suitable initial configurations in front of the workspace. This provides a consistent starting state for the learned manipulation policy.
+At the beginning of each episode, the mobile robot approaches the table from a predefined corner. Closed-loop deterministic controllers then raise and settle the spine, hold the left arm safely, and move the right arm to an observation pose with RMPflow. This provides a consistent starting state for the downstream manipulation controller.
 
 After initialization, the controller uses head and right-wrist RGB-D observations to estimate the pad and target pose. Bounded visual corrections are converted into collision-aware RMPflow motions for grasping, transporting, aligning, releasing, and retreating. The final controller does not query an LLM or simulator ground truth at run time; the code structure was designed offline from the task specification and 180 successful development demonstrations.
 
@@ -74,7 +74,7 @@ This is deliberately a small validation set. Deformable contact remains stochast
 
 We also trained an ACT policy from scratch using the available simulation demonstrations. The model contained approximately 83M trainable parameters, with an action prediction horizon of 5. The model was trained for 40000 steps, and the checkpoint with the lowest validation loss was selected for evaluation.
 
-Although the decent training, the resulting policy exhibited unstable behavior during inference. The robot frequently produced oscillatory motions and repeatedly adjusted its end-effector position instead of committing to the grasping motion.
+Despite decreasing training loss, the resulting policy exhibited unstable behavior during inference. The robot frequently produced oscillatory motions and repeatedly adjusted its end-effector position instead of committing to the grasping motion.
 
 One possible explanation is that ACT does not explicitly provide a strong prior for the task-level manipulation behavior. Small differences between the predicted actions can accumulate during autoregressive action execution, resulting in unstable or oscillatory behavior around critical manipulation states.
 
@@ -82,7 +82,7 @@ Video: [ACT failure example](Technical_Report_Videos/EBIM_Phase2_ACT.gif)
 
 ### 3.3 Using the Pi0.5
 
-We further evaluated Pi0.5 using the available simulation demonstrations. The model was fine-tuned on the simulation data with LoRA on the action expert and evaluated with an action prediction horizon of 15.
+We further evaluated Pi0.5 using the available simulation demonstrations. Our retained local checkpoint used two cameras, an 8-D right-arm/right-gripper action contract, and expert-only fine-tuning for 20,000 steps while keeping the VLM backbone frozen. It was evaluated with an action prediction horizon of 15. Separate whole-body and full-fine-tuning checkpoints were treated as interface ablations rather than equivalent models.
 
 Compared with ACT, Pi0.5 produced noticeably smoother and more decisive motion. The longer action horizon reduced the oscillatory behavior observed with ACT, allowing the robot to maintain a more coherent motion trajectory during manipulation.
 
@@ -92,7 +92,7 @@ This indicates that although Pi0.5 provided better temporal consistency than ACT
 
 Video: [Pi0.5 failure example](Technical_Report_Videos/EBIM_Phase2_PI05.gif)
 
-### 3.4 self distillation
+### 3.4 Self Distillation
 
 We also investigated self-distillation as a potential method for improving the Pi0.5 policy.
 
