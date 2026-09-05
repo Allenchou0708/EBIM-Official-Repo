@@ -92,6 +92,10 @@ GT_CLOSE_RETRACTION_M = 0.020
 PREGRASP_FORWARD_REFINEMENT_M = 0.004
 PREGRASP_FORWARD_REFINEMENT_MIN_M = 0.0
 PREGRASP_FORWARD_REFINEMENT_MAX_M = 0.008
+# Keep the camera correction inside the randomized layout envelope.  A fixed
+# one-sided preload improved one trial but hurt centred trials, so acquisition
+# follows the observation symmetrically and clamps only at the tested bound.
+PREGRASP_CROSS_AXIS_REFINEMENT_MAX_M = 0.010
 SAFE_PREINSERT_Z_OFFSET_M = 0.010
 SAFE_PREINSERT_POSITION_TOLERANCE_M = 0.004
 # The insert template below is now the actual 180-episode stable-latch mean.
@@ -103,11 +107,13 @@ SAFE_LATCH_POSITION_TOLERANCE_M = 0.004
 # Runtime no longer drives the fully open fingers deeper through that complete
 # development envelope.  It starts closing at the measured observation pose
 # and simultaneously retracts to the RGB-D-retargeted latch.  A 2026-09-05
-# seed-1104 ablation that forced the full move into the demonstrated 11-frame
-# close interval dropped evaluator IoU from 0.232 to 0.000.  Keep the slower
-# load-bearing move; the remaining skew must be diagnosed from pad geometry,
-# not inferred from the gripper close timing alone.
-GRASP_REFINEMENT_MINIMUM_DURATION_S = 1.00
+# seed-1104 ablation that forced the full 20 mm move into the demonstrated
+# 11-frame close interval dropped evaluator IoU from 0.232 to 0.000.  The
+# current camera refinement is only 8--12 mm, however, and holding it for a
+# full second leaves a fully closed, laterally tilted gripper near the base
+# for roughly half a second.  GT begins extraction by its q90 close-to-latch
+# time (14 frames); use 0.50 s and hand directly to the continuous curve.
+GRASP_REFINEMENT_MINIMUM_DURATION_S = 0.50
 # Successful GT trajectories do not apply a long pure vertical pull.  At the
 # first 5/10/15/20 mm height thresholds their median robot-forward motion is
 # already 1.3/5.3/9.9/13.9 mm.  Use these dense samples in the continuous
@@ -223,14 +229,19 @@ GT_RELEASE_CLEAR_FORWARD_Z_LEFT_M = (
 GT_RELEASE_OPEN_DURATION_S = 10.0 / 30.0
 GT_RELEASE_CLEAR_PEAK_LINEAR_SPEED_M_S = 0.12
 RELEASE_CLEAR_MINIMUM_OPEN_FRACTION = 0.995
-SUPPORTED_ALIGNMENT_MAXIMUM_XY_M = 0.025
+# Loaded RMPflow endpoints track 6--8 mm below the command during opening.
+# Compensate that measured sag everywhere, with another 6 mm for the distant
+# board slots whose arm configuration showed the largest downward error.
+BASE_RELEASE_TRACKING_CLEARANCE_M = 0.010
+LARGE_TARGET_ADDITIONAL_RELEASE_CLEARANCE_M = 0.006
+SUPPORTED_ALIGNMENT_MAXIMUM_RAW_CROSS_AXIS_M = 0.025
 # The wrist view loses one pad edge behind the gripper near support.  Seed
 # 1001 therefore overestimated an otherwise correctable 10 mm cross-axis
-# error and moved a correctly supported pad too far.  The successful seed
-# 1003 correction was 4.53 mm; cap the late, occlusion-prone adjustment at
-# 5 mm and leave larger residuals to the compliant release rather than
-# dragging the pad across the target.
-SUPPORTED_ALIGNMENT_MAXIMUM_CROSS_AXIS_M = 0.005
+# error and moved a correctly supported pad too far.  Apply at most 8 mm:
+# this remains conservative relative to the 25 mm reliability gate, while a
+# randomized target-B trial retained the pad but scored only 0.4551 after a
+# 10.7 mm measured cross-axis residual was clipped to the former 5 mm limit.
+SUPPORTED_ALIGNMENT_MAXIMUM_CROSS_AXIS_M = 0.008
 SUPPORTED_ALIGNMENT_MAXIMUM_YAW_DEG = 15.0
 # GT target-approach position medians from 180 successful demonstrations.
 # Each row is (robot-forward from place, world-z from place, robot-left from
@@ -1037,7 +1048,13 @@ def supported_pad_alignment(
     cross_axis_reliable = (
         int(observed_pad.get("pixel_count", 0)) >= 1000
         and float(observed_pad.get("major_visible_extent_m", 0.0)) >= 0.05
-        and translation_norm <= SUPPORTED_ALIGNMENT_MAXIMUM_XY_M
+        # The gripper hides one long edge, so the total XY norm contains an
+        # explicitly ignored longitudinal bias.  Gate the independently
+        # observable perpendicular component instead.  Seed-1106 r17 had a
+        # valid 11.7 mm cross-axis correction rejected only because the
+        # occluded long-axis component raised the total norm to 30.5 mm.
+        and abs(raw_cross_axis_m)
+        <= SUPPORTED_ALIGNMENT_MAXIMUM_RAW_CROSS_AXIS_M
     )
     applied_cross_axis_m = (
         float(
@@ -1069,6 +1086,9 @@ def supported_pad_alignment(
         "translation_xy_norm_m": translation_norm,
         "target_cross_axis_xy": target_cross_axis.tolist(),
         "raw_cross_axis_translation_m": raw_cross_axis_m,
+        "maximum_raw_cross_axis_translation_m": (
+            SUPPORTED_ALIGNMENT_MAXIMUM_RAW_CROSS_AXIS_M
+        ),
         "applied_cross_axis_translation_m": applied_cross_axis_m,
         "applied_translation_xy_m": applied_translation_xy.tolist(),
         "cross_axis_reliable": cross_axis_reliable,
@@ -1136,7 +1156,28 @@ def build_code_policy_acquire_plan(
         ),
         dtype=np.float64,
     )
-    insert_xy = observed[:2] + rotated_offset_xy
+    close_approach_xy = -rotated_offset_xy / np.linalg.norm(rotated_offset_xy)
+    grasp_cross_axis_xy = np.asarray(
+        (-close_approach_xy[1], close_approach_xy[0]), dtype=np.float64
+    )
+    observed_cross_axis_refinement_m = float(
+        delta[:2] @ grasp_cross_axis_xy
+    )
+    pregrasp_cross_axis_refinement_m = float(
+        np.clip(
+            observed_cross_axis_refinement_m,
+            -PREGRASP_CROSS_AXIS_REFINEMENT_MAX_M,
+            PREGRASP_CROSS_AXIS_REFINEMENT_MAX_M,
+        )
+    )
+    cross_axis_clamp_delta_m = (
+        pregrasp_cross_axis_refinement_m
+        - observed_cross_axis_refinement_m
+    )
+    cross_axis_clamp_delta_xy = (
+        cross_axis_clamp_delta_m * grasp_cross_axis_xy
+    )
+    insert_xy = observed[:2] + rotated_offset_xy + cross_axis_clamp_delta_xy
     insert_orientation = _rotate_quaternion_about_world_z(
         tuple(insert_reference[3:7]), yaw_delta
     )
@@ -1159,7 +1200,6 @@ def build_code_policy_acquire_plan(
     # Move from the robot side of the pad toward its detected centre.  This is
     # equivalent to robot-forward in the reference scene, while rotating with
     # the observed pad yaw in perturbed layouts.
-    close_approach_xy = -rotated_offset_xy / np.linalg.norm(rotated_offset_xy)
     open_insert_pose = (
         stable_latch_pose[0] + GT_CLOSE_RETRACTION_M * close_approach_xy[0],
         stable_latch_pose[1] + GT_CLOSE_RETRACTION_M * close_approach_xy[1],
@@ -1184,12 +1224,6 @@ def build_code_policy_acquire_plan(
     # sideways (seed 1104 required about 9.5 mm), producing a skewed grasp
     # that later slips.  Keep the longitudinal component governed by the
     # bounded refinement above so this does not reintroduce deep insertion.
-    grasp_cross_axis_xy = np.asarray(
-        (-close_approach_xy[1], close_approach_xy[0]), dtype=np.float64
-    )
-    pregrasp_cross_axis_refinement_m = float(
-        delta[:2] @ grasp_cross_axis_xy
-    )
     pregrasp_cross_axis_refinement_xy = (
         pregrasp_cross_axis_refinement_m * grasp_cross_axis_xy
     )
@@ -1315,6 +1349,15 @@ def build_code_policy_acquire_plan(
         "pregrasp_forward_refinement_m": pregrasp_forward_refinement_m,
         "pregrasp_cross_axis_refinement_m": (
             pregrasp_cross_axis_refinement_m
+        ),
+        "observed_cross_axis_refinement_m": (
+            observed_cross_axis_refinement_m
+        ),
+        "maximum_cross_axis_refinement_m": (
+            PREGRASP_CROSS_AXIS_REFINEMENT_MAX_M
+        ),
+        "cross_axis_clamp_delta_m": (
+            cross_axis_clamp_delta_m
         ),
         "pregrasp_cross_axis_refinement_world_xy_m": (
             pregrasp_cross_axis_refinement_xy.tolist()
@@ -2099,7 +2142,10 @@ def collapse_code_policy_transport(
         )
     path = [
         *early_path,
-        *(tuple(by_name[name]["pose"]) for name in remaining_names),
+        *(
+            tuple(by_name[name]["pose"])
+            for name in remaining_names
+        ),
         *approach_path,
         place_pose,
     ]
@@ -3092,13 +3138,17 @@ def main() -> int:  # noqa: C901 - one bounded measured transport state machine
                         # while adding a bounded 6 mm upward command for those
                         # non-nominal slots; nominal runs retain the GT motion.
                         release_extra_clearance_m = (
-                            0.006
-                            if float(
-                                release_stage.get(
-                                    "target_retarget_xy_m", 0.0
+                            BASE_RELEASE_TRACKING_CLEARANCE_M
+                            + (
+                                LARGE_TARGET_ADDITIONAL_RELEASE_CLEARANCE_M
+                                if float(
+                                    release_stage.get(
+                                        "target_retarget_xy_m", 0.0
+                                    )
                                 )
-                            ) > LARGE_TARGET_RETARGET_XY_M
-                            else 0.0
+                                > LARGE_TARGET_RETARGET_XY_M
+                                else 0.0
+                            )
                         )
                         release_xy = (
                             np.asarray(alignment_pose[:2])

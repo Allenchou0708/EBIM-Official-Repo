@@ -1073,8 +1073,8 @@ class Pi05ContractTest(unittest.TestCase):
         self.assertNotIn("HF_TOKEN=", dockerfile)
         self.assertIn("**/dataset/*", dockerignore)
         self.assertIn("**/*.safetensors", dockerignore)
-        self.assertIn("./run_pi05.sh dataset", readme)
-        self.assertIn("./run_pi05.sh run-task", readme)
+        self.assertIn("./run_pi05.sh models", readme)
+        self.assertIn("./run_pi05.sh run", readme)
         self.assertNotIn("--organizer-use-attestation", readme)
         self.assertIn(
             "Mount the writable host cache root at /cache", entrypoint
@@ -1246,7 +1246,11 @@ class Pi05ContractTest(unittest.TestCase):
             launcher,
         )
         self.assertIn(
-            "--position-tolerance-m 0.03 --yaw-tolerance-rad 0.04",
+            "--position-tolerance-m 0.020",
+            launcher,
+        )
+        self.assertIn(
+            "--yaw-tolerance-rad 0.04",
             launcher,
         )
         self.assertIn(

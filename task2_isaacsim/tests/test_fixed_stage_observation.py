@@ -68,16 +68,21 @@ class FixedStageObservationTest(unittest.TestCase):
                 "major_visible_extent_m": 0.089,
             },
             {
-                "center_world_m": [2.150, 1.950, 0.748],
+                # Long-axis centre is deliberately occlusion-biased by 39 mm;
+                # it must not veto the independently reliable 9 mm cross-axis
+                # correction.
+                "center_world_m": [2.150, 1.970, 0.748],
                 "long_axis_yaw_rad_mod_pi": np.pi / 2,
             },
         )
-        self.assertAlmostEqual(pose[0], 2.145)
+        self.assertAlmostEqual(pose[0], 2.148)
         self.assertAlmostEqual(pose[1], 2.02)
         self.assertAlmostEqual(
-            audit["applied_cross_axis_translation_m"], -0.005
+            audit["applied_cross_axis_translation_m"], -0.008
         )
         self.assertTrue(audit["translation_applied"])
+        self.assertTrue(audit["cross_axis_reliable"])
+        self.assertGreater(audit["translation_xy_norm_m"], 0.025)
 
     def test_relative_joint_spline_hits_knots_and_is_c1(self) -> None:
         knots = ((0.0, 0.0), (1.0, 0.5), (1.5, 2.0))
@@ -407,6 +412,9 @@ class FixedStageObservationTest(unittest.TestCase):
         )
         self.assertAlmostEqual(audit["pregrasp_forward_refinement_m"], 0.004)
         self.assertAlmostEqual(
+            audit["observed_cross_axis_refinement_m"], 0.0, places=4
+        )
+        self.assertAlmostEqual(
             audit["pregrasp_cross_axis_refinement_m"], 0.0, places=4
         )
         self.assertLessEqual(audit["pregrasp_forward_refinement_m"], 0.008)
@@ -456,6 +464,9 @@ class FixedStageObservationTest(unittest.TestCase):
         )
         close_axis = np.asarray(audit["close_approach_unit_xy"])
         close_cross_axis = np.asarray((-close_axis[1], close_axis[0]))
+        self.assertAlmostEqual(
+            audit["observed_cross_axis_refinement_m"], -0.010, places=4
+        )
         self.assertAlmostEqual(
             float(preinsert_motion @ close_cross_axis), -0.010, places=4
         )

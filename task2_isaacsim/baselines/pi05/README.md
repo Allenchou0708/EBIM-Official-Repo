@@ -142,6 +142,30 @@ publisher handoff, and the RMPflow `retain` stage.  It then timed out in
 success; the lift pose/orientation and collision path need redesign before
 another rollout.
 
+## Final simulator code policy
+
+The final simulator controller bypasses PI0.5 manipulation output after the
+shared deterministic staging.  It uses head/right-wrist RGB-D, bounded pad and
+target retargeting, RMPflow, a continuous GT-statistics-derived extraction and
+transfer curve, supported late alignment, and a fast release/retreat:
+
+```bash
+ROS_DOMAIN_ID=30 ./run_pi05.sh sim-up --gui --randomized
+
+ROS_DOMAIN_ID=30 ./run_pi05.sh run \
+  --code-policy \
+  --seed 1003 \
+  --run-label code-policy-seed1003
+```
+
+In the retained deadline validation, seed 1003 selected target B and scored
+0.5150 IoU; seed 1104 selected target D and scored 0.5514 IoU.  Both reported
+correct pad orientation and `policy_inference_decisions=0`.  These two runs
+exercise target-slot selection and +/-1 cm pad/board XY jitter, but they are a
+small simulator validation rather than evidence of real-robot generalization.
+The direct head-camera videos and exact evidence paths are listed in the root
+technical report.
+
 ## Measured results (2026-09-03)
 
 | Profile | Verified interface | Simulator observation | Status |
@@ -150,6 +174,7 @@ another rollout.
 | `submitted-30k` | saved 20-D whole-body transform, right 8-D publication slice; live shadow pipeline | one-inference shadow validation publishes no VLA actions | contract-only |
 | `robot-dreams-20k --robot-dreams-native` | three cameras, state 37-D, absolute action 20-D | 600 valid actions across 24 decisions with zero invalid actions; pad still did not move left reliably | manipulation NO-GO |
 | `ours-20k --hybrid-transport` | VLA grasp followed by measured RMPflow handoff | grasp/retain passed; `peel_lift` did not converge | experimental NO-GO |
+| `--code-policy` | head/right-wrist RGB-D with bounded camera-relative RMPflow control | two randomized targets scored 0.5150 and 0.5514 IoU with correct orientation | simulator GO (limited 2-run validation) |
 
 These results distinguish a valid runtime contract from task success.  None of
 the three PI0.5 checkpoints currently demonstrates reliable end-to-end task
